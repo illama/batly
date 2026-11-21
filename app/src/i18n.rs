@@ -155,7 +155,11 @@ pub fn duration(hours: f64) -> String {
     } else if d > 0 {
         format!("{d}\u{a0}{day} {h}\u{a0}h")
     } else if h > 0 {
-        if m >= 5 { format!("{h}\u{a0}h\u{a0}{m:02}") } else { format!("{h}\u{a0}h") }
+        if m >= 5 {
+            format!("{h}\u{a0}h\u{a0}{m:02}")
+        } else {
+            format!("{h}\u{a0}h")
+        }
     } else {
         format!("{}\u{a0}min", m.max(1))
     }

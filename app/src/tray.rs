@@ -25,26 +25,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush, SelectObject,
-    SetBkMode, SetTextColor, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
-    DT_CENTER, DT_NOCLIP, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, TRANSPARENT,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush, SelectObject, SetBkMode, SetTextColor,
+    ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DT_CENTER, DT_NOCLIP, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+    TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows_sys::Win32::UI::Shell::{
-    SHQueryUserNotificationState, Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE,
-    NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, NOTIFYICON_VERSION_4, QUNS_BUSY, QUNS_PRESENTATION_MODE,
-    QUNS_QUIET_TIME, QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHQueryUserNotificationState, Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP,
+    NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW,
+    NOTIFYICONIDENTIFIER, NOTIFYICON_VERSION_4, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_QUIET_TIME, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
-    DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON,
-    HMENU, LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_BOTTOMALIGN,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
-    WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_NULL, WM_POWERBROADCAST, WM_SETTINGCHANGE,
+    AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
+    DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON, HMENU, LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, MSG, SM_CXSMICON, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_NULL, WM_POWERBROADCAST, WM_SETTINGCHANGE,
     WM_TIMER, WM_USER, WNDCLASSW, WS_OVERLAPPED,
 };
 
@@ -246,9 +244,7 @@ impl App {
     fn ordered(&self, mut devices: Vec<Device>) -> Vec<Device> {
         let order = &self.cfg.ui.device_order;
         let rank = |d: &Device| order.iter().position(|o| *o == d.id).unwrap_or(usize::MAX);
-        devices.sort_by(|a, b| {
-            rank(a).cmp(&rank(b)).then_with(|| self.name(a).to_lowercase().cmp(&self.name(b).to_lowercase()))
-        });
+        devices.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| self.name(a).to_lowercase().cmp(&self.name(b).to_lowercase())));
         devices
     }
 
@@ -294,9 +290,7 @@ impl App {
             let visible: Vec<&Device> = devices
                 .iter()
                 .filter(|d| self.cfg.ui.selected_devices.contains(&d.id))
-                .filter(|d| {
-                    hide_above <= 0.0 || plugged(d) || !d.online || d.battery.is_none_or(|b| b.percent <= hide_above)
-                })
+                .filter(|d| hide_above <= 0.0 || plugged(d) || !d.online || d.battery.is_none_or(|b| b.percent <= hide_above))
                 .collect();
             if visible.is_empty() {
                 // Keep one icon to click on: the lowest device, as a summary.
@@ -479,11 +473,7 @@ impl App {
     }
 
     fn show_notice(&mut self, n: &Notice) {
-        let icon = self
-            .icons
-            .iter()
-            .find(|i| i.device_id.as_deref() == Some(n.device_id.as_str()))
-            .or_else(|| self.icons.first());
+        let icon = self.icons.iter().find(|i| i.device_id.as_deref() == Some(n.device_id.as_str())).or_else(|| self.icons.first());
         let Some(icon) = icon else { return };
         let mut data = self.notify_data(icon.uid);
         data.uFlags = NIF_INFO;
@@ -685,7 +675,14 @@ impl App {
                 add(ID_DEVICE_BASE + n, &text, check(selected && !self.cfg.ui.single_icon) | if usable { 0 } else { MF_GRAYED });
             }
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            let panel_label = tr(["Battery panel", "Panneau des batteries", "Akku-Übersicht", "Panel de baterías", "Pannello batterie", "Painel de baterias"]);
+            let panel_label = tr([
+                "Battery panel",
+                "Panneau des batteries",
+                "Akku-Übersicht",
+                "Panel de baterías",
+                "Pannello batterie",
+                "Painel de baterias",
+            ]);
             let shortcut = if self.hotkey_registered { format!("\t{}", self.cfg.ui.hotkey) } else { String::new() };
             add(ID_PANEL, &format!("{panel_label}{shortcut}"), 0);
             if let Some(n) = &self.last_notice {
@@ -695,7 +692,14 @@ impl App {
             add(ID_NUMERIC, i18n::numeric_display(), check(self.cfg.ui.numeric_display));
             add(
                 ID_SINGLE_ICON,
-                tr(["One icon for all devices", "Une seule icône pour tout", "Ein Symbol für alle", "Un solo icono para todo", "Una sola icona per tutto", "Um só ícone para tudo"]),
+                tr([
+                    "One icon for all devices",
+                    "Une seule icône pour tout",
+                    "Ein Symbol für alle",
+                    "Un solo icono para todo",
+                    "Una sola icona per tutto",
+                    "Um só ícone para tudo",
+                ]),
                 check(self.cfg.ui.single_icon),
             );
             add(ID_LOW_BATTERY, i18n::low_battery_alerts(), check(self.cfg.ui.low_battery_threshold > 0));
@@ -707,7 +711,18 @@ impl App {
                 add(ID_WEB, i18n::open_web(), 0);
             }
             if self.services.native.is_some() {
-                add(ID_RECEIVERS, tr(["Receivers and devices…", "Récepteurs et appareils…", "Empfänger und Geräte…", "Receptores y dispositivos…", "Ricevitori e dispositivi…", "Receptores e dispositivos…"]), 0);
+                add(
+                    ID_RECEIVERS,
+                    tr([
+                        "Receivers and devices…",
+                        "Récepteurs et appareils…",
+                        "Empfänger und Geräte…",
+                        "Receptores y dispositivos…",
+                        "Ricevitori e dispositivi…",
+                        "Receptores e dispositivos…",
+                    ]),
+                    0,
+                );
             }
             for (n, action) in self.services.actions.iter().enumerate() {
                 add(ID_ACTION_BASE + n, &action.label, 0);
@@ -737,9 +752,7 @@ impl App {
             ID_AUTOSTART => win::set_autostart(!win::autostart_enabled()),
             ID_REFRESH | panel::CMD_REFRESH => self.refresh_devices(),
             ID_SETTINGS | panel::CMD_SETTINGS => self.open_settings(),
-            ID_SETTINGS_FILE => {
-                win::shell_open(self.hwnd, "notepad.exe", Some(&format!("\"{}\"", self.cfg_path.display())))
-            }
+            ID_SETTINGS_FILE => win::shell_open(self.hwnd, "notepad.exe", Some(&format!("\"{}\"", self.cfg_path.display()))),
             ID_WEB | panel::CMD_WEB => {
                 if let Some(url) = &self.services.web_url {
                     win::shell_open(self.hwnd, url, None);
@@ -801,12 +814,29 @@ impl App {
 }
 
 fn later_label() -> String {
-    tr(["Remind me later", "Me le rappeler plus tard", "Später erinnern", "Recordármelo más tarde", "Ricordamelo più tardi", "Lembrar mais tarde"]).into()
+    tr([
+        "Remind me later",
+        "Me le rappeler plus tard",
+        "Später erinnern",
+        "Recordármelo más tarde",
+        "Ricordamelo più tardi",
+        "Lembrar mais tarde",
+    ])
+    .into()
 }
 
 fn ago_text(hours: f64) -> String {
     let d = i18n::duration(hours);
-    tr([format!("seen {d} ago"), format!("vu il y a {d}"), format!("vor {d} gesehen"), format!("visto hace {d}"), format!("visto {d} fa"), format!("visto há {d}")].each_ref()).clone()
+    tr([
+        format!("seen {d} ago"),
+        format!("vu il y a {d}"),
+        format!("vor {d} gesehen"),
+        format!("visto hace {d}"),
+        format!("visto {d} fa"),
+        format!("visto há {d}"),
+    ]
+    .each_ref())
+    .clone()
 }
 
 /// Centre of a tray icon on screen (Windows 7+).
@@ -852,9 +882,7 @@ fn hicon_from_rgba(rgba: &[u8], n: usize) -> HICON {
     }
     bits.resize(bits.len() + mask_stride * n, 0);
     // SAFETY: `bits` is a well formed icon resource of the given length.
-    unsafe {
-        CreateIconFromResourceEx(bits.as_ptr(), bits.len() as u32, 1, 0x0003_0000, n as i32, n as i32, LR_DEFAULTCOLOR)
-    }
+    unsafe { CreateIconFromResourceEx(bits.as_ptr(), bits.len() as u32, 1, 0x0003_0000, n as i32, n as i32, LR_DEFAULTCOLOR) }
 }
 
 /// Renders the percentage as text. GDI draws white on black into a DIB and
@@ -976,7 +1004,6 @@ fn draw_text(text: &str, canvas: usize, font_px: i32) -> Option<Vec<u8>> {
         Some(coverage)
     }
 }
-
 
 // ------------------------------------------------------------ window proc
 
@@ -1193,8 +1220,7 @@ pub fn create_window() -> Option<HWND> {
 fn watch_settings(hwnd: HWND, path: &std::path::Path) {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
-        FindFirstChangeNotificationW, FindNextChangeNotification, FILE_NOTIFY_CHANGE_FILE_NAME,
-        FILE_NOTIFY_CHANGE_LAST_WRITE,
+        FindFirstChangeNotificationW, FindNextChangeNotification, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
     };
     use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
     let Some(dir) = path.parent().map(|d| d.to_path_buf()) else { return };

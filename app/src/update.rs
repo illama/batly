@@ -119,8 +119,7 @@ pub fn parse_sums(text: &str, file_name: &str) -> Option<String> {
         let (hash, name) = line.split_once(char::is_whitespace)?;
         let name = name.trim_start().trim_start_matches('*').trim();
         let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
-        (name == file_name && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| hash.to_ascii_lowercase())
+        (name == file_name && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hash.to_ascii_lowercase())
     })
 }
 
@@ -414,11 +413,7 @@ mod tests {
     fn checksums() {
         let data = b"installer bytes";
         let hash = sha256::hex_digest(data);
-        let sums = format!(
-            "{}  Batly-4.1.0-portable.zip\n{}  Batly-Setup-4.1.0.exe\r\n",
-            "0".repeat(64),
-            hash.to_uppercase()
-        );
+        let sums = format!("{}  Batly-4.1.0-portable.zip\n{}  Batly-Setup-4.1.0.exe\r\n", "0".repeat(64), hash.to_uppercase());
         assert_eq!(parse_sums(&sums, "Batly-Setup-4.1.0.exe"), Some(hash.clone()));
         assert_eq!(parse_sums(&format!("{hash} *dist/Batly-Setup-4.1.0.exe"), "Batly-Setup-4.1.0.exe"), Some(hash.clone()));
         assert_eq!(parse_sums(&sums, "Batly-Setup-4.0.0.exe"), None);

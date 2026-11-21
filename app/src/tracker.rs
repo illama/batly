@@ -75,17 +75,9 @@ impl Tracker {
     fn seen(&mut self, s: Seen, events: &mut Vec<Event>) {
         let fresh = Known { name: s.name.clone(), kind: s.kind, has_battery: s.has_battery, online: true, info: s.info.clone() };
         let previous = self.known.insert(s.id.clone(), fresh);
-        let reinit = previous.as_ref().is_none_or(|k| {
-            !k.online || k.name != s.name || k.kind != s.kind || k.has_battery != s.has_battery
-        });
+        let reinit = previous.as_ref().is_none_or(|k| !k.online || k.name != s.name || k.kind != s.kind || k.has_battery != s.has_battery);
         if reinit {
-            events.push(Event::Init {
-                id: s.id.clone(),
-                name: s.name,
-                kind: s.kind,
-                source: self.source,
-                has_battery: s.has_battery,
-            });
+            events.push(Event::Init { id: s.id.clone(), name: s.name, kind: s.kind, source: self.source, has_battery: s.has_battery });
         }
         if s.info != DeviceInfo::default() && (reinit || previous.is_none_or(|k| k.info != s.info)) {
             events.push(Event::Info { id: s.id.clone(), info: s.info });
@@ -120,7 +112,14 @@ mod tests {
     }
 
     fn seen(id: &str, p: Option<f32>) -> Seen {
-        Seen { id: id.into(), name: "Pad".into(), kind: DeviceKind::Gamepad, has_battery: true, battery: p.map(bat), info: DeviceInfo::default() }
+        Seen {
+            id: id.into(),
+            name: "Pad".into(),
+            kind: DeviceKind::Gamepad,
+            has_battery: true,
+            battery: p.map(bat),
+            info: DeviceInfo::default(),
+        }
     }
 
     #[test]

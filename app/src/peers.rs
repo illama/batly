@@ -101,7 +101,9 @@ enum End {
     /// The peer is this very instance.
     Myself,
     /// Connection lost; `synced` when it had worked.
-    Lost { synced: bool },
+    Lost {
+        synced: bool,
+    },
 }
 
 fn run(peer: Peer, mut mirror: Mirror, instance: &str, stop: &mpsc::Receiver<()>, conn: &Mutex<Option<TcpStream>>) {
@@ -377,7 +379,15 @@ impl Remote {
     pub fn parse(v: &Value) -> Option<Self> {
         let id = v["id"].as_str()?.to_string();
         if v["removed"].as_bool() == Some(true) {
-            return Some(Self { id, name: String::new(), kind: DeviceKind::Other, has_battery: false, online: false, battery: None, removed: true });
+            return Some(Self {
+                id,
+                name: String::new(),
+                kind: DeviceKind::Other,
+                has_battery: false,
+                online: false,
+                battery: None,
+                removed: true,
+            });
         }
         if v["source"].as_str() == Some("remote") || id.starts_with("peer:") {
             return None;
@@ -552,7 +562,10 @@ mod tests {
 
     fn local(ctx: &Context, id: &str, percent: f32) {
         ctx.hub.publish(Event::Init { id: id.into(), name: id.into(), kind: DeviceKind::Mouse, source: Source::Native, has_battery: true });
-        ctx.hub.publish(Event::Update { id: id.into(), battery: Battery { percent, status: Status::Discharging, millivolts: None, mileage: None } });
+        ctx.hub.publish(Event::Update {
+            id: id.into(),
+            battery: Battery { percent, status: Status::Discharging, millivolts: None, mileage: None },
+        });
     }
 
     #[test]

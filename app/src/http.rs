@@ -129,8 +129,7 @@ pub fn start(cfg: &config::Http, ctx: Arc<Context>) -> Vec<SocketAddr> {
         match TcpListener::bind(addr) {
             Ok(listener) => {
                 bound.push(listener.local_addr().unwrap_or(addr));
-                let (ctx, token, me, connections, streams) =
-                    (ctx.clone(), token.clone(), me.clone(), connections.clone(), streams.clone());
+                let (ctx, token, me, connections, streams) = (ctx.clone(), token.clone(), me.clone(), connections.clone(), streams.clone());
                 let _ = thread::Builder::new().name("http".into()).stack_size(128 * 1024).spawn(move || {
                     for stream in listener.incoming().flatten() {
                         let Some(slot) = Slot::take(&connections, MAX_CONNECTIONS) else { continue };
@@ -588,9 +587,7 @@ pub fn json(d: &Device) -> String {
 /// `health_percent`, `cycles` and `host`.
 pub fn device_json(ctx: &Context, d: &Device) -> String {
     let e = ctx.estimate(d);
-    let num = |v: Option<f64>, digits: usize| {
-        v.filter(|v| v.is_finite()).map_or_else(|| "null".to_string(), |v| format!("{v:.digits$}"))
-    };
+    let num = |v: Option<f64>, digits: usize| v.filter(|v| v.is_finite()).map_or_else(|| "null".to_string(), |v| format!("{v:.digits$}"));
     let text = |v: Option<&str>| v.map_or(Value::Null, Value::from);
     let mut s = json(d);
     s.pop();
@@ -797,7 +794,14 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
 
     pub fn index(ctx: &Context) -> String {
         let devices = ctx.devices(false);
-        let title = tr(["Battery levels", "Niveaux de batterie", "Akkustände", "Niveles de batería", "Livelli della batteria", "Níveis de bateria"]);
+        let title = tr([
+            "Battery levels",
+            "Niveaux de batterie",
+            "Akkustände",
+            "Niveles de batería",
+            "Livelli della batteria",
+            "Níveis de bateria",
+        ]);
         let mut s = format!(
             "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Batly – {title}</title>\
@@ -872,16 +876,49 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         }
         let st = &e.stats;
         if let Some(h) = st.full_runtime_hours {
-            row(tr(["Runtime per charge", "Autonomie par charge", "Laufzeit pro Ladung", "Autonomía por carga", "Autonomia per carica", "Autonomia por carga"]), i18n::duration(h));
+            row(
+                tr([
+                    "Runtime per charge",
+                    "Autonomie par charge",
+                    "Laufzeit pro Ladung",
+                    "Autonomía por carga",
+                    "Autonomia per carica",
+                    "Autonomia por carga",
+                ]),
+                i18n::duration(h),
+            );
         }
         if let Some(h) = st.avg_charge_hours {
-            row(tr(["Usual charge time", "Durée de charge habituelle", "Übliche Ladedauer", "Tiempo de carga habitual", "Durata di carica abituale", "Tempo de carga habitual"]), i18n::duration(h));
+            row(
+                tr([
+                    "Usual charge time",
+                    "Durée de charge habituelle",
+                    "Übliche Ladedauer",
+                    "Tiempo de carga habitual",
+                    "Durata di carica abituale",
+                    "Tempo de carga habitual",
+                ]),
+                i18n::duration(h),
+            );
         }
         if let Some(h) = st.health_percent {
-            row(tr(["Battery health", "Santé de la batterie", "Akkuzustand", "Salud de la batería", "Salute della batteria", "Saúde da bateria"]), i18n::percent(h as f32));
+            row(
+                tr([
+                    "Battery health",
+                    "Santé de la batterie",
+                    "Akkuzustand",
+                    "Salud de la batería",
+                    "Salute della batteria",
+                    "Saúde da bateria",
+                ]),
+                i18n::percent(h as f32),
+            );
         }
         if st.samples > 1 && st.cycles >= 0.1 {
-            row(tr(["Charge cycles", "Cycles de charge", "Ladezyklen", "Ciclos de carga", "Cicli di carica", "Ciclos de carga"]), format!("{:.1}", st.cycles));
+            row(
+                tr(["Charge cycles", "Cycles de charge", "Ladezyklen", "Ciclos de carga", "Cicli di carica", "Ciclos de carga"]),
+                format!("{:.1}", st.cycles),
+            );
         }
         drop(row);
         if let Some(t) = d.last_update {
@@ -903,7 +940,14 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
                 ),
                 None => format!(
                     "<div class=\"chart\"><div class=\"none\">{}</div></div>",
-                    tr(["Not enough readings yet for a chart.", "Pas encore assez de relevés pour un graphique.", "Noch nicht genug Messwerte für ein Diagramm.", "Aún no hay lecturas suficientes para un gráfico.", "Letture ancora insufficienti per un grafico.", "Ainda não há leituras suficientes para um gráfico."])
+                    tr([
+                        "Not enough readings yet for a chart.",
+                        "Pas encore assez de relevés pour un graphique.",
+                        "Noch nicht genug Messwerte für ein Diagramm.",
+                        "Aún no hay lecturas suficientes para un gráfico.",
+                        "Letture ancora insufficienti per un grafico.",
+                        "Ainda não há leituras suficientes para um gráfico."
+                    ])
                 ),
             }
         } else {
@@ -1086,7 +1130,13 @@ mod tests {
     #[test]
     fn alias_time_left_and_remote_filter() {
         let hub = hub();
-        hub.publish(Event::Init { id: "peer:pc:X".into(), name: "K".into(), kind: DeviceKind::Keyboard, source: Source::Remote, has_battery: true });
+        hub.publish(Event::Init {
+            id: "peer:pc:X".into(),
+            name: "K".into(),
+            kind: DeviceKind::Keyboard,
+            source: Source::Remote,
+            has_battery: true,
+        });
         hub.publish(Event::Update {
             id: "peer:pc:X".into(),
             battery: Battery { percent: 40.0, status: Status::Discharging, millivolts: None, mileage: Some(12.5) },
@@ -1112,7 +1162,16 @@ mod tests {
     #[test]
     fn dns_rebinding_and_cors() {
         // Host must name this computer unless the token is given.
-        for ok in ["localhost:12321", "LOCALHOST", "127.0.0.1:12321", "[::1]:12321", "192.168.1.2", "pc-salon", "PC-Salon.local:12321", "app.localhost"] {
+        for ok in [
+            "localhost:12321",
+            "LOCALHOST",
+            "127.0.0.1:12321",
+            "[::1]:12321",
+            "192.168.1.2",
+            "pc-salon",
+            "PC-Salon.local:12321",
+            "app.localhost",
+        ] {
             assert!(host_allowed(Some(ok), "PC-SALON"), "{ok}");
         }
         for bad in ["evil.example:12321", "pc-salon-evil.com", "localhost.evil.com", "x"] {
@@ -1158,12 +1217,16 @@ mod tests {
     #[test]
     fn prometheus_format() {
         let hub = hub();
-        hub.publish(Event::Init { id: "q\"\\\n".into(), name: "N".into(), kind: DeviceKind::Other, source: Source::Vendor, has_battery: true });
+        hub.publish(Event::Init {
+            id: "q\"\\\n".into(),
+            name: "N".into(),
+            kind: DeviceKind::Other,
+            source: Source::Vendor,
+            has_battery: true,
+        });
         let m = metrics(&ctx_of(hub), false);
         assert!(m.contains("# TYPE batly_battery_percent gauge\n"));
-        assert!(m.contains(
-            "batly_battery_percent{id=\"ABC123\",name=\"G <Pro> & Co\",type=\"Mouse\",source=\"native\",host=\"\"} 69\n"
-        ));
+        assert!(m.contains("batly_battery_percent{id=\"ABC123\",name=\"G <Pro> & Co\",type=\"Mouse\",source=\"native\",host=\"\"} 69\n"));
         assert!(m.contains("batly_battery_voltage_volts{id=\"ABC123\"") && m.contains("} 3.92\n"));
         assert!(m.contains("batly_charging{id=\"ABC123\"") && m.contains("batly_online{id=\"q\\\"\\\\\\n\""));
         assert_eq!(prom_escape("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");

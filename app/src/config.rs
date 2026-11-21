@@ -217,14 +217,7 @@ impl Default for History {
 
 impl Default for Http {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            addr: "localhost".into(),
-            port: 12321,
-            use_ipv6: true,
-            token: String::new(),
-            peers: Vec::new(),
-        }
+        Self { enabled: true, addr: "localhost".into(), port: 12321, use_ipv6: true, token: String::new(), peers: Vec::new() }
     }
 }
 
@@ -260,7 +253,6 @@ impl Default for Mqtt {
         }
     }
 }
-
 
 impl Default for Updates {
     fn default() -> Self {

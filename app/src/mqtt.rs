@@ -85,10 +85,8 @@ fn run(cfg: &config::Mqtt, ctx: &Context, rx: &mpsc::Receiver<Msg>) {
 fn session(cfg: &config::Mqtt, ctx: &Context, rx: &mpsc::Receiver<Msg>, delay: &mut Duration) -> io::Result<()> {
     let base = cfg.base_topic.trim().trim_end_matches('/');
     let base = if base.is_empty() { "batly" } else { base };
-    let addr = (cfg.host.trim(), cfg.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "broker not found"))?;
+    let addr =
+        (cfg.host.trim(), cfg.port).to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "broker not found"))?;
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
     s.set_read_timeout(Some(Duration::from_secs(10)))?;
     s.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -215,26 +213,51 @@ pub fn discovery(cfg: &config::Mqtt, base: &str, ctx: &Context, d: &Device) -> V
         (format!("{prefix}/{component}/batly_{tid}/{key}/config"), v.to_string())
     };
     vec![
-        entity("sensor", "battery", "Battery", json!({
-            "device_class": "battery", "unit_of_measurement": "%", "state_class": "measurement",
-            "value_template": "{{ value_json.battery_percent }}",
-        })),
-        entity("binary_sensor", "charging", "Charging", json!({
-            "device_class": "battery_charging",
-            "value_template": "{{ 'ON' if value_json.charging else 'OFF' }}",
-        })),
-        entity("sensor", "voltage", "Voltage", json!({
-            "device_class": "voltage", "unit_of_measurement": "V", "state_class": "measurement",
-            "entity_category": "diagnostic", "value_template": "{{ value_json.battery_voltage }}",
-        })),
-        entity("sensor", "time_left", "Time left", json!({
-            "device_class": "duration", "unit_of_measurement": "h",
-            "value_template": "{{ value_json.time_left_hours }}",
-        })),
-        entity("binary_sensor", "online", "Connected", json!({
-            "device_class": "connectivity", "entity_category": "diagnostic",
-            "value_template": "{{ 'ON' if value_json.online else 'OFF' }}",
-        })),
+        entity(
+            "sensor",
+            "battery",
+            "Battery",
+            json!({
+                "device_class": "battery", "unit_of_measurement": "%", "state_class": "measurement",
+                "value_template": "{{ value_json.battery_percent }}",
+            }),
+        ),
+        entity(
+            "binary_sensor",
+            "charging",
+            "Charging",
+            json!({
+                "device_class": "battery_charging",
+                "value_template": "{{ 'ON' if value_json.charging else 'OFF' }}",
+            }),
+        ),
+        entity(
+            "sensor",
+            "voltage",
+            "Voltage",
+            json!({
+                "device_class": "voltage", "unit_of_measurement": "V", "state_class": "measurement",
+                "entity_category": "diagnostic", "value_template": "{{ value_json.battery_voltage }}",
+            }),
+        ),
+        entity(
+            "sensor",
+            "time_left",
+            "Time left",
+            json!({
+                "device_class": "duration", "unit_of_measurement": "h",
+                "value_template": "{{ value_json.time_left_hours }}",
+            }),
+        ),
+        entity(
+            "binary_sensor",
+            "online",
+            "Connected",
+            json!({
+                "device_class": "connectivity", "entity_category": "diagnostic",
+                "value_template": "{{ 'ON' if value_json.online else 'OFF' }}",
+            }),
+        ),
     ]
 }
 
@@ -383,8 +406,21 @@ mod tests {
         let p = connect_packet("cid", "u", "p", "t/status", b"offline", 60);
         assert_eq!(
             p,
-            [&[0x10, 40, 0, 4][..], b"MQTT", &[4, 0xE6, 0, 60, 0, 3], b"cid", &[0, 8], b"t/status", &[0, 7], b"offline", &[0, 1], b"u", &[0, 1], b"p"]
-                .concat()
+            [
+                &[0x10, 40, 0, 4][..],
+                b"MQTT",
+                &[4, 0xE6, 0, 60, 0, 3],
+                b"cid",
+                &[0, 8],
+                b"t/status",
+                &[0, 7],
+                b"offline",
+                &[0, 1],
+                b"u",
+                &[0, 1],
+                b"p"
+            ]
+            .concat()
         );
         assert_eq!(connect_packet("c", "", "pw", "w", b"", 30)[9], 0x26, "no password without user");
         let p = publish_packet("a/b", b"xy", true);
@@ -398,7 +434,13 @@ mod tests {
 
     fn ctx() -> Arc<Context> {
         let hub = Arc::new(Hub::new());
-        hub.publish(Event::Init { id: "dev 1".into(), name: "G502".into(), kind: DeviceKind::Mouse, source: Source::Native, has_battery: true });
+        hub.publish(Event::Init {
+            id: "dev 1".into(),
+            name: "G502".into(),
+            kind: DeviceKind::Mouse,
+            source: Source::Native,
+            has_battery: true,
+        });
         hub.publish(Event::Update {
             id: "dev 1".into(),
             battery: Battery { percent: 64.0, status: Status::Discharging, millivolts: Some(3870), mileage: None },

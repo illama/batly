@@ -5,9 +5,9 @@ use crate::win::{self, wide};
 use std::mem::{size_of, zeroed};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode,
-    SetDIBitsToDevice, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS,
-    DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT, PS_SOLID, TRANSPARENT,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode, SetDIBitsToDevice,
+    SetTextColor, BITMAPINFO, BITMAPINFOHEADER, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT,
+    PS_SOLID, TRANSPARENT,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 

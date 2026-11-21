@@ -166,10 +166,7 @@ pub fn parse_battery(payload: &Value) -> Option<Event> {
         (true, _) => Status::Charging,
         _ => Status::Discharging,
     };
-    Some(Event::Update {
-        id,
-        battery: Battery { percent, status, millivolts: None, mileage: payload["mileage"].as_f64() },
-    })
+    Some(Event::Update { id, battery: Battery { percent, status, millivolts: None, mileage: payload["mileage"].as_f64() } })
 }
 
 #[cfg(test)]
@@ -195,7 +192,9 @@ mod tests {
         ]});
         let list = parse_device_list(&payload);
         assert_eq!(list.len(), 2);
-        assert!(matches!(&list[0].0, Event::Init { name, kind: DeviceKind::Headset, has_battery: true, source: Source::GHub, .. } if name == "PRO X Wireless"));
+        assert!(
+            matches!(&list[0].0, Event::Init { name, kind: DeviceKind::Headset, has_battery: true, source: Source::GHub, .. } if name == "PRO X Wireless")
+        );
         assert!(matches!(&list[1].0, Event::Init { kind: DeviceKind::Keyboard, has_battery: false, .. }));
         assert!(parse_device_list(&json!(null)).is_empty());
     }

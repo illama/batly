@@ -284,15 +284,15 @@ mod imp {
             }
             out.push(Seen {
                 id,
-                name: info.product.clone().filter(|p| !p.eq_ignore_ascii_case("wireless controller")).unwrap_or_else(|| model.name.to_string()),
+                name: info
+                    .product
+                    .clone()
+                    .filter(|p| !p.eq_ignore_ascii_case("wireless controller"))
+                    .unwrap_or_else(|| model.name.to_string()),
                 kind: DeviceKind::Gamepad,
                 has_battery: true,
                 battery: Some(battery),
-                info: DeviceInfo {
-                    model: Some(format!("Sony {}", model.name)),
-                    serial: info.serial.clone(),
-                    ..Default::default()
-                },
+                info: DeviceInfo { model: Some(format!("Sony {}", model.name)), serial: info.serial.clone(), ..Default::default() },
             });
         }
         out
@@ -364,7 +364,9 @@ mod tests {
 
     #[test]
     fn bluetooth_paths() {
-        assert!(is_bluetooth_path(r"\\?\hid#{00001124-0000-1000-8000-00805f9b34fb}_vid&0002054c_pid&0ce6#8&1&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"));
+        assert!(is_bluetooth_path(
+            r"\\?\hid#{00001124-0000-1000-8000-00805f9b34fb}_vid&0002054c_pid&0ce6#8&1&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+        ));
         assert!(!is_bluetooth_path(r"\\?\hid#vid_054c&pid_0ce6&mi_03#8&1&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"));
     }
 }

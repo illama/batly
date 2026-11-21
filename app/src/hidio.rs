@@ -8,23 +8,20 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use windows_sys::core::GUID;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Get_DevNode_PropertyW, CM_Get_Device_ID_ListW, CM_Get_Device_ID_List_SizeW, CM_Get_Device_IDW,
-    CM_Get_Device_Interface_ListW, CM_Get_Device_Interface_List_SizeW, CM_Get_Device_Interface_PropertyW, CM_Get_Parent,
-    CM_Locate_DevNodeW, CM_GETIDLIST_FILTER_PRESENT, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_LOCATE_DEVNODE_NORMAL,
-    CR_SUCCESS,
+    CM_Get_DevNode_PropertyW, CM_Get_Device_IDW, CM_Get_Device_ID_ListW, CM_Get_Device_ID_List_SizeW, CM_Get_Device_Interface_ListW,
+    CM_Get_Device_Interface_List_SizeW, CM_Get_Device_Interface_PropertyW, CM_Get_Parent, CM_Locate_DevNodeW, CM_GETIDLIST_FILTER_PRESENT,
+    CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
-    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetFeature, HidD_GetHidGuid, HidD_GetPreparsedData,
-    HidD_GetProductString, HidD_GetSerialNumberString, HidD_SetFeature, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS,
-    HIDP_STATUS_SUCCESS,
+    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetFeature, HidD_GetHidGuid, HidD_GetPreparsedData, HidD_GetProductString,
+    HidD_GetSerialNumberString, HidD_SetFeature, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS,
 };
 use windows_sys::Win32::Devices::Properties::{
-    DEVPKEY_Device_InstanceId, DEVPROPTYPE, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_GUID, DEVPROP_TYPE_STRING,
-    DEVPROP_TYPE_UINT16, DEVPROP_TYPE_UINT32,
+    DEVPKEY_Device_InstanceId, DEVPROPTYPE, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_GUID, DEVPROP_TYPE_STRING, DEVPROP_TYPE_UINT16,
+    DEVPROP_TYPE_UINT32,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, DEVPROPKEY, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    WAIT_OBJECT_0,
+    CloseHandle, GetLastError, DEVPROPKEY, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -55,9 +52,7 @@ pub fn interface_paths(class: &GUID) -> Vec<String> {
         }
         let mut buf = vec![0u16; len as usize];
         // SAFETY: `buf` holds `len` UTF-16 units.
-        let rc = unsafe {
-            CM_Get_Device_Interface_ListW(class, null(), buf.as_mut_ptr(), len, CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
-        };
+        let rc = unsafe { CM_Get_Device_Interface_ListW(class, null(), buf.as_mut_ptr(), len, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) };
         if rc == CR_SUCCESS {
             return multi_sz(&buf);
         }
@@ -91,14 +86,7 @@ pub fn interface_instance_id(path: &str) -> Option<String> {
     let mut prop_type = 0u32;
     // SAFETY: buffers are valid for the sizes given.
     let rc = unsafe {
-        CM_Get_Device_Interface_PropertyW(
-            wpath.as_ptr(),
-            &DEVPKEY_Device_InstanceId,
-            &mut prop_type,
-            buf.as_mut_ptr().cast(),
-            &mut size,
-            0,
-        )
+        CM_Get_Device_Interface_PropertyW(wpath.as_ptr(), &DEVPKEY_Device_InstanceId, &mut prop_type, buf.as_mut_ptr().cast(), &mut size, 0)
     };
     (rc == CR_SUCCESS).then(|| from_wide(&buf))
 }
@@ -183,9 +171,8 @@ impl Drop for OwnedHandle {
 
 pub fn open(path: &str, access: u32, flags: u32) -> Option<OwnedHandle> {
     // SAFETY: valid NUL-terminated path.
-    let h = unsafe {
-        CreateFileW(wide(path).as_ptr(), access, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, flags, null_mut())
-    };
+    let h =
+        unsafe { CreateFileW(wide(path).as_ptr(), access, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, flags, null_mut()) };
     (h != INVALID_HANDLE_VALUE && !h.is_null()).then(|| OwnedHandle(h))
 }
 
