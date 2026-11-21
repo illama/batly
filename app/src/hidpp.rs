@@ -1092,12 +1092,27 @@ impl<T: Transport> Session<T> {
                 slot.due = Some(Instant::now() + self.cfg.settle);
                 slot.reread = slot.info.is_some();
             } else {
-                slot.due = None;
+                // The "link up" notification can be missed after a short
+                // radio drop-out (seen with Lightspeed keyboards in use):
+                // check again later, with the usual back-off, instead of
+                // waiting for it forever.
+                slot.due = Some(Instant::now() + self.cfg.retry);
                 if let Some(info) = &slot.info {
                     (self.sink)(Event::Offline { id: info.id.clone() });
                 }
             }
             return;
+        }
+
+        // Any other HID++ report from a device believed offline proves it
+        // is back: read it now.
+        if !self.direct && (1..=6).contains(&idx) && r[2] != 0x8F && r[2] != 0xFF {
+            if let Some(slot) = self.devices.get_mut(&idx).filter(|s| !s.online && s.info.is_some()) {
+                log!("[{}] device {} talks again", self.tag, idx);
+                slot.online = true;
+                slot.fails = 0;
+                slot.due = Some(Instant::now());
+            }
         }
 
         // Battery broadcast event (function 0, software id 0).
@@ -2281,7 +2296,16 @@ mod tests {
             matches!(&events[0], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Charging)
         );
         assert!(matches!(&events[1], Event::Offline { id } if id == "X"));
-        assert!(s.devices[&1].due.is_none());
+        // Checked again later even if "link up" never comes.
+        assert!(s.devices[&1].due.is_some());
+        assert!(!s.devices[&1].online);
+        // Any other report from the device brings it back.
+        s.devices.get_mut(&1).unwrap().due = None;
+        s.on_unsolicited(&[0x10, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00]);
+        assert!(s.devices[&1].online && s.devices[&1].due.is_some());
+        // An error answer does not.
+        s.devices.get_mut(&1).unwrap().online = false;
+        s.on_unsolicited(&[0x10, 0x01, 0x8F, 0x07, 0x00, 0x09, 0x00]);
         assert!(!s.devices[&1].online);
     }
 
