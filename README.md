@@ -12,6 +12,11 @@ des alertes intelligentes, une API et la domotique.
 
 **[⬇ Télécharger la dernière version](https://github.com/illama/illama_logitechbatteries/releases/latest)**
 
+<p align="center">
+  <img src="docs/panneau.png" alt="Panneau des batteries" width="330">
+  <img src="docs/page-web.png" alt="Page web en direct" width="480">
+</p>
+
 Réécriture complète en Rust de [LGSTrayBattery](https://github.com/andyvorld/LGSTrayBattery)
 (C# / .NET 8 / WPF), compatible avec ses réglages et son API HTTP, dans un seul exécutable
 natif d'environ 1,5 Mo, sans runtime .NET, sans `hidapi.dll`, sans processus auxiliaire.
@@ -98,10 +103,14 @@ dernier état connu** quand il est éteint. Ouvrir l'API au réseau (`0.0.0.0`) 
   capteurs (batterie, charge, tension, autonomie restante) ;
 - **webhooks** à chaque alerte (format Discord et Slack reconnu, JSON pour le reste) ;
 - **Prometheus** (`/metrics`), flux **en direct** (`/api/events`) ;
-- **overlay OBS** (`/overlay`), **plugin Stream Deck** et **skin Rainmeter** : voir
+- **overlay OBS** (`/overlay`, ci-dessous), **plugin Stream Deck** et **skin Rainmeter** : voir
   [`integrations/`](integrations/README.md).
 
+<img src="docs/overlay-obs.png" alt="Overlay OBS" width="300">
+
 ### Le reste
+<img src="docs/reglages.png" alt="Fenêtre de réglages" width="420" align="right">
+
 - **Réglages** dans une vraie fenêtre (onglets Général, Alertes, Appareils, Sources, Réseau,
   Domotique) ; le fichier TOML reste modifiable et **s'applique dès l'enregistrement** ;
 - interface en **français, anglais, allemand, espagnol, italien et portugais** ;
