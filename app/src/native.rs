@@ -15,6 +15,7 @@ use crate::hidpp::{
 };
 use crate::log;
 use crate::model::{Event as HubEvent, Hub, Source};
+use crate::presence::Presence;
 use crate::win::{wide, Event};
 use std::collections::HashMap;
 use std::io;
@@ -423,7 +424,7 @@ impl Native {
         let _ = thread::Builder::new().name("hid-manager".into()).stack_size(256 * 1024).spawn(move || {
             let mut running: HashMap<String, Running> = HashMap::new();
             // Device id -> endpoint key, kept up to date by the sessions.
-            let owners: Owners = Arc::new(Mutex::new(HashMap::new()));
+            let owners: Owners = Arc::new(Mutex::new(Presence::default()));
             rescan(&mut running, &settings, &hub, &owners);
             while let Ok(request) = rx.recv() {
                 match request {
@@ -443,7 +444,7 @@ impl Native {
                         }
                     }
                     Request::ToDevice(id, command) => {
-                        let key = owners.lock().unwrap().get(&id).cloned();
+                        let key = owners.lock().unwrap().owner(&id);
                         if let Some(session) = key.and_then(|k| running.get(&k)) {
                             session.send(command);
                         }
@@ -519,7 +520,8 @@ impl Native {
     }
 }
 
-type Owners = Arc<Mutex<HashMap<String, String>>>;
+/// Which endpoints see each device (see [`Presence`]).
+type Owners = Arc<Mutex<Presence>>;
 
 /// Asks every session to describe itself and collects the answers on a
 /// helper thread, so a busy session does not hold the manager up.
@@ -593,16 +595,13 @@ fn spawn_session(key: &str, interfaces: &[Interface], settings: &hidpp::Settings
     let tag: String = key.rsplit('\\').next().unwrap_or(key).chars().take(24).collect();
     let (owners, owner) = (owners.clone(), key.to_string());
     let sink = move |event: HubEvent| {
-        match &event {
-            HubEvent::Init { id, .. } => {
-                owners.lock().unwrap().insert(id.clone(), owner.clone());
-            }
-            HubEvent::Remove { id } => {
-                owners.lock().unwrap().remove(id);
-            }
-            _ => {}
+        // Another endpoint may still see the device: then its Offline /
+        // Remove from this endpoint is not passed on.
+        if owners.lock().unwrap().route(&owner, &event) {
+            hub.publish(event);
+        } else {
+            log!("hid: {owner}: {event:?} ignored, the device is still seen elsewhere");
         }
-        hub.publish(event);
     };
     let product_id = interfaces.first().map_or(0, |i| i.product_id);
     let session = Session::new(transport, settings.clone(), rx, sink, tag).with_product_id(product_id);

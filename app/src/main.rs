@@ -39,6 +39,8 @@ mod hidio;
 mod native;
 #[cfg(windows)]
 mod panel;
+#[cfg(any(windows, test))]
+mod presence;
 #[cfg(windows)]
 mod receivers;
 #[cfg(windows)]
