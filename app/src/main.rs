@@ -19,10 +19,13 @@ mod i18n;
 mod icon;
 mod log;
 mod model;
+mod mqtt;
 mod notice;
+mod peers;
 mod report;
 mod sha256;
 mod update;
+mod webhooks;
 
 #[cfg(windows)]
 mod actions;
@@ -245,7 +248,14 @@ fn main() {
         demo(&hub, &history);
     }
 
-    let web_url = if cfg.http.enabled && !http::start(&cfg.http, hub.clone()).is_empty() {
+    // Settings shared with the servers (aliases), kept current by the tray.
+    let shared_cfg = Arc::new(std::sync::Mutex::new(cfg.clone()));
+    let names = shared_cfg.clone();
+    let ctx = Arc::new(
+        http::Context::new(hub.clone(), history.clone())
+            .with_names(move |id, name| names.lock().unwrap().display_name(id, name)),
+    );
+    let web_url = if cfg.http.enabled && !http::start(&cfg.http, ctx.clone()).is_empty() {
         let host = match cfg.http.addr.trim() {
             "" | "localhost" | "0.0.0.0" | "+" | "*" => "localhost",
             host => host,
@@ -260,6 +270,23 @@ fn main() {
         actions::update_action(cfg_path.clone(), known_update),
         actions::report_action(hub.clone(), cfg_path.clone()),
     ];
+    // Integrations. They stop when dropped: the tray keeps them alive.
+    let mut keep_alive: Vec<Box<dyn std::any::Any>> = Vec::new();
+    keep_alive.push(Box::new(peers::start(&cfg.http.peers, &ctx)));
+    let mut notice_sinks: Vec<Box<dyn Fn(&notice::Notice)>> = Vec::new();
+    if cfg.mqtt.enabled && !cfg.mqtt.host.trim().is_empty() {
+        let mqtt = std::rc::Rc::new(mqtt::Mqtt::start(&cfg.mqtt, ctx.clone()));
+        let sink = mqtt.clone();
+        notice_sinks.push(Box::new(move |n| sink.notice(n)));
+        keep_alive.push(Box::new(mqtt));
+    }
+    if !cfg.webhooks.urls.is_empty() {
+        let webhooks = webhooks::Webhooks::start(&cfg.webhooks);
+        let changes = webhooks.clone();
+        hub.subscribe(move |d| changes.device_changed(d));
+        notice_sinks.push(Box::new(move |n| webhooks.send(n)));
+    }
+
     let services = tray::Services {
         native: cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone())),
         ghub: cfg.ghub.enabled.then(|| ghub::GHub::start(hub.clone())),
@@ -267,8 +294,10 @@ fn main() {
         history,
         refresh: Vec::new(),
         rescan: Vec::new(),
-        notice_sinks: Vec::new(),
+        notice_sinks,
         actions,
+        shared_cfg,
+        keep_alive,
         started_with: cfg.clone(),
     };
 

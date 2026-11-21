@@ -142,6 +142,10 @@ pub struct Services {
     pub actions: Vec<Action>,
     /// The settings in effect when the services were started.
     pub started_with: Config,
+    /// Copy of the settings read by other threads (HTTP aliases).
+    pub shared_cfg: Arc<std::sync::Mutex<Config>>,
+    /// Integrations that stop when dropped (peers, MQTT…).
+    pub keep_alive: Vec<Box<dyn std::any::Any>>,
 }
 
 struct App {
@@ -180,6 +184,7 @@ fn plugged(d: &Device) -> bool {
 
 impl App {
     fn save(&self) {
+        *self.services.shared_cfg.lock().unwrap() = self.cfg.clone();
         if let Err(e) = self.cfg.save(&self.cfg_path) {
             log!("cannot save settings: {e}");
         }
@@ -642,6 +647,7 @@ impl App {
             return true;
         }
         self.cfg = cfg;
+        *self.services.shared_cfg.lock().unwrap() = self.cfg.clone();
         i18n::init(&self.cfg.ui.language, crate::system_language());
         self.register_hotkey();
         self.stats_cache.clear();
