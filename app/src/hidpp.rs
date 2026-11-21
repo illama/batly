@@ -22,10 +22,15 @@
 //! (firmware, serial, Easy-Switch channel) are read when a device is first
 //! seen and on every reconnection, never polled.
 
+use crate::lighting::{
+    self, LedApi, LedEffect, LedZone, Lighting, OnboardDescription, OnboardStatus, ZoneEffect, FEAT_COLOR_LED_EFFECTS,
+    FEAT_ONBOARD_PROFILES, FEAT_RGB_EFFECTS,
+};
 use crate::log;
 use crate::model::{Battery, DeviceInfo, DeviceKind, Event, Source, Status};
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -86,6 +91,8 @@ const PAIRING_GRACE: Duration = Duration::from_secs(3);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(400);
 const PING_TIMEOUT: Duration = Duration::from_millis(250);
+/// Onboard memory writes (flash).
+const FLASH_TIMEOUT: Duration = Duration::from_secs(3);
 const IDLE: Duration = Duration::from_secs(3600);
 
 pub enum Incoming {
@@ -113,6 +120,9 @@ pub struct Settings {
     pub disabled: Vec<String>,
     /// Grace period after a "device connected" notification.
     pub settle: Duration,
+    /// Where onboard memory sectors are saved before being rewritten;
+    /// `None` = never write onboard memory.
+    pub backup_dir: Option<PathBuf>,
 }
 
 // ------------------------------------------------------------ public API
@@ -270,6 +280,13 @@ pub enum ActionError {
     Busy,
     /// The device or receiver rejected the request or did not answer.
     Failed,
+    /// The lighting cannot be saved on this device (and why).
+    Onboard(OnboardStatus),
+    /// The onboard memory could not be backed up: nothing was written.
+    Backup,
+    /// The onboard memory did not read back as written; the previous
+    /// content was written back.
+    Verify,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +342,7 @@ pub struct DeviceSettings {
     pub report_rate: Option<ReportRateSettings>,
     pub backlight: Option<BacklightSettings>,
     pub smart_shift: Option<WheelMode>,
+    pub lighting: Option<Lighting>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -337,6 +355,16 @@ pub enum Setting {
         level: u8,
     },
     SmartShift(WheelMode),
+    /// LED effect of a zone: shown right away (`save == false`, the host
+    /// takes control of the LEDs) or written into the active onboard
+    /// profile (`save == true`).
+    Led {
+        zone: u8,
+        effect: LedEffect,
+        save: bool,
+    },
+    /// Gives the LEDs back to the device (end of a preview).
+    LedRelease,
 }
 
 pub type SettingsReply = Sender<Result<DeviceSettings, ActionError>>;
@@ -362,6 +390,11 @@ pub enum Command {
         device: String,
         setting: Setting,
         reply: SettingsReply,
+    },
+    /// Text report of the lighting and onboard memory (read only).
+    Diagnose {
+        device: String,
+        reply: Sender<Result<String, ActionError>>,
     },
 }
 
@@ -847,9 +880,16 @@ impl<T: Transport> Session<T> {
             Command::SetSetting { device, setting, reply } => {
                 let result = match self.settings_target(&device) {
                     Ok(idx) => match self.write_setting(idx, setting)? {
-                        true => self.read_settings(idx)?,
-                        false => Err(ActionError::Failed),
+                        Ok(()) => self.read_settings(idx)?,
+                        Err(e) => Err(e),
                     },
+                    Err(e) => Err(e),
+                };
+                let _ = reply.send(result);
+            }
+            Command::Diagnose { device, reply } => {
+                let result = match self.settings_target(&device) {
+                    Ok(idx) => Ok(self.diagnose(idx)?),
                     Err(e) => Err(e),
                 };
                 let _ = reply.send(result);
@@ -1763,6 +1803,7 @@ impl<T: Transport> Session<T> {
         if let Some((f, read, _)) = self.smart_shift(idx)? {
             s.smart_shift = self.call(idx, f, read, &[])?.as_deref().and_then(parse_wheel);
         }
+        s.lighting = self.read_lighting(idx)?;
         Ok(Ok(s))
     }
 
@@ -1774,10 +1815,13 @@ impl<T: Transport> Session<T> {
         Ok(self.feature(idx, FEAT_SMART_SHIFT)?.map(|f| (f, 0, 1)))
     }
 
-    /// Writes one setting; `false` = not supported or rejected.
-    fn write_setting(&mut self, idx: u8, setting: Setting) -> io::Result<bool> {
+    /// Writes one setting.
+    fn write_setting(&mut self, idx: u8, setting: Setting) -> io::Result<Result<(), ActionError>> {
         log!("[{}] device {}: set {:?}", self.tag, idx, setting);
         let reply = match setting {
+            Setting::Led { zone, effect, save: false } => return self.preview_led(idx, zone, effect),
+            Setting::Led { zone, effect, save: true } => return self.save_led(idx, zone, effect),
+            Setting::LedRelease => return self.release_leds(idx).map(Ok),
             Setting::Dpi(dpi) => match self.feature(idx, FEAT_ADJUSTABLE_DPI)? {
                 Some(f) => {
                     let [hi, lo] = dpi.to_be_bytes();
@@ -1801,7 +1845,275 @@ impl<T: Transport> Session<T> {
                 None => None,
             },
         };
-        Ok(reply.is_some())
+        Ok(if reply.is_some() { Ok(()) } else { Err(ActionError::Failed) })
+    }
+
+    // ----------------------------------------------------------- lighting
+
+    /// LED feature of the device: index and API.
+    fn led_feature(&mut self, idx: u8) -> io::Result<Option<(u8, LedApi)>> {
+        if let Some(f) = self.feature(idx, FEAT_RGB_EFFECTS)? {
+            return Ok(Some((f, LedApi::Rgb)));
+        }
+        Ok(self.feature(idx, FEAT_COLOR_LED_EFFECTS)?.map(|f| (f, LedApi::Zones)))
+    }
+
+    /// Zones and their effects (0x8070 getInfo / getZoneInfo /
+    /// getZoneEffectInfo, or the same requests of 0x8071 on function 0).
+    fn led_zones(&mut self, idx: u8, f: u8, api: LedApi) -> io::Result<Vec<LedZone>> {
+        let count = match api {
+            LedApi::Zones => self.call(idx, f, 0, &[])?.map(|p| p[0]),
+            LedApi::Rgb => self.call(idx, f, 0, &[0xFF, 0xFF, 0])?.map(|p| p[2]),
+        };
+        let mut zones = Vec::new();
+        for zone in 0..count.unwrap_or(0).min(8) {
+            let info = match api {
+                LedApi::Zones => self.call(idx, f, 1, &[zone, 0xFF, 0])?.map(|p| (u16::from_be_bytes([p[1], p[2]]), p[3])),
+                LedApi::Rgb => {
+                    self.call(idx, f, 0, &[zone, 0xFF, 0])?.filter(|p| p.len() >= 5).map(|p| (u16::from_be_bytes([p[2], p[3]]), p[4]))
+                }
+            };
+            let Some((location, n)) = info else { continue };
+            let mut effects = Vec::new();
+            for i in 0..n.min(32) {
+                let function = if api == LedApi::Zones { 2 } else { 0 };
+                if let Some(p) = self.call(idx, f, function, &[zone, i, 0])?.filter(|p| p.len() >= 4) {
+                    effects.push(ZoneEffect { index: p[1], id: u16::from_be_bytes([p[2], p[3]]) });
+                }
+            }
+            zones.push(LedZone { index: zone, location, effects, current: None });
+        }
+        Ok(zones)
+    }
+
+    fn read_lighting(&mut self, idx: u8) -> io::Result<Option<Lighting>> {
+        let Some((f, api)) = self.led_feature(idx)? else { return Ok(None) };
+        let mut zones = self.led_zones(idx, f, api)?;
+        if zones.is_empty() {
+            return Ok(None);
+        }
+        let (onboard, profile) = self.onboard_profile(idx)?;
+        if let Some((_, _, sector)) = &profile {
+            for z in zones.iter_mut() {
+                z.current = lighting::profile_effect(sector, z.index as usize);
+            }
+        }
+        Ok(Some(Lighting { api, zones, onboard }))
+    }
+
+    /// Reads 16-byte chunks of an onboard memory sector (0x8100 memoryRead;
+    /// the last chunk is read at `size - 16`, as Solaar does).
+    fn read_sector(&mut self, idx: u8, f: u8, sector: u16, size: usize) -> io::Result<Option<Vec<u8>>> {
+        let [sh, sl] = sector.to_be_bytes();
+        let mut out = Vec::with_capacity(size);
+        let mut offset = 0;
+        while offset + 16 <= size {
+            let [oh, ol] = (offset as u16).to_be_bytes();
+            let Some(p) = self.call(idx, f, 5, &[sh, sl, oh, ol])?.filter(|p| p.len() >= 16) else { return Ok(None) };
+            out.extend_from_slice(&p[..16]);
+            offset += 16;
+        }
+        if offset < size {
+            let [oh, ol] = ((size - 16) as u16).to_be_bytes();
+            let Some(p) = self.call(idx, f, 5, &[sh, sl, oh, ol])?.filter(|p| p.len() >= 16) else { return Ok(None) };
+            out.extend_from_slice(&p[16 - (size - offset)..16]);
+        }
+        Ok(Some(out))
+    }
+
+    /// Writes a sector (memoryAddrWrite, memoryWrite × n, memoryWriteEnd).
+    fn write_sector(&mut self, idx: u8, f: u8, sector: u16, bytes: &[u8]) -> io::Result<bool> {
+        let [sh, sl] = sector.to_be_bytes();
+        let [lh, ll] = (bytes.len() as u16).to_be_bytes();
+        if self.call(idx, f, 6, &[sh, sl, 0, 0, lh, ll])?.is_none() {
+            return Ok(false);
+        }
+        for chunk in bytes.chunks(16) {
+            let mut data = [0u8; 16];
+            data[..chunk.len()].copy_from_slice(chunk);
+            if self.transact_ex(idx, f, (7 << 4) | SW_ID, &data, FLASH_TIMEOUT, true, None)?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(self.transact(idx, f, (8 << 4) | SW_ID, &[], FLASH_TIMEOUT)?.is_some())
+    }
+
+    /// Whether the lighting can be saved on the device and, when it can,
+    /// the description, the active sector and its content (checked).
+    #[allow(clippy::type_complexity)]
+    fn onboard_profile(&mut self, idx: u8) -> io::Result<(OnboardStatus, Option<(u8, OnboardDescription, Vec<u8>)>)> {
+        let Some(f) = self.feature(idx, FEAT_ONBOARD_PROFILES)? else { return Ok((OnboardStatus::Absent, None)) };
+        let mouse = self.devices.get(&idx).and_then(|s| s.info.as_ref()).is_some_and(|i| i.kind == DeviceKind::Mouse);
+        let Some(desc) = self.call(idx, f, 0, &[])?.as_deref().and_then(OnboardDescription::parse) else {
+            return Ok((OnboardStatus::UnknownFormat, None));
+        };
+        // Keyboards and headsets use other profile layouts.
+        if !mouse || !desc.supported() {
+            return Ok((OnboardStatus::UnknownFormat, None));
+        }
+        if self.call(idx, f, 2, &[])?.map(|p| p[0]) != Some(1) {
+            return Ok((OnboardStatus::HostMode, None));
+        }
+        let Some(sector) = self.call(idx, f, 4, &[])?.map(|p| u16::from_be_bytes([p[0], p[1]])) else {
+            return Ok((OnboardStatus::UnknownFormat, None));
+        };
+        if !desc.writable_sector(sector) {
+            return Ok((OnboardStatus::ReadOnly, None));
+        }
+        let size = desc.sector_size as usize;
+        let Some(bytes) = self.read_sector(idx, f, sector, size)? else { return Ok((OnboardStatus::UnknownFormat, None)) };
+        if let Err(e) = lighting::check_profile(&bytes, size) {
+            log!("[{}] device {}: onboard sector {} refused: {:?}", self.tag, idx, sector, e);
+            return Ok((OnboardStatus::UnknownFormat, None));
+        }
+        Ok((OnboardStatus::Writable { sector, size: desc.sector_size }, Some((f, desc, bytes))))
+    }
+
+    fn zone_wire(&mut self, idx: u8, zone: u8, effect: &LedEffect) -> io::Result<Option<(u8, LedApi, ZoneEffect)>> {
+        let Some((f, api)) = self.led_feature(idx)? else { return Ok(None) };
+        let zones = self.led_zones(idx, f, api)?;
+        Ok(zones.iter().find(|z| z.index == zone).and_then(|z| z.wire(effect.kind)).map(|w| (f, api, w)))
+    }
+
+    /// Shows an effect now: the host takes the LEDs (0x8070 setSWControl,
+    /// or 0x8071 SetSWControl after switching onboard profiles to host
+    /// mode), then sets the zone effect. [`Setting::LedRelease`] undoes it.
+    fn preview_led(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
+        let Some((f, api, wire)) = self.zone_wire(idx, zone, &effect)? else { return Ok(Err(ActionError::NotSupported)) };
+        let params = effect.params(wire.id);
+        let reply = match api {
+            LedApi::Zones => {
+                self.call(idx, f, 8, &[1])?;
+                let mut p = vec![zone, wire.index];
+                p.extend_from_slice(&params);
+                self.call(idx, f, 3, &p)?
+            }
+            LedApi::Rgb => {
+                if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
+                    self.call(idx, onb, 1, &[2])?;
+                }
+                self.call(idx, f, 5, &[0x01, 0x03, 0x04])?;
+                let mut p = vec![zone, wire.index];
+                p.extend_from_slice(&params);
+                p.push(0x01);
+                self.call(idx, f, 1, &p)?
+            }
+        };
+        Ok(if reply.is_some() { Ok(()) } else { Err(ActionError::Failed) })
+    }
+
+    /// Gives the LEDs back to the firmware (and onboard profiles back on).
+    fn release_leds(&mut self, idx: u8) -> io::Result<()> {
+        match self.led_feature(idx)? {
+            Some((f, LedApi::Zones)) => {
+                self.call(idx, f, 8, &[0])?;
+            }
+            Some((f, LedApi::Rgb)) => {
+                self.call(idx, f, 5, &[0x01, 0x00, 0x00])?;
+                if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
+                    self.call(idx, onb, 1, &[1])?;
+                }
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Writes the effect into the active onboard profile: fresh read and
+    /// checks, backup file, write, read-back comparison (the previous
+    /// content is written back on a mismatch), then the profile is
+    /// reloaded so the device plays it.
+    fn save_led(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
+        let Some((_, _, wire)) = self.zone_wire(idx, zone, &effect)? else { return Ok(Err(ActionError::NotSupported)) };
+        let (status, profile) = self.onboard_profile(idx)?;
+        let (OnboardStatus::Writable { sector, .. }, Some((f, _, original))) = (status, profile) else {
+            return Ok(Err(ActionError::Onboard(status)));
+        };
+        let Ok(patched) = lighting::patch_profile(&original, zone as usize, effect.profile_entry(wire.id)) else {
+            return Ok(Err(ActionError::Onboard(OnboardStatus::UnknownFormat)));
+        };
+        if patched == original {
+            self.release_leds(idx)?;
+            return Ok(Ok(()));
+        }
+        let id = self.devices.get(&idx).and_then(|s| s.info.as_ref()).map(|i| i.id.clone()).unwrap_or_default();
+        if !self.backup_sector(&id, sector, &original) {
+            return Ok(Err(ActionError::Backup));
+        }
+        log!("[{}] device {}: writing onboard sector {} (zone {}, {:?})", self.tag, idx, sector, zone, effect);
+        let written = self.write_sector(idx, f, sector, &patched)?;
+        let back = self.read_sector(idx, f, sector, patched.len())?;
+        if !written || back.as_deref() != Some(&patched[..]) {
+            log!("[{}] device {}: sector {} did not read back as written, restoring", self.tag, idx, sector);
+            let restored = self.write_sector(idx, f, sector, &original)?;
+            log!("[{}] device {}: restore {}", self.tag, idx, if restored { "done" } else { "FAILED" });
+            return Ok(Err(ActionError::Verify));
+        }
+        // Firmware back in charge, profile reloaded with the new lighting.
+        self.release_leds(idx)?;
+        let [sh, sl] = sector.to_be_bytes();
+        self.call(idx, f, 3, &[sh, sl])?;
+        Ok(Ok(()))
+    }
+
+    /// Saves a sector before it is rewritten; `false` = could not.
+    fn backup_sector(&self, device: &str, sector: u16, bytes: &[u8]) -> bool {
+        let Some(dir) = &self.cfg.backup_dir else { return false };
+        let safe: String = device.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let path = dir.join(format!("{safe}-sector{sector}-{stamp}.bin"));
+        match std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, bytes)) {
+            Ok(()) => {
+                log!("[{}] onboard sector {} saved to {}", self.tag, sector, path.display());
+                true
+            }
+            Err(e) => {
+                log!("[{}] cannot save onboard sector {}: {}", self.tag, sector, e);
+                false
+            }
+        }
+    }
+
+    /// Read-only report of the lighting features and onboard memory.
+    fn diagnose(&mut self, idx: u8) -> io::Result<String> {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        if let Some(info) = self.devices.get(&idx).and_then(|s| s.info.as_ref()) {
+            let _ = writeln!(s, "Batly {} – {} ({:?}), id {}", env!("CARGO_PKG_VERSION"), info.name, info.kind, info.id);
+        }
+        for feature in [FEAT_COLOR_LED_EFFECTS, FEAT_RGB_EFFECTS, 0x8080, 0x8081, FEAT_ONBOARD_PROFILES, 0x8090] {
+            let index = self.feature(idx, feature)?;
+            let _ = writeln!(s, "feature {feature:04X}: {}", index.map_or("absent".into(), |i| format!("index {i}")));
+        }
+        if let Some((f, api)) = self.led_feature(idx)? {
+            for z in self.led_zones(idx, f, api)? {
+                let ids: Vec<String> = z.effects.iter().map(|e| format!("{}:{:02X}", e.index, e.id)).collect();
+                let _ = writeln!(s, "zone {} location {} effects [{}]", z.index, z.location, ids.join(" "));
+            }
+        }
+        if let Some(f) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
+            let desc = self.call(idx, f, 0, &[])?;
+            let _ = writeln!(s, "onboard description: {}", desc.as_deref().map_or("-".into(), log::hex));
+            let mode = self.call(idx, f, 2, &[])?;
+            let _ = writeln!(s, "onboard mode: {}", mode.as_deref().map_or("-".into(), log::hex));
+            let active = self.call(idx, f, 4, &[])?;
+            let _ = writeln!(s, "active profile: {}", active.as_deref().map_or("-".into(), log::hex));
+            if let Some(d) = desc.as_deref().and_then(OnboardDescription::parse) {
+                let size = (d.sector_size as usize).clamp(16, 4096);
+                if let Some(header) = self.read_sector(idx, f, 0, size.min(64))? {
+                    let _ = writeln!(s, "sector 0 (headers):\n{}", lighting::hex_dump(&header));
+                }
+                if let Some(sector) = active.as_deref().map(|p| u16::from_be_bytes([p[0], p[1]])) {
+                    if let Some(bytes) = self.read_sector(idx, f, sector, size)? {
+                        let check = lighting::check_profile(&bytes, size);
+                        let _ = writeln!(s, "sector {sector} ({size} bytes, check {check:?}):\n{}", lighting::hex_dump(&bytes));
+                    }
+                }
+            }
+        }
+        let (status, _) = self.onboard_profile(idx)?;
+        let _ = writeln!(s, "save on device: {status:?}");
+        Ok(s)
     }
 }
 
@@ -1941,6 +2253,18 @@ mod tests {
         rate: u8,
         backlight: [u8; 12],
         wheel: [u8; 3],
+        /// 0x8070: host control flag and last effect written per zone.
+        led_host: u8,
+        led_set: Vec<Vec<u8>>,
+        /// 0x8100: onboard mode, active sector, sectors, write in progress.
+        onboard_mode: u8,
+        active: u16,
+        flash: std::collections::HashMap<u16, Vec<u8>>,
+        writing: Option<(u16, usize, Vec<u8>)>,
+        sector_writes: u32,
+        /// Corrupt the next committed write (flash failure).
+        corrupt_next: bool,
+        reloads: u32,
     }
 
     const NAME: &[u8] = b"G Pro Wireless Gaming Mouse";
@@ -1962,6 +2286,15 @@ mod tests {
                 rate: 1,
                 backlight: [1, 0x1A, 0x28, 0, 0, 4, 60, 0, 30, 0, 0x2C, 1],
                 wheel: [2, 12, 12],
+                led_host: 0,
+                led_set: Vec::new(),
+                onboard_mode: 1,
+                active: 1,
+                flash: [(1u16, crate::lighting::tests::sample_sector())].into_iter().collect(),
+                writing: None,
+                sector_writes: 0,
+                corrupt_next: false,
+                reloads: 0,
             }
         }
 
@@ -2000,6 +2333,8 @@ mod tests {
                         0x8060 => 9,
                         0x1982 => 10,
                         0x2111 => 11,
+                        0x8070 => 12,
+                        0x8100 => 13,
                         _ => 0,
                     };
                     self.reply(req, &[index, 0, 0]);
@@ -2055,6 +2390,67 @@ mod tests {
                     self.reply(req, &[]);
                 }
                 (10, 2) => self.reply(req, &[8]),
+                // 0x8070: two zones (primary, logo), four effects each.
+                (12, 0) => self.reply(req, &[2, 0, 0, 0, 1]),
+                (12, 1) => self.reply(req, &[req[4], 0, req[4] + 1, 4]),
+                (12, 2) => {
+                    let id = [0x00, 0x01, 0x0A, 0x03][req[5] as usize % 4];
+                    self.reply(req, &[req[4], req[5], 0, id, 0, 0, 0, 0]);
+                }
+                (12, 3) => {
+                    assert_eq!(self.led_host, 1, "setZoneEffect before setSWControl");
+                    self.led_set.push(req[4..16].to_vec());
+                    self.reply(req, &[]);
+                }
+                (12, 8) => {
+                    self.led_host = req[4];
+                    self.reply(req, &[]);
+                }
+                // 0x8100: memory 1, format 3, 5 profiles, 16 buttons,
+                // 16 sectors of 255 bytes.
+                (13, 0) => self.reply(req, &[1, 3, 1, 5, 0, 16, 16, 0, 255, 2]),
+                (13, 1) => {
+                    self.onboard_mode = req[4];
+                    self.reply(req, &[]);
+                }
+                (13, 2) => self.reply(req, &[self.onboard_mode]),
+                (13, 3) => {
+                    self.reloads += 1;
+                    self.reply(req, &[]);
+                }
+                (13, 4) => self.reply(req, &self.active.to_be_bytes()),
+                (13, 5) => {
+                    let sector = u16::from_be_bytes([req[4], req[5]]);
+                    let offset = u16::from_be_bytes([req[6], req[7]]) as usize;
+                    let data = self.flash.get(&sector).cloned().unwrap_or_else(|| vec![0xFF; 255]);
+                    let mut p = [0u8; 16];
+                    for (i, b) in p.iter_mut().enumerate() {
+                        *b = data.get(offset + i).copied().unwrap_or(0);
+                    }
+                    self.reply(req, &p);
+                }
+                (13, 6) => {
+                    let sector = u16::from_be_bytes([req[4], req[5]]);
+                    let len = u16::from_be_bytes([req[8], req[9]]) as usize;
+                    self.writing = Some((sector, len, Vec::new()));
+                    self.reply(req, &[]);
+                }
+                (13, 7) => {
+                    assert_eq!(req[0], REPORT_LONG);
+                    let (_, _, buf) = self.writing.as_mut().expect("memoryWrite without memoryAddrWrite");
+                    buf.extend_from_slice(&req[4..20]);
+                    self.reply(req, &[]);
+                }
+                (13, 8) => {
+                    let (sector, len, mut buf) = self.writing.take().expect("memoryWriteEnd without data");
+                    buf.truncate(len);
+                    if std::mem::take(&mut self.corrupt_next) {
+                        buf[10] ^= 0xFF;
+                    }
+                    self.flash.insert(sector, buf);
+                    self.sector_writes += 1;
+                    self.reply(req, &[]);
+                }
                 (11, 1) => self.reply(req, &self.wheel.clone()),
                 (11, 2) => {
                     for (i, v) in req[4..7].iter().enumerate() {
@@ -2207,7 +2603,13 @@ mod tests {
     }
 
     fn settings() -> Settings {
-        Settings { retry: Duration::from_secs(10), poll: Duration::from_secs(600), disabled: vec![], settle: Duration::from_millis(20) }
+        Settings {
+            retry: Duration::from_secs(10),
+            poll: Duration::from_secs(600),
+            disabled: vec![],
+            settle: Duration::from_millis(20),
+            backup_dir: None,
+        }
     }
 
     fn run(fake: Fake, cfg: Settings) -> Vec<Event> {
@@ -2562,6 +2964,130 @@ mod tests {
         let writes = s.transport.writes;
         assert_eq!(get(&mut s), Err(ActionError::Offline));
         assert_eq!(s.transport.writes, writes, "an offline device is not woken up");
+    }
+
+    fn led_session(fake: Fake, backup: Option<PathBuf>) -> (Session<Fake>, String) {
+        let (mut s, _events) = ready(fake, 0xC52B);
+        s.cfg.backup_dir = backup;
+        (s, "DEADBEEF-0102030405".to_string())
+    }
+
+    fn command(s: &mut Session<Fake>, id: &str, setting: Option<Setting>) -> Result<DeviceSettings, ActionError> {
+        let (reply, rx) = mpsc::channel();
+        s.pending.push_back(match setting {
+            Some(setting) => Command::SetSetting { device: id.into(), setting, reply },
+            None => Command::GetSettings { device: id.into(), reply },
+        });
+        settle(s);
+        rx.try_recv().unwrap()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("batly-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn lighting_read_and_preview() {
+        let (mut s, id) = led_session(Fake::new(true), None);
+        let l = command(&mut s, &id, None).unwrap().lighting.unwrap();
+        assert_eq!(l.api, LedApi::Zones);
+        assert_eq!(l.onboard, OnboardStatus::Writable { sector: 1, size: 255 });
+        assert_eq!(l.zones.len(), 2);
+        assert_eq!(l.zones[1].location, 2);
+        assert_eq!(l.zones[0].kinds(), crate::lighting::EffectKind::ALL);
+        // Current effects come from the active profile.
+        assert_eq!(l.zones[0].current.unwrap().color, 0xFF0000);
+        assert_eq!(l.zones[1].current.unwrap().kind, crate::lighting::EffectKind::Breathe);
+
+        let effect = LedEffect { kind: crate::lighting::EffectKind::Breathe, color: 0x123456, period_ms: 2000, intensity: 100 };
+        command(&mut s, &id, Some(Setting::Led { zone: 1, effect, save: false })).unwrap();
+        assert_eq!(s.transport.led_host, 1);
+        // Zone 1, effect index 2 (Breathe), then the parameters.
+        assert_eq!(s.transport.led_set.last().unwrap()[..7], [1, 2, 0x12, 0x34, 0x56, 0x07, 0xD0]);
+        assert_eq!(s.transport.sector_writes, 0, "a preview never writes the memory");
+        command(&mut s, &id, Some(Setting::LedRelease)).unwrap();
+        assert_eq!(s.transport.led_host, 0);
+    }
+
+    #[test]
+    fn lighting_saved_on_device_with_backup_and_check() {
+        let dir = temp_dir("save");
+        let (mut s, id) = led_session(Fake::new(true), Some(dir.clone()));
+        let before = s.transport.flash[&1].clone();
+        let effect = LedEffect { kind: crate::lighting::EffectKind::Cycle, color: 0, period_ms: 6000, intensity: 70 };
+        let st = command(&mut s, &id, Some(Setting::Led { zone: 0, effect, save: true })).unwrap();
+        let after = &s.transport.flash[&1];
+        assert_eq!(crate::lighting::check_profile(after, 255), Ok(()));
+        let saved = crate::lighting::profile_effect(after, 0).unwrap();
+        assert_eq!((saved.kind, saved.period_ms, saved.intensity), (crate::lighting::EffectKind::Cycle, 6000, 70));
+        assert_eq!(after[219..230], before[219..230], "the other zone is untouched");
+        assert_eq!((s.transport.sector_writes, s.transport.reloads), (1, 1));
+        assert_eq!(st.lighting.unwrap().zones[0].current.unwrap().kind, crate::lighting::EffectKind::Cycle);
+        // The previous content was saved first.
+        let backups: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(backups[0].path()).unwrap(), before);
+        // Same effect again: nothing to write.
+        command(&mut s, &id, Some(Setting::Led { zone: 0, effect, save: true })).unwrap();
+        assert_eq!(s.transport.sector_writes, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lighting_save_refused_or_restored() {
+        let effect = LedEffect::default();
+        let save = Setting::Led { zone: 0, effect, save: true };
+
+        // No backup folder: nothing written.
+        let (mut s, id) = led_session(Fake::new(true), None);
+        assert_eq!(command(&mut s, &id, Some(save)), Err(ActionError::Backup));
+        assert_eq!(s.transport.sector_writes, 0);
+
+        // Unknown layout (bad CRC), factory profile, host mode: refused.
+        let dir = temp_dir("refused");
+        let mut fake = Fake::new(true);
+        fake.flash.get_mut(&1).unwrap()[100] ^= 1;
+        let (mut s, id) = led_session(fake, Some(dir.clone()));
+        assert_eq!(command(&mut s, &id, Some(save)), Err(ActionError::Onboard(OnboardStatus::UnknownFormat)));
+        let mut fake = Fake::new(true);
+        fake.active = 0x0101;
+        let (mut s2, _) = led_session(fake, Some(dir.clone()));
+        assert_eq!(command(&mut s2, &id, Some(save)), Err(ActionError::Onboard(OnboardStatus::ReadOnly)));
+        let mut fake = Fake::new(true);
+        fake.onboard_mode = 2;
+        let (mut s3, _) = led_session(fake, Some(dir.clone()));
+        assert_eq!(command(&mut s3, &id, Some(save)), Err(ActionError::Onboard(OnboardStatus::HostMode)));
+        assert_eq!(s.transport.sector_writes + s2.transport.sector_writes + s3.transport.sector_writes, 0);
+        // Zones beyond the profile's two entries.
+        let (mut s4, _) = led_session(Fake::new(true), Some(dir.clone()));
+        let far = Setting::Led { zone: 5, effect, save: true };
+        assert_eq!(command(&mut s4, &id, Some(far)), Err(ActionError::NotSupported));
+
+        // Flash write that does not read back: the original is restored.
+        let mut fake = Fake::new(true);
+        fake.corrupt_next = true;
+        let (mut s5, _) = led_session(fake, Some(dir.clone()));
+        let original = s5.transport.flash[&1].clone();
+        let other = LedEffect { color: 0x00FF00, ..effect };
+        assert_eq!(command(&mut s5, &id, Some(Setting::Led { zone: 0, effect: other, save: true })), Err(ActionError::Verify));
+        assert_eq!(s5.transport.flash[&1], original);
+        assert_eq!(s5.transport.sector_writes, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lighting_diagnostic_is_read_only() {
+        let (mut s, id) = led_session(Fake::new(true), None);
+        let (reply, rx) = mpsc::channel();
+        s.pending.push_back(Command::Diagnose { device: id, reply });
+        settle(&mut s);
+        let text = rx.try_recv().unwrap().unwrap();
+        assert!(text.contains("feature 8070: index 12") && text.contains("feature 8071: absent"), "{text}");
+        assert!(text.contains("zone 1 location 2") && text.contains("check Ok(())"), "{text}");
+        assert!(text.contains("save on device: Writable"), "{text}");
+        assert_eq!(s.transport.sector_writes, 0);
     }
 
     #[test]
