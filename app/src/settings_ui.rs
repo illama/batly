@@ -4,7 +4,6 @@
 
 use crate::config::Config;
 use crate::i18n::{self, tr};
-use crate::model::DeviceKind;
 use crate::win::{self, wide};
 use crate::{hotkey, log};
 use std::cell::RefCell;
@@ -210,7 +209,6 @@ fn fields() -> Vec<Field> {
 pub struct KnownDevice {
     pub id: String,
     pub name: String,
-    pub kind: DeviceKind,
 }
 
 struct Ctl {
@@ -266,7 +264,7 @@ pub fn open(owner: HWND, cfg: &Config, path: PathBuf, mut devices: Vec<KnownDevi
     // Devices only known from the settings file are configurable too.
     for id in cfg.devices.keys().chain(cfg.ui.selected_devices.iter()) {
         if !devices.iter().any(|d| &d.id == id) {
-            devices.push(KnownDevice { id: id.clone(), name: id.clone(), kind: DeviceKind::Other });
+            devices.push(KnownDevice { id: id.clone(), name: id.clone() });
         }
     }
     sort_devices(&mut devices, cfg);

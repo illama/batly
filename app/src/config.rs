@@ -147,7 +147,7 @@ pub struct Mqtt {
     pub discovery_prefix: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Webhooks {
     /// URLs that receive a JSON POST on every alert (low battery, charged…).
@@ -261,11 +261,6 @@ impl Default for Mqtt {
     }
 }
 
-impl Default for Webhooks {
-    fn default() -> Self {
-        Self { urls: Vec::new(), all_changes: false }
-    }
-}
 
 impl Default for Updates {
     fn default() -> Self {

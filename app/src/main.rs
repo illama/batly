@@ -329,7 +329,7 @@ fn main() {
         notice_sinks,
         actions,
         shared_cfg,
-        keep_alive,
+        _keep_alive: keep_alive,
         started_with: cfg.clone(),
     };
 

@@ -139,16 +139,13 @@ impl Engine {
         self.held.push(n);
     }
 
+    #[cfg(test)]
     pub fn has_held(&self) -> bool {
         !self.held.is_empty()
     }
 
     pub fn take_held(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.held)
-    }
-
-    pub fn forget(&mut self, id: &str) {
-        self.devices.remove(id);
     }
 }
 

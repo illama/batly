@@ -453,10 +453,7 @@ mod imp {
                     }
                     node.gatt_level = g.level.or(self.nodes.get(&address).and_then(|n| n.gatt_level));
                 }
-                if !self.appearance.contains_key(&address) {
-                    let appearance = read_appearance(address);
-                    self.appearance.insert(address, appearance);
-                }
+                self.appearance.entry(address).or_insert_with(|| read_appearance(address));
                 node.appearance = self.appearance.get(&address).copied().flatten();
             }
 

@@ -146,7 +146,7 @@ pub struct Services {
     /// Copy of the settings read by other threads (HTTP aliases).
     pub shared_cfg: Arc<std::sync::Mutex<Config>>,
     /// Integrations that stop when dropped (peers, MQTT…).
-    pub keep_alive: Vec<Box<dyn std::any::Any>>,
+    pub _keep_alive: Vec<Box<dyn std::any::Any>>,
 }
 
 struct App {
@@ -293,7 +293,7 @@ impl App {
         } else {
             let visible: Vec<&Device> = devices
                 .iter()
-                .filter(|d| self.cfg.ui.selected_devices.iter().any(|s| *s == d.id))
+                .filter(|d| self.cfg.ui.selected_devices.contains(&d.id))
                 .filter(|d| {
                     hide_above <= 0.0 || plugged(d) || !d.online || d.battery.is_none_or(|b| b.percent <= hide_above)
                 })
@@ -591,7 +591,7 @@ impl App {
             .snapshot()
             .into_iter()
             .filter(|d| d.has_battery || self.cfg.devices.contains_key(&d.id))
-            .map(|d| settings_ui::KnownDevice { id: d.id, name: d.name, kind: d.kind })
+            .map(|d| settings_ui::KnownDevice { id: d.id, name: d.name })
             .collect();
         settings_ui::open(self.hwnd, &self.cfg, self.cfg_path.clone(), devices);
     }
@@ -680,7 +680,7 @@ impl App {
                     _ => String::new(),
                 };
                 let text = format!("{}{}\t{}", self.name(d).replace('&', "&&"), source, i18n::describe(d));
-                let selected = self.cfg.ui.selected_devices.iter().any(|s| *s == d.id);
+                let selected = self.cfg.ui.selected_devices.contains(&d.id);
                 let usable = (d.has_battery || selected) && !self.cfg.ui.single_icon;
                 add(ID_DEVICE_BASE + n, &text, check(selected && !self.cfg.ui.single_icon) | if usable { 0 } else { MF_GRAYED });
             }

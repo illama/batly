@@ -69,12 +69,9 @@ pub struct Url {
 impl Url {
     pub fn parse(url: &str) -> Option<Self> {
         let url = url.trim();
-        let (https, rest) = if let Some(r) = url.strip_prefix("https://") {
-            (true, r)
-        } else if let Some(r) = url.strip_prefix("http://") {
-            (false, r)
-        } else {
-            return None;
+        let (https, rest) = match url.strip_prefix("https://") {
+            Some(r) => (true, r),
+            None => (false, url.strip_prefix("http://")?),
         };
         let rest = rest.split('#').next()?;
         let (authority, path) = match rest.find(['/', '?']) {

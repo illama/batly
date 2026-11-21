@@ -140,6 +140,7 @@ impl History {
     }
 
     /// Forgets a device (and deletes its file).
+    #[cfg(test)]
     pub fn forget(&self, id: &str) {
         self.data.lock().unwrap().remove(id);
         if let Some(path) = self.file(id) {
@@ -257,7 +258,7 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     if v.is_empty() {
         return None;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(f64::total_cmp);
     let n = v.len();
     Some(if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 })
 }

@@ -19,7 +19,7 @@ impl DeviceKind {
     pub fn from_hidpp(code: u8) -> Self {
         match code {
             0 | 2 => Self::Keyboard,
-            3 | 4 | 5 => Self::Mouse,
+            3..=5 => Self::Mouse,
             8 => Self::Headset,
             _ => Self::Other,
         }
