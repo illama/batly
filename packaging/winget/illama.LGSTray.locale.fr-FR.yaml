@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.6.0.schema.json
+# Template: filled in by packaging/update-manifests.sh (do not submit as is).
+PackageIdentifier: illama.LGSTray
+PackageVersion: {{VERSION}}
+PackageLocale: fr-FR
+Publisher: illama
+PublisherUrl: https://github.com/illama
+PublisherSupportUrl: https://github.com/illama/illama_logitechbatteries/issues
+Author: illama et les contributeurs de LGSTray
+PackageName: LGSTray
+PackageUrl: https://github.com/illama/illama_logitechbatteries
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/illama/illama_logitechbatteries/blob/main/LICENSE
+ShortDescription: Niveau de batterie des périphériques Logitech (et autres sans-fil) dans la zone de notification de Windows.
+Description: |-
+  LGSTray affiche le niveau de batterie des souris, claviers et casques Logitech (récepteurs
+  HID++, Bluetooth, G HUB) et d'autres périphériques sans fil dans la zone de notification de
+  Windows, avec notifications de batterie faible et API HTTP locale. Un seul petit exécutable
+  natif écrit en Rust : pas de runtime .NET, pas de processus auxiliaire. Installation par
+  utilisateur, sans droits administrateur.
+Tags:
+  - batterie
+  - logitech
+  - souris
+  - clavier
+  - casque
+  - zone-de-notification
+ReleaseNotesUrl: https://github.com/illama/illama_logitechbatteries/releases/tag/v{{VERSION}}
+ManifestType: locale
+ManifestVersion: 1.6.0

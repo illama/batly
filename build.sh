@@ -2,6 +2,8 @@
 # Builds LGSTray for Windows (x86-64) from Linux, macOS or WSL and produces
 #   dist/LGSTray-Setup-<version>.exe      installer
 #   dist/LGSTray-<version>-portable.zip   portable archive
+#   dist/SHA256SUMS.txt                   checksums (used by the in-app updater)
+#   dist/packages/                        winget / Scoop / Chocolatey manifests
 #
 # Requirements: rustup (target x86_64-pc-windows-gnu), zig, cargo-zigbuild.
 # On Windows, plain `cargo build --release` works as well (MSVC toolchain).
@@ -29,4 +31,5 @@ with zipfile.ZipFile(f"dist/LGSTray-{version}-portable.zip", "w", zipfile.ZIP_DE
 PY
 rm -rf dist/portable
 (cd dist && sha256sum * > SHA256SUMS.txt)
+sh packaging/update-manifests.sh "$VERSION" dist dist/packages >/dev/null
 ls -l dist

@@ -17,6 +17,9 @@ mod icon;
 mod log;
 mod model;
 mod notice;
+mod report;
+mod sha256;
+mod update;
 
 #[cfg(windows)]
 mod native;

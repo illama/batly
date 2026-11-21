@@ -1,0 +1,217 @@
+name: Release
+
+# Pushing a tag "v<version>" (matching Cargo.toml) builds, optionally signs
+# and publishes a *draft* release; the package manifests (winget, Scoop,
+# Chocolatey) are produced as a workflow artifact. Nothing is submitted to
+# the package repositories automatically: see packaging/README.md.
+#
+# Code signing with SignPath (see SIGNING.md) runs only when the secrets
+# SIGNPATH_API_TOKEN and SIGNPATH_ORGANIZATION_ID exist. Optional
+# repository variables: SIGNPATH_PROJECT_SLUG (default "lgstray"),
+# SIGNPATH_POLICY_SLUG ("release-signing"), SIGNPATH_EXE_CONFIG ("exe"),
+# SIGNPATH_SETUP_CONFIG ("installer").
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag against Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::Tag $tag does not match the version in Cargo.toml ($cargo_version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test -p lgstray
+
+      - name: Build lgstray.exe
+        run: cargo build --release -p lgstray
+
+      # ---- 1. sign the application (before it is embedded in the installer)
+      - name: Upload unsigned lgstray.exe
+        id: upload-exe
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-lgstray-exe
+          path: target/release/lgstray.exe
+          if-no-files-found: error
+
+      - name: Sign lgstray.exe (SignPath)
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'lgstray' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_EXE_CONFIG || 'exe' }}
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed/app
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $exe = if ($env:SIGNPATH_ENABLED -eq 'true') { "$PWD\signed\app\lgstray.exe" } else { "$PWD\target\release\lgstray.exe" }
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          New-Item -ItemType Directory -Force staging | Out-Null
+          Copy-Item $exe staging\lgstray.exe
+          $env:LGSTRAY_PAYLOAD = "$PWD\staging\lgstray.exe"
+          cargo build --release -p lgstray-setup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force staging\setup | Out-Null
+          Copy-Item target\release\lgstray-setup.exe "staging\setup\LGSTray-Setup-$env:VERSION.exe"
+
+      # ---- 2. sign the installer
+      - name: Upload unsigned installer
+        id: upload-setup
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: staging/setup/LGSTray-Setup-${{ env.VERSION }}.exe
+          if-no-files-found: error
+
+      - name: Sign the installer (SignPath)
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'lgstray' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_CONFIG || 'installer' }}
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed/setup
+
+      # ---- 3. same layout as build.sh: dist/LGSTray-Setup-<v>.exe,
+      #         dist/LGSTray-<v>-portable.zip, dist/SHA256SUMS.txt
+      - name: Assemble dist/
+        shell: pwsh
+        run: |
+          $setup = if ($env:SIGNPATH_ENABLED -eq 'true') { "signed\setup\LGSTray-Setup-$env:VERSION.exe" } else { "staging\setup\LGSTray-Setup-$env:VERSION.exe" }
+          New-Item -ItemType Directory -Force dist\portable | Out-Null
+          Copy-Item $setup dist\
+          Copy-Item staging\lgstray.exe, packaging\appsettings.toml, README.md, LICENSE dist\portable\
+          $py = @'
+          import hashlib, pathlib, shutil, sys, zipfile
+          version = sys.argv[1]
+          dist = pathlib.Path("dist")
+          with zipfile.ZipFile(dist / f"LGSTray-{version}-portable.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+              for f in sorted((dist / "portable").iterdir()):
+                  z.write(f, f"LGSTray/{f.name}")
+          shutil.rmtree(dist / "portable")
+          lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n" for f in sorted(dist.iterdir()) if f.is_file()]
+          (dist / "SHA256SUMS.txt").write_text("".join(lines), newline="\n")
+          print("".join(lines))
+          '@
+          $py | python - $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check signatures
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          foreach ($f in @("staging\lgstray.exe", "dist\LGSTray-Setup-$env:VERSION.exe")) {
+            $s = Get-AuthenticodeSignature $f
+            Write-Host "$f : $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne 'Valid') { throw "$f is not validly signed" }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+          notes=".github/RELEASE_NOTES_${TAG}.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists: replacing its files"
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+          case "$TAG" in *-*) prerelease=--prerelease ;; *) prerelease= ;; esac
+          if [ -f "$notes" ]; then
+            gh release create "$TAG" dist/* --draft --verify-tag --title "LGSTray $VERSION" $prerelease --notes-file "$notes"
+          else
+            gh release create "$TAG" dist/* --draft --verify-tag --title "LGSTray $VERSION" $prerelease --generate-notes
+          fi
+
+  packages:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Fill the package manifests
+        run: sh packaging/update-manifests.sh "${{ needs.build.outputs.version }}" dist dist/packages
+      - name: Validate them
+        run: |
+          python3 - <<'PY'
+          import glob, json, xml.dom.minidom, yaml
+          for f in glob.glob("dist/packages/winget/**/*.yaml", recursive=True):
+              yaml.safe_load(open(f, encoding="utf-8"))
+          json.load(open("dist/packages/scoop/lgstray.json", encoding="utf-8"))
+          xml.dom.minidom.parse("dist/packages/chocolatey/lgstray.nuspec")
+          print("manifests OK")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ needs.build.outputs.version }}
+          path: dist/packages/
+          if-no-files-found: error
