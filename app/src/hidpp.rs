@@ -1305,7 +1305,9 @@ impl<T: Transport> Session<T> {
                     let mut serial_raw = None;
                     if p[14] & 0x01 != 0 {
                         if let Some(serial) = self.call(idx, f_info, 2, &[])? {
-                            if serial.len() >= 11 {
+                            // Some devices (G502 X PLUS) answer an all-zero
+                            // serial: not an identifier, use the unit id.
+                            if serial.len() >= 11 && serial[..11].iter().any(|&b| b != 0 && b != 0xFF) {
                                 id = Some(hex_upper(&serial[..11]));
                                 serial_raw = Some(serial[..12.min(serial.len())].to_vec());
                             }
@@ -1969,17 +1971,19 @@ impl<T: Transport> Session<T> {
         Ok((OnboardStatus::Writable { sector, size: desc.sector_size }, Some((f, desc, bytes))))
     }
 
-    fn zone_wire(&mut self, idx: u8, zone: u8, effect: &LedEffect) -> io::Result<Option<(u8, LedApi, ZoneEffect)>> {
+    /// Feature, API and wire effect for `effect` on `zone`, with the
+    /// number of zones of the device.
+    fn zone_wire(&mut self, idx: u8, zone: u8, effect: &LedEffect) -> io::Result<Option<(u8, LedApi, ZoneEffect, usize)>> {
         let Some((f, api)) = self.led_feature(idx)? else { return Ok(None) };
         let zones = self.led_zones(idx, f, api)?;
-        Ok(zones.iter().find(|z| z.index == zone).and_then(|z| z.wire(effect.kind)).map(|w| (f, api, w)))
+        Ok(zones.iter().find(|z| z.index == zone).and_then(|z| z.wire(effect.kind)).map(|w| (f, api, w, zones.len())))
     }
 
     /// Shows an effect now: the host takes the LEDs (0x8070 setSWControl,
     /// or 0x8071 SetSWControl after switching onboard profiles to host
     /// mode), then sets the zone effect. [`Setting::LedRelease`] undoes it.
     fn preview_led(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
-        let Some((f, api, wire)) = self.zone_wire(idx, zone, &effect)? else { return Ok(Err(ActionError::NotSupported)) };
+        let Some((f, api, wire, _)) = self.zone_wire(idx, zone, &effect)? else { return Ok(Err(ActionError::NotSupported)) };
         let params = effect.params(wire.id);
         let reply = match api {
             LedApi::Zones => {
@@ -2024,12 +2028,16 @@ impl<T: Transport> Session<T> {
     /// content is written back on a mismatch), then the profile is
     /// reloaded so the device plays it.
     fn save_led(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
-        let Some((_, _, wire)) = self.zone_wire(idx, zone, &effect)? else { return Ok(Err(ActionError::NotSupported)) };
+        let Some((_, _, wire, zones)) = self.zone_wire(idx, zone, &effect)? else { return Ok(Err(ActionError::NotSupported)) };
+        if zone as usize >= lighting::PROFILE_ZONES {
+            return Ok(Err(ActionError::NotSupported));
+        }
         let (status, profile) = self.onboard_profile(idx)?;
         let (OnboardStatus::Writable { sector, .. }, Some((f, _, original))) = (status, profile) else {
             return Ok(Err(ActionError::Onboard(status)));
         };
-        let Ok(patched) = lighting::patch_profile(&original, zone as usize, effect.profile_entry(wire.id)) else {
+        let writes = lighting::profile_writes(zone as usize, zones, &effect, wire.id);
+        let Ok(patched) = lighting::patch_profile(&original, &writes) else {
             return Ok(Err(ActionError::Onboard(OnboardStatus::UnknownFormat)));
         };
         if patched == original {
@@ -2264,6 +2272,8 @@ mod tests {
         sector_writes: u32,
         /// Corrupt the next committed write (flash failure).
         corrupt_next: bool,
+        /// Announce a serial number made of zeros (G502 X PLUS).
+        zero_serial: bool,
         reloads: u32,
     }
 
@@ -2294,6 +2304,7 @@ mod tests {
                 writing: None,
                 sector_writes: 0,
                 corrupt_next: false,
+                zero_serial: false,
                 reloads: 0,
             }
         }
@@ -2352,8 +2363,12 @@ mod tests {
                     p[0] = 2; // firmware entities
                     p[1..5].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
                     p[7..12].copy_from_slice(&[1, 2, 3, 4, 5]);
+                    if self.zero_serial {
+                        p[14] = 0x01; // serial number available…
+                    }
                     self.reply(req, &p);
                 }
+                (3, 2) => self.reply(req, &[0; 12]), // …and all zeros
                 (3, 1) if req[4] == 0 => self.reply(req, &[0, b'R', b'Q', b'M', 0x68, 0x01, 0x00, 0x10, 0, 0x40, 0x93]),
                 (3, 1) => self.reply(req, &[1, b'B', b'O', b'T', 0x01, 0x02, 0, 0]),
                 (6, 0) => {
@@ -2986,6 +3001,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("batly-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn zero_serial_is_not_an_identifier() {
+        let mut fake = Fake::new(true);
+        fake.zero_serial = true;
+        let (s, _events) = ready(fake, 0xC52B);
+        let id = s.devices[&1].info.as_ref().unwrap().id.clone();
+        assert_eq!(id, "DEADBEEF-0102030405");
     }
 
     #[test]
