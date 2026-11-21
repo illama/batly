@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "LGSTray",
+  "Version": "1.0.0.0",
+  "Author": "LGSTray",
+  "Description": "Battery level of your Logitech (and other) devices, from LGSTray.",
+  "URL": "https://github.com/illama/illama_logitechbatteries",
+  "Category": "LGSTray",
+  "CategoryIcon": "imgs/category",
+  "Icon": "imgs/plugin",
+  "CodePath": "plugin/index.html",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.0" },
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "Actions": [
+    {
+      "UUID": "com.illama.lgstray.battery",
+      "Name": "Battery level",
+      "Tooltip": "Shows the battery level of a device. Press to refresh, hold to open the LGSTray page.",
+      "Icon": "imgs/action",
+      "PropertyInspectorPath": "pi/index.html",
+      "SupportedInMultiActions": false,
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/key", "ShowTitle": false }]
+    }
+  ]
+}

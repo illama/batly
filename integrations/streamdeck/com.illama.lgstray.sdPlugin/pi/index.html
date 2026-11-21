@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LGSTray</title>
+<style>
+body{margin:0;padding:8px 10px;background:#2d2d2d;color:#d8d8d8;font:12px "Segoe UI",sans-serif}
+.row{display:flex;align-items:center;margin:0 0 8px}
+.row>label{flex:0 0 92px;color:#9a9a9a}
+.row>input[type=text],.row>input[type=password],.row>select{flex:1;min-width:0;background:#3d3d3d;color:#d8d8d8;border:1px solid #4a4a4a;border-radius:3px;padding:4px 6px;font:inherit}
+.row>button{flex:1;background:#3d3d3d;color:#d8d8d8;border:1px solid #4a4a4a;border-radius:3px;padding:4px;font:inherit;cursor:pointer}
+.hint{color:#8a8a8a;margin:0 0 8px 92px;font-size:11px}
+.error{color:#ef6161}
+</style></head>
+<body>
+<div class="row"><label for="url">LGSTray</label><input type="text" id="url" placeholder="http://localhost:12321"></div>
+<div class="row"><label for="token">Token</label><input type="password" id="token" placeholder="(only for another computer)"></div>
+<div class="row"><label for="device">Device</label><select id="device"></select></div>
+<div class="hint" id="status"></div>
+<div class="row"><label for="showName">Show name</label><input type="checkbox" id="showName" checked></div>
+<div class="row"><label></label><button id="reload">Reload device list</button></div>
+<script src="pi.js"></script>
+</body></html>
