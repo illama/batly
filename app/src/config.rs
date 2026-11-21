@@ -99,7 +99,7 @@ pub struct Http {
     /// Access token required from other computers ("" = none). Requests
     /// from this computer never need it.
     pub token: String,
-    /// Other LGSTray instances to merge into this one, e.g.
+    /// Other Batly instances to merge into this one, e.g.
     /// ["http://living-room-pc:12321"] (add "#token" after the URL if needed).
     pub peers: Vec<String>,
 }
@@ -254,7 +254,7 @@ impl Default for Mqtt {
             port: 1883,
             username: String::new(),
             password: String::new(),
-            base_topic: "lgstray".into(),
+            base_topic: "batly".into(),
             discovery: true,
             discovery_prefix: "homeassistant".into(),
         }
@@ -377,7 +377,7 @@ impl Config {
             s.push('\n');
         };
         let (ui, al, hi, http, mq, wh) = (&self.ui, &self.alerts, &self.history, &self.http, &self.mqtt, &self.webhooks);
-        line("# LGSTray settings - https://toml.io for the syntax (note the \"\" around strings).".into());
+        line("# Batly settings - https://toml.io for the syntax (note the \"\" around strings).".into());
         line("# Changes made here are applied as soon as the file is saved.".into());
         line(String::new());
         line("[UI]".into());
@@ -427,7 +427,7 @@ impl Config {
         line(format!("useIpv6 = {}", http.use_ipv6));
         line("# Token required from other computers: ?token=... or \"Authorization: Bearer ...\" (\"\" = none)".into());
         line(format!("token = {}", quote(&http.token)));
-        line("# Other LGSTray instances shown here too, e.g. [\"http://living-room-pc:12321\"]".into());
+        line("# Other Batly instances shown here too, e.g. [\"http://living-room-pc:12321\"]".into());
         line("# (append \"#token\" to the URL when that instance requires one)".into());
         line(format!("peers = {}", array(&http.peers)));
         line(String::new());
@@ -528,11 +528,11 @@ fn array(items: &[String]) -> String {
 }
 
 /// Settings live next to the executable when a file is already there
-/// (portable mode), otherwise in `%APPDATA%\LGSTray`.
+/// (portable mode), otherwise in `%APPDATA%\Batly`.
 pub fn locate(exe_dir: &Path, appdata: Option<PathBuf>) -> PathBuf {
     let portable = exe_dir.join(FILE_NAME);
     match appdata {
-        Some(dir) if !portable.exists() => dir.join("LGSTray").join(FILE_NAME),
+        Some(dir) if !portable.exists() => dir.join("Batly").join(FILE_NAME),
         _ => portable,
     }
 }
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn save_and_load() {
-        let dir = std::env::temp_dir().join(format!("lgstray-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-test-{}", std::process::id()));
         let path = dir.join("sub").join(FILE_NAME);
         let cfg = Config::load(&path).unwrap();
         assert_eq!(cfg, Config::default());
@@ -612,7 +612,7 @@ mod tests {
         cfg2.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), cfg2);
         assert_eq!(locate(path.parent().unwrap(), Some(dir.clone())), path);
-        assert_eq!(locate(&dir, Some(dir.clone())), dir.join("LGSTray").join(FILE_NAME));
+        assert_eq!(locate(&dir, Some(dir.clone())), dir.join("Batly").join(FILE_NAME));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

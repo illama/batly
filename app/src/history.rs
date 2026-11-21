@@ -158,7 +158,7 @@ fn file_name(id: &str) -> String {
 }
 
 fn header(id: &str) -> String {
-    format!("# LGSTray history of {id}\n# unix_seconds,percent,status,millivolts\n")
+    format!("# Batly history of {id}\n# unix_seconds,percent,status,millivolts\n")
 }
 
 fn line(s: &Sample) -> String {
@@ -220,7 +220,7 @@ impl Segment {
 
 /// Splits the readings into discharge and charge segments. A discharge
 /// segment ends when the device is plugged in or the level jumps up (it was
-/// charged while LGSTray was not looking); a charge segment ends when the
+/// charged while Batly was not looking); a charge segment ends when the
 /// device is unplugged or full.
 fn segments(samples: &[Sample]) -> (Vec<Segment>, Vec<Segment>, Vec<(Segment, bool)>) {
     let mut discharge = Vec::new();
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn store_on_disk() {
-        let dir = std::env::temp_dir().join(format!("lgstray-history-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-history-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut d = Device {
             id: "dev/1 é".into(),
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn retention_compacts_old_lines() {
-        let dir = std::env::temp_dir().join(format!("lgstray-history-ret-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-history-ret-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let old = now() - 400 * DAY;

@@ -1,4 +1,4 @@
-# LGSTray settings - https://toml.io for the syntax (note the "" around strings).
+# Batly settings - https://toml.io for the syntax (note the "" around strings).
 # Changes made here are applied as soon as the file is saved.
 
 [UI]
@@ -48,7 +48,7 @@ port = 12321
 useIpv6 = true
 # Token required from other computers: ?token=... or "Authorization: Bearer ..." ("" = none)
 token = ""
-# Other LGSTray instances shown here too, e.g. ["http://living-room-pc:12321"]
+# Other Batly instances shown here too, e.g. ["http://living-room-pc:12321"]
 # (append "#token" to the URL when that instance requires one)
 peers = []
 
@@ -88,7 +88,7 @@ host = ""
 port = 1883
 username = ""
 password = ""
-baseTopic = "lgstray"
+baseTopic = "batly"
 discovery = true
 discoveryPrefix = "homeassistant"
 

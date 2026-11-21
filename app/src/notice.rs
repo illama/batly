@@ -13,7 +13,7 @@ pub enum NoticeKind {
     Charged,
     /// Offline for longer than the configured delay.
     Offline,
-    /// A new LGSTray version is available.
+    /// A new Batly version is available.
     Update,
 }
 

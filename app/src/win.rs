@@ -16,10 +16,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SW_SHOWNORMAL,
 };
 
-pub const APP_NAME: &str = "LGSTray";
-pub const WINDOW_CLASS: &str = "LGSTrayRsWindow";
+pub const APP_NAME: &str = "Batly";
+pub const WINDOW_CLASS: &str = "BatlyWindow";
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\LGSTray";
+pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Batly";
 
 /// NUL-terminated UTF-16.
 pub fn wide(s: &str) -> Vec<u16> {
@@ -163,7 +163,7 @@ pub fn appdata() -> Option<PathBuf> {
 }
 
 pub fn start_menu_shortcut() -> Option<PathBuf> {
-    appdata().map(|p| p.join(r"Microsoft\Windows\Start Menu\Programs").join("LGSTray.lnk"))
+    appdata().map(|p| p.join(r"Microsoft\Windows\Start Menu\Programs").join("Batly.lnk"))
 }
 
 pub fn message_box(title: &str, text: &str) {

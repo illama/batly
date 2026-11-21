@@ -1,5 +1,5 @@
-// LGSTray Stream Deck plugin (SDK v2, HTML/JS): shows a device's battery
-// level on a key. Live updates through LGSTray's /api/events (Server-Sent
+// Batly Stream Deck plugin (SDK v2, HTML/JS): shows a device's battery
+// level on a key. Live updates through Batly's /api/events (Server-Sent
 // Events); falls back to polling /api/devices every 30 s.
 /* global WebSocket, EventSource */
 'use strict';
@@ -129,7 +129,7 @@ function draw(context) {
 
   // Name.
   if (s.showName !== false) {
-    var name = d ? (d.alias || d.name) : (s.device || 'LGSTray');
+    var name = d ? (d.alias || d.name) : (s.device || 'Batly');
     g.fillStyle = '#a4a9b1';
     g.font = '600 19px "Segoe UI", sans-serif';
     g.textAlign = 'center';

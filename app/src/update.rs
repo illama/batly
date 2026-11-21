@@ -15,9 +15,9 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const REPO: &str = "illama/illama_logitechbatteries";
+pub const REPO: &str = "illama/batly";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
-const LATEST_URL: &str = "https://api.github.com/repos/illama/illama_logitechbatteries/releases/latest";
+const LATEST_URL: &str = "https://api.github.com/repos/illama/batly/releases/latest";
 const STAMP_FILE: &str = "update-check.txt";
 const SUMS_FILE: &str = "SHA256SUMS.txt";
 /// Minimum delay between two automatic checks.
@@ -29,7 +29,7 @@ pub struct Release {
     pub version: String,
     /// Release notes (Markdown).
     pub notes: String,
-    /// `LGSTray-Setup-<version>.exe` download URL.
+    /// `Batly-Setup-<version>.exe` download URL.
     pub setup_url: String,
     /// `SHA256SUMS.txt` download URL ("" if the release has none).
     pub sums_url: String,
@@ -97,7 +97,7 @@ pub fn parse_release(json: &str) -> Option<Release> {
         let (Some(name), Some(url)) = (asset["name"].as_str(), asset["browser_download_url"].as_str()) else { continue };
         if name.eq_ignore_ascii_case(SUMS_FILE) {
             sums_url = url.into();
-        } else if name.starts_with("LGSTray-Setup") && name.to_ascii_lowercase().ends_with(".exe") {
+        } else if name.starts_with("Batly-Setup") && name.to_ascii_lowercase().ends_with(".exe") {
             setup_url = url.into();
         }
     }
@@ -251,7 +251,7 @@ fn remove_old_installers() {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("LGSTray-Setup-") && name.to_ascii_lowercase().ends_with(".exe") {
+        if name.starts_with("Batly-Setup-") && name.to_ascii_lowercase().ends_with(".exe") {
             // Fails harmlessly while that installer is still running.
             let _ = std::fs::remove_file(entry.path());
         }
@@ -304,7 +304,7 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
         return Err(format!("invalid version {}", release.version));
     }
     let name = file_name(&release.setup_url);
-    if !release.setup_url.starts_with("https://") || !name.starts_with("LGSTray-Setup") || !name.to_ascii_lowercase().ends_with(".exe") {
+    if !release.setup_url.starts_with("https://") || !name.starts_with("Batly-Setup") || !name.to_ascii_lowercase().ends_with(".exe") {
         return Err(format!("unexpected installer URL: {}", release.setup_url));
     }
     if release.sums_url.is_empty() {
@@ -384,11 +384,11 @@ mod tests {
 
     const RELEASE: &str = r###"{
         "tag_name": "v4.1.0", "draft": false, "prerelease": false,
-        "html_url": "https://github.com/illama/illama_logitechbatteries/releases/tag/v4.1.0",
+        "html_url": "https://github.com/illama/batly/releases/tag/v4.1.0",
         "body": "## Nouveautés\r\n- tout",
         "assets": [
-            {"name": "LGSTray-4.1.0-portable.zip", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/LGSTray-4.1.0-portable.zip"},
-            {"name": "LGSTray-Setup-4.1.0.exe", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/LGSTray-Setup-4.1.0.exe"},
+            {"name": "Batly-4.1.0-portable.zip", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/Batly-4.1.0-portable.zip"},
+            {"name": "Batly-Setup-4.1.0.exe", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/Batly-Setup-4.1.0.exe"},
             {"name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/SHA256SUMS.txt"}
         ]
     }"###;
@@ -398,14 +398,14 @@ mod tests {
         let r = parse_release(RELEASE).unwrap();
         assert_eq!(r.version, "4.1.0");
         assert_eq!(r.notes, "## Nouveautés\n- tout");
-        assert!(r.setup_url.ends_with("/LGSTray-Setup-4.1.0.exe") && r.sums_url.ends_with("/SHA256SUMS.txt"));
+        assert!(r.setup_url.ends_with("/Batly-Setup-4.1.0.exe") && r.sums_url.ends_with("/SHA256SUMS.txt"));
         assert!(r.page_url.ends_with("/tag/v4.1.0"));
-        assert_eq!(file_name(&r.setup_url), "LGSTray-Setup-4.1.0.exe");
+        assert_eq!(file_name(&r.setup_url), "Batly-Setup-4.1.0.exe");
 
         assert!(parse_release(&RELEASE.replace("\"prerelease\": false", "\"prerelease\": true")).is_none());
         assert!(parse_release(&RELEASE.replace("\"draft\": false", "\"draft\": true")).is_none());
         assert!(parse_release(&RELEASE.replace("v4.1.0\"", "v4.1.0-rc.1\"")).is_none());
-        assert!(parse_release(&RELEASE.replace("LGSTray-Setup-4.1.0.exe\"", "other.exe\"")).is_none());
+        assert!(parse_release(&RELEASE.replace("Batly-Setup-4.1.0.exe\"", "other.exe\"")).is_none());
         assert!(parse_release("{\"message\": \"API rate limit exceeded\"}").is_none());
         assert!(parse_release("not json").is_none());
     }
@@ -415,16 +415,16 @@ mod tests {
         let data = b"installer bytes";
         let hash = sha256::hex_digest(data);
         let sums = format!(
-            "{}  LGSTray-4.1.0-portable.zip\n{}  LGSTray-Setup-4.1.0.exe\r\n",
+            "{}  Batly-4.1.0-portable.zip\n{}  Batly-Setup-4.1.0.exe\r\n",
             "0".repeat(64),
             hash.to_uppercase()
         );
-        assert_eq!(parse_sums(&sums, "LGSTray-Setup-4.1.0.exe"), Some(hash.clone()));
-        assert_eq!(parse_sums(&format!("{hash} *dist/LGSTray-Setup-4.1.0.exe"), "LGSTray-Setup-4.1.0.exe"), Some(hash.clone()));
-        assert_eq!(parse_sums(&sums, "LGSTray-Setup-4.0.0.exe"), None);
-        assert_eq!(parse_sums("abc  LGSTray-Setup-4.1.0.exe", "LGSTray-Setup-4.1.0.exe"), None);
-        assert!(verify(data, &sums, "LGSTray-Setup-4.1.0.exe").is_ok());
-        assert!(verify(b"tampered", &sums, "LGSTray-Setup-4.1.0.exe").is_err());
+        assert_eq!(parse_sums(&sums, "Batly-Setup-4.1.0.exe"), Some(hash.clone()));
+        assert_eq!(parse_sums(&format!("{hash} *dist/Batly-Setup-4.1.0.exe"), "Batly-Setup-4.1.0.exe"), Some(hash.clone()));
+        assert_eq!(parse_sums(&sums, "Batly-Setup-4.0.0.exe"), None);
+        assert_eq!(parse_sums("abc  Batly-Setup-4.1.0.exe", "Batly-Setup-4.1.0.exe"), None);
+        assert!(verify(data, &sums, "Batly-Setup-4.1.0.exe").is_ok());
+        assert!(verify(b"tampered", &sums, "Batly-Setup-4.1.0.exe").is_err());
         assert!(verify(data, &sums, "missing.exe").is_err());
     }
 
@@ -436,7 +436,7 @@ mod tests {
         assert!(due(1_000_000, Some(1_000_000 - day)));
         assert!(due(1_000_000, Some(2_000_000)));
 
-        let dir = std::env::temp_dir().join(format!("lgstray-upd-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-upd-{}", std::process::id()));
         let path = dir.join(STAMP_FILE);
         write_stamp(&path, 1234);
         assert_eq!(read_stamp(&path), Some(1234));

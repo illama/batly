@@ -9,7 +9,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-pub const USER_AGENT: &str = concat!("LGSTray/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("Batly/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug)]
 pub struct Reply {

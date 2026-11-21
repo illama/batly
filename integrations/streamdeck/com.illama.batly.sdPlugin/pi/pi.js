@@ -1,4 +1,4 @@
-// Property inspector of the LGSTray action: LGSTray address, token and the
+// Property inspector of the Batly action: Batly address, token and the
 // device to show (list read from /api/devices).
 /* global WebSocket */
 'use strict';
@@ -46,7 +46,7 @@ function loadDevices() {
     })
     .catch(function (e) {
       status.className = 'hint error';
-      status.textContent = 'Cannot reach LGSTray (' + e.message + '). Is the HTTP server enabled?';
+      status.textContent = 'Cannot reach Batly (' + e.message + '). Is the HTTP server enabled?';
       if (!sel.options.length) sel.appendChild(option(settings.device || '', settings.device || 'Lowest battery (automatic)'));
     });
 }

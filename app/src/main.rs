@@ -1,4 +1,4 @@
-//! LGSTray – battery levels of Logitech (and other) devices in the Windows
+//! Batly – battery levels of Logitech (and other) devices in the Windows
 //! notification area.
 //!
 //! A from-scratch Rust implementation of LGSTrayBattery: a single small
@@ -54,7 +54,7 @@ mod win;
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("LGSTray only runs on Windows.");
+    eprintln!("Batly only runs on Windows.");
     std::process::exit(1);
 }
 
@@ -66,7 +66,7 @@ pub fn system_language() -> i18n::Lang {
     i18n::Lang::from_langid(unsafe { GetUserDefaultUILanguage() } & 0x3FF)
 }
 
-/// `lgstray --status [--json]`: prints the devices of the running instance.
+/// `batly --status [--json]`: prints the devices of the running instance.
 #[cfg(windows)]
 fn print_status(cfg: &config::Config, as_json: bool) -> i32 {
     use std::io::Write;
@@ -78,12 +78,12 @@ fn print_status(cfg: &config::Config, as_json: bool) -> i32 {
     let reply = if cfg.http.enabled { fetch::get(&url, &[], std::time::Duration::from_secs(3)).ok() } else { None };
     let Some(reply) = reply.filter(|r| r.ok()) else {
         let _ = writeln!(out, "{}", i18n::tr([
-            "LGSTray is not running (or its web server is disabled).",
-            "LGSTray n'est pas lancé (ou son serveur web est désactivé).",
-            "LGSTray läuft nicht (oder sein Webserver ist deaktiviert).",
-            "LGSTray no se está ejecutando (o su servidor web está desactivado).",
-            "LGSTray non è in esecuzione (o il suo server web è disattivato).",
-            "O LGSTray não está em execução (ou o servidor web está desativado).",
+            "Batly is not running (or its web server is disabled).",
+            "Batly n'est pas lancé (ou son serveur web est désactivé).",
+            "Batly läuft nicht (oder sein Webserver ist deaktiviert).",
+            "Batly no se está ejecutando (o su servidor web está desactivado).",
+            "Batly non è in esecuzione (o il suo server web è disattivato).",
+            "O Batly não está em execução (ou o servidor web está desativado).",
         ]));
         return 2;
     };
@@ -178,7 +178,7 @@ fn main() {
     for attempt in 0..tries {
         // SAFETY: valid NUL-terminated name.
         unsafe {
-            let mutex = CreateMutexW(null(), 0, win::wide("Local\\LGSTray-rs-instance").as_ptr());
+            let mutex = CreateMutexW(null(), 0, win::wide("Local\\Batly-instance").as_ptr());
             if !mutex.is_null() && GetLastError() != ERROR_ALREADY_EXISTS {
                 acquired = true;
                 break;
@@ -218,8 +218,8 @@ fn main() {
     }
 
     if has("debug") {
-        log::init(&cfg_path.with_file_name("lgstray.log"));
-        log!("LGSTray {} - settings: {}", http::VERSION, cfg_path.display());
+        log::init(&cfg_path.with_file_name("batly.log"));
+        log!("Batly {} - settings: {}", http::VERSION, cfg_path.display());
     }
 
     let cfg = match Config::load(&cfg_path) {

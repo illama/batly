@@ -37,7 +37,7 @@ pub const CMD_RECEIVERS: usize = 9005;
 /// `CMD_DEVICE + n`: click on the n-th row.
 pub const CMD_DEVICE: usize = 9100;
 
-const CLASS: &str = "LGSTrayPanel";
+const CLASS: &str = "BatlyPanel";
 const WIDTH: i32 = 380;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -137,7 +137,7 @@ fn open(owner: HWND, content: Content, anchor: Option<POINT>) {
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             class_name.as_ptr(),
-            wide("LGSTray").as_ptr(),
+            wide("Batly").as_ptr(),
             WS_POPUP,
             0,
             0,
@@ -273,7 +273,7 @@ fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i3
 
     // Header.
     ui::text(dc, &title, p.fg, &c.title, rect(px(18), px(14), w - px(18), px(40)), DT_LEFT | DT_VCENTER);
-    ui::text(dc, &small, p.sub, &format!("LGSTray {}", crate::http::VERSION), rect(px(18), px(14), w - px(18), px(40)), DT_RIGHT | DT_VCENTER);
+    ui::text(dc, &small, p.sub, &format!("Batly {}", crate::http::VERSION), rect(px(18), px(14), w - px(18), px(40)), DT_RIGHT | DT_VCENTER);
 
     // Device rows.
     let mut y = px(52);

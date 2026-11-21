@@ -4,7 +4,7 @@
 //! * `<base>/status`        – `online` (retained), `offline` as last will
 //! * `<base>/<id>/state`    – device JSON (same as `/api/device/{id}`), retained
 //! * `<base>/alert`         – alerts (`Notice`), not retained
-//! * `<prefix>/sensor/lgstray_<id>/battery/config` … – discovery, retained
+//! * `<prefix>/sensor/batly_<id>/battery/config` … – discovery, retained
 
 use crate::config;
 use crate::http::{self, Context};
@@ -84,7 +84,7 @@ fn run(cfg: &config::Mqtt, ctx: &Context, rx: &mpsc::Receiver<Msg>) {
 /// One connection; Ok when asked to stop.
 fn session(cfg: &config::Mqtt, ctx: &Context, rx: &mpsc::Receiver<Msg>, delay: &mut Duration) -> io::Result<()> {
     let base = cfg.base_topic.trim().trim_end_matches('/');
-    let base = if base.is_empty() { "lgstray" } else { base };
+    let base = if base.is_empty() { "batly" } else { base };
     let addr = (cfg.host.trim(), cfg.port)
         .to_socket_addrs()?
         .next()
@@ -93,7 +93,7 @@ fn session(cfg: &config::Mqtt, ctx: &Context, rx: &mpsc::Receiver<Msg>, delay: &
     s.set_read_timeout(Some(Duration::from_secs(10)))?;
     s.set_write_timeout(Some(Duration::from_secs(10)))?;
     let _ = s.set_nodelay(true);
-    let client_id = format!("lgstray-{}", &ctx.instance[..ctx.instance.len().min(12)]);
+    let client_id = format!("batly-{}", &ctx.instance[..ctx.instance.len().min(12)]);
     let status = format!("{base}/status");
     s.write_all(&connect_packet(&client_id, &cfg.username, &cfg.password, &status, b"offline", KEEP_ALIVE))?;
     let (kind, body) = read_packet(&mut s)?;
@@ -192,18 +192,18 @@ pub fn discovery(cfg: &config::Mqtt, base: &str, ctx: &Context, d: &Device) -> V
     let prefix = if prefix.is_empty() { "homeassistant" } else { prefix };
     let tid = topic_id(&d.id);
     let device = json!({
-        "identifiers": [format!("lgstray_{tid}")],
+        "identifiers": [format!("batly_{tid}")],
         "name": ctx.name(d),
         "model": d.info.model.clone().unwrap_or_else(|| d.name.clone()),
-        "manufacturer": "LGSTray",
+        "manufacturer": "Batly",
         "sw_version": d.info.firmware,
         "suggested_area": d.info.host,
     });
     let entity = |component: &str, key: &str, name: &str, extra: Value| {
         let mut v = json!({
             "name": name,
-            "unique_id": format!("lgstray_{tid}_{key}"),
-            "object_id": format!("lgstray_{tid}_{key}"),
+            "unique_id": format!("batly_{tid}_{key}"),
+            "object_id": format!("batly_{tid}_{key}"),
             "state_topic": format!("{base}/{tid}/state"),
             "availability_topic": format!("{base}/status"),
             "json_attributes_topic": format!("{base}/{tid}/state"),
@@ -212,7 +212,7 @@ pub fn discovery(cfg: &config::Mqtt, base: &str, ctx: &Context, d: &Device) -> V
         if let (Some(obj), Value::Object(more)) = (v.as_object_mut(), extra) {
             obj.extend(more);
         }
-        (format!("{prefix}/{component}/lgstray_{tid}/{key}/config"), v.to_string())
+        (format!("{prefix}/{component}/batly_{tid}/{key}/config"), v.to_string())
     };
     vec![
         entity("sensor", "battery", "Battery", json!({
@@ -411,18 +411,18 @@ mod tests {
         let ctx = ctx();
         let cfg = config::Mqtt::default();
         let d = ctx.hub.find("dev 1").unwrap();
-        let msgs = discovery(&cfg, "lgstray", &ctx, &d);
+        let msgs = discovery(&cfg, "batly", &ctx, &d);
         let topics: Vec<&str> = msgs.iter().map(|(t, _)| t.as_str()).collect();
-        assert!(topics.contains(&"homeassistant/sensor/lgstray_dev_1/battery/config"));
-        assert!(topics.contains(&"homeassistant/binary_sensor/lgstray_dev_1/charging/config"));
-        assert!(topics.contains(&"homeassistant/sensor/lgstray_dev_1/voltage/config"));
-        assert!(topics.contains(&"homeassistant/sensor/lgstray_dev_1/time_left/config"));
+        assert!(topics.contains(&"homeassistant/sensor/batly_dev_1/battery/config"));
+        assert!(topics.contains(&"homeassistant/binary_sensor/batly_dev_1/charging/config"));
+        assert!(topics.contains(&"homeassistant/sensor/batly_dev_1/voltage/config"));
+        assert!(topics.contains(&"homeassistant/sensor/batly_dev_1/time_left/config"));
         let v: Value = serde_json::from_str(&msgs[0].1).unwrap();
         assert_eq!(v["device_class"], "battery");
-        assert_eq!(v["state_topic"], "lgstray/dev_1/state");
-        assert_eq!(v["availability_topic"], "lgstray/status");
+        assert_eq!(v["state_topic"], "batly/dev_1/state");
+        assert_eq!(v["availability_topic"], "batly/status");
         assert_eq!(v["device"]["name"], "Souris");
-        assert_eq!(v["device"]["identifiers"][0], "lgstray_dev_1");
+        assert_eq!(v["device"]["identifiers"][0], "batly_dev_1");
     }
 
     /// Fake broker: checks CONNECT, records the PUBLISH packets.
@@ -475,7 +475,7 @@ mod tests {
         let (state, retained) = wait_topic("home/lgs/dev_1/state", &|_| true);
         let v: Value = serde_json::from_slice(&state).unwrap();
         assert!(retained && v["battery_percent"] == 64 && v["alias"] == "Souris");
-        wait_topic("homeassistant/sensor/lgstray_dev_1/battery/config", &|_| true);
+        wait_topic("homeassistant/sensor/batly_dev_1/battery/config", &|_| true);
 
         ctx.hub.publish(Event::Update {
             id: "dev 1".into(),

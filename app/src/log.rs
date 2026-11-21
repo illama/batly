@@ -1,9 +1,9 @@
-//! Optional log, written next to the settings (`lgstray.log`).
+//! Optional log, written next to the settings (`batly.log`).
 //!
-//! Enabled at startup by `lgstray.exe --debug`, or at any time with
+//! Enabled at startup by `batly.exe --debug`, or at any time with
 //! [`enable`] (e.g. from a menu). The file is appended to and rotated once
 //! it grows past [`MAX_SIZE`]: the previous content is kept as
-//! `lgstray.log.old`, so the log never takes more than about twice that.
+//! `batly.log.old`, so the log never takes more than about twice that.
 
 use std::fmt::Arguments;
 use std::fs::{File, OpenOptions};
@@ -59,7 +59,7 @@ pub fn enable(path: &Path) -> bool {
     if sink.size >= MAX_SIZE {
         rotate(&mut sink);
     }
-    let _ = writeln!(sink.file, "----- {} LGSTray {}", crate::http::iso8601(SystemTime::now()), env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(sink.file, "----- {} Batly {}", crate::http::iso8601(SystemTime::now()), env!("CARGO_PKG_VERSION"));
     if let Ok(mut guard) = SINK.lock() {
         *guard = Some(sink);
         ENABLED.store(true, Ordering::Release);
@@ -132,10 +132,10 @@ mod tests {
     // The logger is global: everything is checked in a single test.
     #[test]
     fn enable_write_rotate() {
-        let dir = std::env::temp_dir().join(format!("lgstray-log-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("lgstray.log");
+        let path = dir.join("batly.log");
 
         assert!(!enabled());
         crate::log!("dropped");
@@ -143,7 +143,7 @@ mod tests {
         assert!(enabled() && super::path().as_deref() == Some(path.as_path()));
         crate::log!("hello {}", 42);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("LGSTray") && text.contains("] hello 42\n") && !text.contains("dropped"));
+        assert!(text.contains("Batly") && text.contains("] hello 42\n") && !text.contains("dropped"));
 
         let chunk = "x".repeat(1000);
         for _ in 0..1100 {

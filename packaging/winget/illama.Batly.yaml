@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
 # Template: filled in by packaging/update-manifests.sh (do not submit as is).
-PackageIdentifier: illama.LGSTray
+PackageIdentifier: illama.Batly
 PackageVersion: {{VERSION}}
 DefaultLocale: en-US
 ManifestType: version

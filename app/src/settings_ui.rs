@@ -22,7 +22,7 @@ use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi}
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-const CLASS: &str = "LGSTraySettings";
+const CLASS: &str = "BatlySettings";
 const ID_SAVE: usize = 1;
 const ID_CANCEL: usize = 2;
 const ID_RAW: usize = 3;
@@ -285,7 +285,7 @@ pub fn open(owner: HWND, cfg: &Config, path: PathBuf, mut devices: Vec<KnownDevi
         class.hbrBackground = (COLOR_WINDOW + 1) as _;
         class.hIcon = LoadIconW(instance, 1 as _);
         RegisterClassW(&class);
-        let title = format!("LGSTray – {}", tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]));
+        let title = format!("Batly – {}", tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]));
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             class_name.as_ptr(),
@@ -581,7 +581,7 @@ fn select_device(index: Option<usize>) {
         let mut s = s.borrow_mut();
         let st = s.as_mut()?;
         if let Err(e) = commit_device(st) {
-            win::message_box("LGSTray", &e);
+            win::message_box("Batly", &e);
         }
         st.selected = index.filter(|i| *i < st.devices.len());
         let id = st.selected.map(|i| st.devices[i].id.clone());
@@ -690,7 +690,7 @@ fn save() -> bool {
         }
         Some(Err(e)) => {
             log!("settings: {e}");
-            win::message_box("LGSTray", &e);
+            win::message_box("Batly", &e);
             false
         }
         None => false,

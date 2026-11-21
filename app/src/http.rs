@@ -9,7 +9,7 @@
 //! * `GET /api/history/{id}?days=N` – readings and statistics (JSON)
 //! * `GET /metrics`                 – Prometheus text format
 //!
-//! `?local=1` leaves out the devices of other LGSTray instances: peers use
+//! `?local=1` leaves out the devices of other Batly instances: peers use
 //! it so that two instances merging each other do not loop. When a token is
 //! set, requests that do not come from this computer need `?token=` or
 //! `Authorization: Bearer`.
@@ -541,15 +541,15 @@ pub fn prom_escape(s: &str) -> String {
 pub fn metrics(ctx: &Context, local: bool) -> String {
     type Metric = fn(&Device, &Estimate) -> Option<f64>;
     let families: [(&str, &str, Metric); 9] = [
-        ("lgstray_battery_percent", "Battery level (0-100).", |d, _| d.battery.map(|b| b.percent as f64)),
-        ("lgstray_battery_voltage_volts", "Battery voltage.", |d, _| d.battery?.millivolts.map(|mv| mv as f64 / 1000.0)),
-        ("lgstray_charging", "1 while charging.", |d, _| d.battery.map(|b| (b.status == Status::Charging) as u8 as f64)),
-        ("lgstray_online", "1 when the device answers.", |d, _| Some(d.online as u8 as f64)),
-        ("lgstray_time_left_hours", "Estimated time until empty.", |_, e| e.time_left_hours),
-        ("lgstray_time_to_full_hours", "Estimated time until full.", |_, e| e.time_to_full_hours),
-        ("lgstray_battery_health_percent", "Full-charge runtime compared with the first weeks.", |_, e| e.stats.health_percent),
-        ("lgstray_battery_cycles", "Full-charge equivalents recorded.", |_, e| Some(e.stats.cycles).filter(|_| e.stats.samples > 1)),
-        ("lgstray_last_update_timestamp_seconds", "Time of the last reading.", |d, _| {
+        ("batly_battery_percent", "Battery level (0-100).", |d, _| d.battery.map(|b| b.percent as f64)),
+        ("batly_battery_voltage_volts", "Battery voltage.", |d, _| d.battery?.millivolts.map(|mv| mv as f64 / 1000.0)),
+        ("batly_charging", "1 while charging.", |d, _| d.battery.map(|b| (b.status == Status::Charging) as u8 as f64)),
+        ("batly_online", "1 when the device answers.", |d, _| Some(d.online as u8 as f64)),
+        ("batly_time_left_hours", "Estimated time until empty.", |_, e| e.time_left_hours),
+        ("batly_time_to_full_hours", "Estimated time until full.", |_, e| e.time_to_full_hours),
+        ("batly_battery_health_percent", "Full-charge runtime compared with the first weeks.", |_, e| e.stats.health_percent),
+        ("batly_battery_cycles", "Full-charge equivalents recorded.", |_, e| Some(e.stats.cycles).filter(|_| e.stats.samples > 1)),
+        ("batly_last_update_timestamp_seconds", "Time of the last reading.", |d, _| {
             d.last_update.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|t| t.as_secs() as f64)
         }),
     ];
@@ -570,7 +570,7 @@ pub fn metrics(ctx: &Context, local: bool) -> String {
         })
         .map(|(e, labels, d)| (d, e, labels))
         .collect();
-    let mut s = format!("# HELP lgstray_info LGSTray version.\n# TYPE lgstray_info gauge\nlgstray_info{{version=\"{VERSION}\"}} 1\n");
+    let mut s = format!("# HELP batly_info Batly version.\n# TYPE batly_info gauge\nbatly_info{{version=\"{VERSION}\"}} 1\n");
     for (name, help, value) in families {
         s.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n"));
         for (d, e, labels) in &devices {
@@ -727,7 +727,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         let title = tr(["Battery levels", "Niveaux de batterie", "Akkustände", "Niveles de batería", "Livelli della batteria", "Níveis de bateria"]);
         let mut s = format!(
             "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
-             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>LGSTray – {title}</title>\
+             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Batly – {title}</title>\
              <style>{STYLE}</style></head><body><header><h1>{title}</h1>\
              <span id=\"live\" class=\"off\" data-on=\"{on}\" data-off=\"{off}\">{off}</span></header><main><div id=\"grid\">",
             lang = i18n::lang().code(),
@@ -741,7 +741,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
             "</div><p id=\"empty\"{}>{}</p></main><footer><span>API :</span>\
              <a href=\"/api/devices\"><code>/api/devices</code></a><a href=\"/api/events\"><code>/api/events</code></a>\
              <a href=\"/metrics\"><code>/metrics</code></a><a href=\"/overlay\"><code>/overlay</code></a>\
-             <a href=\"/devices\"><code>/device/{{id}}</code></a><span>LGSTray {VERSION}</span></footer>\
+             <a href=\"/devices\"><code>/device/{{id}}</code></a><span>Batly {VERSION}</span></footer>\
              <script>{SCRIPT}</script></body></html>",
             if devices.is_empty() { "" } else { " hidden" },
             i18n::no_device(),
@@ -908,7 +908,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         let device = Value::from(query(target, "device").unwrap_or_default()).to_string().replace('<', "\\u003c");
         let names = !matches!(query(target, "names").as_deref(), Some("0" | "false" | "no"));
         format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>LGSTray overlay</title><style>
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>Batly overlay</title><style>
 html,body{{margin:0;background:transparent;overflow:hidden}}
 body{{font:600 {size}px/1.2 system-ui,"Segoe UI",Roboto,sans-serif;color:var(--fg)}}
 .dark{{--fg:#fff;--track:rgba(255,255,255,.22);--sh:0 1px 3px rgba(0,0,0,.85)}}
@@ -1056,12 +1056,12 @@ mod tests {
         let hub = hub();
         hub.publish(Event::Init { id: "q\"\\\n".into(), name: "N".into(), kind: DeviceKind::Other, source: Source::Vendor, has_battery: true });
         let m = metrics(&ctx_of(hub), false);
-        assert!(m.contains("# TYPE lgstray_battery_percent gauge\n"));
+        assert!(m.contains("# TYPE batly_battery_percent gauge\n"));
         assert!(m.contains(
-            "lgstray_battery_percent{id=\"ABC123\",name=\"G <Pro> & Co\",type=\"Mouse\",source=\"native\",host=\"\"} 69\n"
+            "batly_battery_percent{id=\"ABC123\",name=\"G <Pro> & Co\",type=\"Mouse\",source=\"native\",host=\"\"} 69\n"
         ));
-        assert!(m.contains("lgstray_battery_voltage_volts{id=\"ABC123\"") && m.contains("} 3.92\n"));
-        assert!(m.contains("lgstray_charging{id=\"ABC123\"") && m.contains("lgstray_online{id=\"q\\\"\\\\\\n\""));
+        assert!(m.contains("batly_battery_voltage_volts{id=\"ABC123\"") && m.contains("} 3.92\n"));
+        assert!(m.contains("batly_charging{id=\"ABC123\"") && m.contains("batly_online{id=\"q\\\"\\\\\\n\""));
         assert_eq!(prom_escape("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
         for line in m.lines().filter(|l| !l.starts_with('#')) {
             let (_, value) = line.rsplit_once(' ').unwrap();

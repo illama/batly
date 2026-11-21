@@ -21,9 +21,9 @@ Une signature Authenticode :
 
 `.github/workflows/release.yml`, déclenché par un tag `v<version>` :
 
-1. tests, compilation MSVC de `lgstray.exe` ;
+1. tests, compilation MSVC de `batly.exe` ;
 2. **si** les secrets `SIGNPATH_API_TOKEN` et `SIGNPATH_ORGANIZATION_ID` existent :
-   envoi de `lgstray.exe` à SignPath (action officielle
+   envoi de `batly.exe` à SignPath (action officielle
    `signpath/github-action-submit-signing-request`), attente de la signature ;
 3. compilation de l'installateur **avec l'exécutable signé embarqué** ;
 4. signature de l'installateur par SignPath ;
@@ -67,7 +67,7 @@ liée à une compilation vérifiable sur GitHub Actions.
      membres du dépôt ; approbateurs : `illama`) et la phrase de confidentialité
      (« This program will not transfer any information to other networked systems unless
      specifically requested by the user or the person installing or operating it. ») —
-     à nuancer pour LGSTray : la vérification des mises à jour interroge l'API GitHub une
+     à nuancer pour Batly : la vérification des mises à jour interroge l'API GitHub une
      fois par jour, désactivable par `[Updates] check = false` ;
    - activer la 2FA sur le compte GitHub ;
    - avoir au moins une release publiée.
@@ -77,14 +77,14 @@ liée à une compilation vérifiable sur GitHub Actions.
 3. **Une fois accepté**, SignPath crée une organisation sur
    [app.signpath.io](https://app.signpath.io). Y configurer :
    - **Trusted build system** : *GitHub.com*, relié au dépôt
-     `illama/illama_logitechbatteries` (installer l'application GitHub SignPath si demandé) ;
-   - **Projet** : slug `lgstray`, dépôt lié ;
+     `illama/batly` (installer l'application GitHub SignPath si demandé) ;
+   - **Projet** : slug `batly`, dépôt lié ;
    - **Artifact configurations** (l'artefact GitHub est un zip contenant le fichier) :
      - slug `exe` :
        ```xml
        <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
          <zip-file>
-           <pe-file path="lgstray.exe">
+           <pe-file path="batly.exe">
              <authenticode-sign />
            </pe-file>
          </zip-file>
@@ -94,7 +94,7 @@ liée à une compilation vérifiable sur GitHub Actions.
        ```xml
        <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
          <zip-file>
-           <pe-file path="LGSTray-Setup-*.exe">
+           <pe-file path="Batly-Setup-*.exe">
              <authenticode-sign />
            </pe-file>
          </zip-file>
@@ -110,13 +110,13 @@ liée à une compilation vérifiable sur GitHub Actions.
    |---|---|---|
    | Secret | `SIGNPATH_API_TOKEN` | jeton de l'utilisateur CI |
    | Secret | `SIGNPATH_ORGANIZATION_ID` | identifiant (GUID) de l'organisation SignPath |
-   | Variable (facultatif) | `SIGNPATH_PROJECT_SLUG` | si différent de `lgstray` |
+   | Variable (facultatif) | `SIGNPATH_PROJECT_SLUG` | si différent de `batly` |
    | Variable (facultatif) | `SIGNPATH_POLICY_SLUG` | si différent de `release-signing` |
    | Variable (facultatif) | `SIGNPATH_EXE_CONFIG` / `SIGNPATH_SETUP_CONFIG` | si différents de `exe` / `installer` |
 
 5. **Tester** : pousser un tag (par ex. `v4.1.0`), approuver les deux demandes dans
    SignPath, vérifier sous Windows : *Propriétés → Signatures numériques*, ou
-   `Get-AuthenticodeSignature .\LGSTray-Setup-4.1.0.exe`.
+   `Get-AuthenticodeSignature .\Batly-Setup-4.1.0.exe`.
 
 La réputation SmartScreen se construit ensuite avec les téléchargements : l'avertissement
 peut subsister quelques semaines après les premières versions signées.
@@ -131,5 +131,5 @@ peut subsister quelques semaines après les premières versions signées.
 | Ne pas signer | 0 | Avertissement SmartScreen ; documenter *Informations complémentaires → Exécuter quand même* et publier `SHA256SUMS.txt` (déjà fait). |
 
 Pour brancher une autre solution, remplacer les deux étapes « Sign … (SignPath) » du
-workflow en gardant l'ordre : **signer `lgstray.exe` avant de compiler l'installateur**, puis
+workflow en gardant l'ordre : **signer `batly.exe` avant de compiler l'installateur**, puis
 signer l'installateur.

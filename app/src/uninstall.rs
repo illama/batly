@@ -1,4 +1,4 @@
-//! `lgstray.exe --uninstall`: removes everything the installer created.
+//! `batly.exe --uninstall`: removes everything the installer created.
 //! Registered as the uninstall command in "Apps & features".
 
 use crate::i18n;
@@ -35,7 +35,7 @@ pub fn run() {
     }
     close_running_instance();
 
-    let settings_dir = win::appdata().map(|p| p.join("LGSTray"));
+    let settings_dir = win::appdata().map(|p| p.join("Batly"));
     if settings_dir.as_ref().is_some_and(|d| d.exists()) && win::confirm(title, i18n::uninstall_settings()) {
         if let Some(dir) = &settings_dir {
             let _ = std::fs::remove_dir_all(dir);

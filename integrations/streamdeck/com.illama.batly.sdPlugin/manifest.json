@@ -1,11 +1,11 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
-  "Name": "LGSTray",
+  "Name": "Batly",
   "Version": "1.0.0.0",
-  "Author": "LGSTray",
-  "Description": "Battery level of your Logitech (and other) devices, from LGSTray.",
-  "URL": "https://github.com/illama/illama_logitechbatteries",
-  "Category": "LGSTray",
+  "Author": "Batly",
+  "Description": "Battery level of your Logitech (and other) devices, from Batly.",
+  "URL": "https://github.com/illama/batly",
+  "Category": "Batly",
   "CategoryIcon": "imgs/category",
   "Icon": "imgs/plugin",
   "CodePath": "plugin/index.html",
@@ -14,9 +14,9 @@
   "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
   "Actions": [
     {
-      "UUID": "com.illama.lgstray.battery",
+      "UUID": "com.illama.batly.battery",
       "Name": "Battery level",
-      "Tooltip": "Shows the battery level of a device. Press to refresh, hold to open the LGSTray page.",
+      "Tooltip": "Shows the battery level of a device. Press to refresh, hold to open the Batly page.",
       "Icon": "imgs/action",
       "PropertyInspectorPath": "pi/index.html",
       "SupportedInMultiActions": false,

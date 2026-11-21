@@ -39,7 +39,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOZORDER, SW_RESTORE, SW_SHOW, WH_GETMESSAGE, WM_APP, WNDCLASSW,
 };
 
-const CLASS: &str = "LGSTrayReceivers";
+const CLASS: &str = "BatlyReceivers";
 
 // Posted messages; `lParam` owns a `Box<Option<T>>` (see `post`).
 const WM_APP_LIST: u32 = WM_APP + 40; // Option<Vec<ReceiverInfo>>

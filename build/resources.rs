@@ -12,9 +12,9 @@ use std::process::Command;
 pub fn embed(description: &str, original_name: &str) {
     println!("cargo:rerun-if-changed=../build/resources.rs");
     println!("cargo:rerun-if-changed=../build/app.manifest");
-    println!("cargo:rerun-if-changed=../app/assets/logo_black.ico");
-    println!("cargo:rerun-if-env-changed=LGSTRAY_NO_RESOURCES");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") || std::env::var_os("LGSTRAY_NO_RESOURCES").is_some() {
+    println!("cargo:rerun-if-changed=../app/assets/batly.ico");
+    println!("cargo:rerun-if-env-changed=BATLY_NO_RESOURCES");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") || std::env::var_os("BATLY_NO_RESOURCES").is_some() {
         return;
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -40,13 +40,13 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "LGSTray contributors"
+      VALUE "CompanyName", "Batly contributors"
       VALUE "FileDescription", "{description}"
       VALUE "FileVersion", "{version}"
       VALUE "InternalName", "{original_name}"
       VALUE "LegalCopyright", "GPL-3.0-or-later"
       VALUE "OriginalFilename", "{original_name}"
-      VALUE "ProductName", "LGSTray"
+      VALUE "ProductName", "Batly"
       VALUE "ProductVersion", "{version}"
     END
   END
@@ -56,7 +56,7 @@ BEGIN
   END
 END
 "#,
-        icon = slashes(root.join("app/assets/logo_black.ico")),
+        icon = slashes(root.join("app/assets/batly.ico")),
         manifest = slashes(root.join("build/app.manifest")),
     );
     std::fs::write(&rc, script).unwrap();
