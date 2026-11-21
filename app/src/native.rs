@@ -403,12 +403,14 @@ pub struct Native {
 }
 
 impl Native {
-    pub fn start(cfg: &config::Native, hub: Arc<Hub>) -> Self {
+    /// `backup_dir`: where onboard memory is saved before being rewritten.
+    pub fn start(cfg: &config::Native, hub: Arc<Hub>, backup_dir: Option<std::path::PathBuf>) -> Self {
         let settings = hidpp::Settings {
             retry: Duration::from_secs(cfg.retry_time as u64),
             poll: Duration::from_secs(cfg.poll_period as u64),
             disabled: cfg.disabled_devices.clone(),
             settle: Duration::from_secs(1),
+            backup_dir,
         };
         let watcher: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
         let w = watcher.clone();
@@ -521,6 +523,13 @@ impl Native {
         let (reply, rx) = mpsc::channel();
         let command = Command::GetSettings { device: device_id.into(), reply };
         let _ = self.requests.send(Request::ToDevice(device_id.into(), command));
+        rx
+    }
+
+    /// Read-only report of a device's lighting and onboard memory.
+    pub fn diagnose(&self, device_id: &str) -> Receiver<Result<String, ActionError>> {
+        let (reply, rx) = mpsc::channel();
+        let _ = self.requests.send(Request::ToDevice(device_id.into(), Command::Diagnose { device: device_id.into(), reply }));
         rx
     }
 
