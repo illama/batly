@@ -327,16 +327,40 @@ pub fn profile_effect(sector: &[u8], zone: usize) -> Option<LedEffect> {
     LedEffect::parse(e[0] as u16, &e[1..])
 }
 
-/// The sector with `entry` written for `zone` and the CRC updated. The
-/// sector must have passed [`check_profile`].
-pub fn patch_profile(sector: &[u8], zone: usize, entry: [u8; PROFILE_LIGHTING_ENTRY]) -> Result<Vec<u8>, ProfileError> {
+impl LedEffect {
+    /// The same effect at half brightness, for the power-saving entries
+    /// (factory profiles use half the intensity there).
+    pub fn dimmed(&self) -> Self {
+        let [_, r, g, b] = self.color.to_be_bytes();
+        let color = u32::from_be_bytes([0, r / 2, g / 2, b / 2]);
+        Self { color, intensity: (self.intensity / 2).max(1), ..*self }
+    }
+}
+
+/// Profile entries to write for `effect` (wire id `id`) on `zone`, on a
+/// device with `zones` LED zones: the zone's entry and its power-saving
+/// twin (two slots further, dimmed). A device with a single zone gets both
+/// normal entries, as its factory profile has them identical.
+pub fn profile_writes(zone: usize, zones: usize, effect: &LedEffect, id: u16) -> Vec<(usize, [u8; PROFILE_LIGHTING_ENTRY])> {
+    let slots: Vec<usize> = if zones == 1 { vec![0, 1] } else { vec![zone] };
+    let dim = effect.dimmed();
+    let mut writes: Vec<(usize, [u8; PROFILE_LIGHTING_ENTRY])> = slots.iter().map(|&s| (s, effect.profile_entry(id))).collect();
+    writes.extend(slots.iter().map(|&s| (s + PROFILE_ZONES, dim.profile_entry(id))));
+    writes
+}
+
+/// The sector with `entries` written (slot, entry) and the CRC updated.
+/// The sector must pass [`check_profile`]; slots are 0..4.
+pub fn patch_profile(sector: &[u8], entries: &[(usize, [u8; PROFILE_LIGHTING_ENTRY])]) -> Result<Vec<u8>, ProfileError> {
     check_profile(sector, sector.len())?;
-    if zone >= PROFILE_ZONES {
+    if entries.iter().any(|(slot, _)| *slot >= PROFILE_LIGHTING_ENTRIES) {
         return Err(ProfileError::Zone);
     }
     let mut out = sector.to_vec();
-    let at = PROFILE_LIGHTING_OFFSET + zone * PROFILE_LIGHTING_ENTRY;
-    out[at..at + PROFILE_LIGHTING_ENTRY].copy_from_slice(&entry);
+    for (slot, entry) in entries {
+        let at = PROFILE_LIGHTING_OFFSET + slot * PROFILE_LIGHTING_ENTRY;
+        out[at..at + PROFILE_LIGHTING_ENTRY].copy_from_slice(entry);
+    }
     let n = out.len();
     let crc = crc16(&out[..n - 2]).to_be_bytes();
     out[n - 2..].copy_from_slice(&crc);
@@ -459,13 +483,50 @@ pub(crate) mod tests {
         assert_eq!((logo.kind, logo.color, logo.period_ms, logo.intensity), (EffectKind::Breathe, 0x00FF00, 3000, 80));
 
         let cycle = LedEffect { kind: EffectKind::Cycle, period_ms: 8000, intensity: 50, ..LedEffect::default() };
-        let patched = patch_profile(&s, 1, cycle.profile_entry(ID_CYCLE)).unwrap();
+        let patched = patch_profile(&s, &[(1, cycle.profile_entry(ID_CYCLE))]).unwrap();
         assert_eq!(check_profile(&patched, 255), Ok(()));
         assert_eq!(profile_effect(&patched, 1).unwrap().kind, EffectKind::Cycle);
         // Only the entry and the CRC changed.
         let diff: Vec<usize> = (0..255).filter(|&i| s[i] != patched[i]).collect();
         assert!(diff.iter().all(|&i| (219..230).contains(&i) || i >= 253), "{diff:?}");
-        assert_eq!(patch_profile(&s, 2, cycle.profile_entry(ID_CYCLE)), Err(ProfileError::Zone));
+        assert_eq!(patch_profile(&s, &[(4, cycle.profile_entry(ID_CYCLE))]), Err(ProfileError::Zone));
+    }
+
+    /// Lighting entries of the G502 X PLUS profile sent by a user: effect
+    /// 0x04 at intensity 100 (normal) and 50 (power saving), then an extra
+    /// byte before the CRC.
+    fn g502_x_plus_sector() -> Vec<u8> {
+        let mut s = vec![0xFFu8; 255];
+        s[..4].copy_from_slice(&[0x01, 0x00, 0x00, 0x20]);
+        for (i, intensity) in [0x64u8, 0x64, 0x32, 0x32].iter().enumerate() {
+            let at = 208 + i * 11;
+            s[at..at + 11].copy_from_slice(&[0x04, 0, 0, 0, 0, 0, 0, 0x88, 0x01, *intensity, 0x13]);
+        }
+        s[252] = 0x03;
+        let crc = crc16(&s[..253]).to_be_bytes();
+        s[253..].copy_from_slice(&crc);
+        s
+    }
+
+    #[test]
+    fn single_zone_mouse_gets_both_entries_and_dimmed_power_saving() {
+        let s = g502_x_plus_sector();
+        assert_eq!(check_profile(&s, 255), Ok(()));
+        let red = LedEffect { kind: EffectKind::Static, color: 0xFF2000, ..LedEffect::default() };
+        let writes = profile_writes(0, 1, &red, ID_STATIC);
+        assert_eq!(writes.iter().map(|w| w.0).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        let out = patch_profile(&s, &writes).unwrap();
+        assert_eq!(check_profile(&out, 255), Ok(()));
+        assert_eq!(out[208..219], [0x01, 0xFF, 0x20, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(out[219..230], out[208..219]);
+        assert_eq!(out[230..241], [0x01, 0x7F, 0x10, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(out[241..252], out[230..241]);
+        // Everything else, the extra byte included, is untouched.
+        assert!((0..208).chain(252..253).all(|i| out[i] == s[i]));
+        // Two zones: only the zone and its power-saving twin.
+        assert_eq!(profile_writes(1, 2, &red, ID_STATIC).iter().map(|w| w.0).collect::<Vec<_>>(), [1, 3]);
+        let breathe = LedEffect { kind: EffectKind::Breathe, intensity: 80, ..red };
+        assert_eq!(breathe.dimmed().intensity, 40);
     }
 
     #[test]
@@ -474,7 +535,7 @@ pub(crate) mod tests {
         let mut bad_crc = s.clone();
         bad_crc[100] ^= 1;
         assert_eq!(check_profile(&bad_crc, 255), Err(ProfileError::Crc));
-        assert_eq!(patch_profile(&bad_crc, 0, [0; 11]), Err(ProfileError::Crc));
+        assert_eq!(patch_profile(&bad_crc, &[(0, [0; 11])]), Err(ProfileError::Crc));
         // Valid CRC but an unknown byte where an effect id should be.
         let mut odd = s.clone();
         odd[219] = 0x42;
