@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn serves_over_tcp() {
-        let cfg = config::Http { enabled: true, addr: "127.0.0.1".into(), port: 0, use_ipv6: false };
+        let cfg = config::Http { addr: "127.0.0.1".into(), port: 0, use_ipv6: false, ..Default::default() };
         let bound = start(&cfg, Arc::new(hub()));
         assert_eq!(bound.len(), 1);
         let mut s = TcpStream::connect(bound[0]).unwrap();

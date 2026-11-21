@@ -7,13 +7,16 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod config;
+mod fetch;
 mod ghub;
+mod history;
 mod hidpp;
 mod http;
 mod i18n;
 mod icon;
 mod log;
 mod model;
+mod notice;
 
 #[cfg(windows)]
 mod native;
@@ -45,11 +48,11 @@ fn main() {
     let has = |flag: &str| args.iter().any(|a| a.trim_start_matches(['-', '/']) == flag);
 
     // SAFETY: plain FFI calls without pointers.
-    let system_is_french = unsafe {
+    let system_lang = unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        GetUserDefaultUILanguage() & 0x3FF == 0x0C
+        i18n::Lang::from_langid(GetUserDefaultUILanguage() & 0x3FF)
     };
-    i18n::init("auto", system_is_french);
+    i18n::init("auto", system_lang);
 
     if has("uninstall") {
         uninstall::run();
@@ -88,7 +91,7 @@ fn main() {
             Config::default()
         }
     };
-    i18n::init(&cfg.ui.language, system_is_french);
+    i18n::init(&cfg.ui.language, system_lang);
 
     let Some(hwnd) = tray::create_window() else { return };
     let hub = Arc::new(model::Hub::new());
