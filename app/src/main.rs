@@ -19,6 +19,7 @@ mod hotkey;
 mod http;
 mod i18n;
 mod icon;
+mod lighting;
 mod log;
 mod model;
 mod mqtt;
@@ -324,7 +325,7 @@ fn main() {
     }
 
     let services = tray::Services {
-        native: cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone())),
+        native: cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone(), Some(cfg_path.with_file_name("backups")))),
         ghub: cfg.ghub.enabled.then(|| ghub::GHub::start(hub.clone())),
         web_url,
         history,
