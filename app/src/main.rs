@@ -16,7 +16,10 @@ mod i18n;
 mod icon;
 mod log;
 mod model;
+mod mqtt;
 mod notice;
+mod peers;
+mod webhooks;
 
 #[cfg(windows)]
 mod native;
@@ -97,7 +100,13 @@ fn main() {
     let hub = Arc::new(model::Hub::new());
     hub.on_change(tray::sync_notifier(hwnd));
 
-    let web_url = if cfg.http.enabled && !http::start(&cfg.http, hub.clone()).is_empty() {
+    let history = Arc::new(history::History::open(
+        cfg.history.enabled.then(|| cfg_path.with_file_name("history")),
+        cfg.history.retention_days,
+    ));
+    let names = cfg.clone();
+    let ctx = Arc::new(http::Context::new(hub.clone(), history).with_names(move |id, name| names.display_name(id, name)));
+    let web_url = if cfg.http.enabled && !http::start(&cfg.http, ctx).is_empty() {
         let host = match cfg.http.addr.trim() {
             "" | "localhost" | "0.0.0.0" | "+" | "*" => "localhost",
             host => host,
