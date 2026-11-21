@@ -25,6 +25,8 @@ mod sha256;
 mod update;
 
 #[cfg(windows)]
+mod actions;
+#[cfg(windows)]
 mod native;
 #[cfg(windows)]
 mod panel;
@@ -199,6 +201,12 @@ fn main() {
     } else {
         None
     };
+    let known_update = Arc::new(std::sync::Mutex::new(None));
+    actions::start_auto_check(&cfg, known_update.clone(), Arc::new(tray::notice_poster(hwnd)));
+    let actions = vec![
+        actions::update_action(cfg_path.clone(), known_update),
+        actions::report_action(hub.clone(), cfg_path.clone()),
+    ];
     let services = tray::Services {
         native: cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone())),
         ghub: cfg.ghub.enabled.then(|| ghub::GHub::start(hub.clone())),
@@ -207,7 +215,7 @@ fn main() {
         refresh: Vec::new(),
         rescan: Vec::new(),
         notice_sinks: Vec::new(),
-        actions: Vec::new(),
+        actions,
         started_with: cfg.clone(),
     };
 

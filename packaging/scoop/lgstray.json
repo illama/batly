@@ -22,7 +22,10 @@
             "LGSTray"
         ]
     ],
-    "persist": "appsettings.toml",
+    "persist": [
+        "appsettings.toml",
+        "history"
+    ],
     "checkver": {
         "github": "https://github.com/illama/illama_logitechbatteries"
     },
