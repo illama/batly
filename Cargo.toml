@@ -3,7 +3,7 @@ resolver = "2"
 members = ["app", "setup"]
 
 [workspace.package]
-version = "5.0.1"
+version = "5.0.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["illama", "Batly contributors"]
