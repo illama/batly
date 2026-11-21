@@ -41,17 +41,15 @@ mod installer {
     use windows::core::{w, Interface, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
     use windows::Win32::Globalization::GetUserDefaultUILanguage;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
     use windows::Win32::System::Registry::{
         RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_DWORD, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_SZ,
     };
     use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, MessageBoxW, PostMessageW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK,
-        MB_SETFOREGROUND, MB_YESNO, MESSAGEBOX_STYLE, WM_CLOSE,
+        FindWindowW, MessageBoxW, PostMessageW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
+        MB_YESNO, MESSAGEBOX_STYLE, WM_CLOSE,
     };
 
     static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/batly.exe"));
@@ -71,7 +69,11 @@ mod installer {
     }
 
     fn tr(en: &str, fr: &str) -> String {
-        if french() { fr.into() } else { en.into() }
+        if french() {
+            fr.into()
+        } else {
+            en.into()
+        }
     }
 
     fn message(text: &str, style: MESSAGEBOX_STYLE) -> bool {
@@ -87,31 +89,22 @@ mod installer {
         let data: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
         // SAFETY: `data` is a NUL-terminated UTF-16 buffer of the given size.
         let rc = unsafe {
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                key,
-                &HSTRING::from(name),
-                REG_SZ.0,
-                Some(data.as_ptr().cast()),
-                (data.len() * 2) as u32,
-            )
+            RegSetKeyValueW(HKEY_CURRENT_USER, key, &HSTRING::from(name), REG_SZ.0, Some(data.as_ptr().cast()), (data.len() * 2) as u32)
         };
         rc.ok().map_err(|e| format!("registry: {e}"))
     }
 
     fn set_dword(key: PCWSTR, name: &str, value: u32) -> Result<(), String> {
         // SAFETY: `value` is 4 bytes.
-        let rc = unsafe {
-            RegSetKeyValueW(HKEY_CURRENT_USER, key, &HSTRING::from(name), REG_DWORD.0, Some((&value as *const u32).cast()), 4)
-        };
+        let rc =
+            unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key, &HSTRING::from(name), REG_DWORD.0, Some((&value as *const u32).cast()), 4) };
         rc.ok().map_err(|e| format!("registry: {e}"))
     }
 
     fn string_exists(key: PCWSTR, name: &str) -> bool {
         let mut kind = REG_VALUE_TYPE(0);
         // SAFETY: only the existence / type of the value is queried.
-        unsafe { RegGetValueW(HKEY_CURRENT_USER, key, &HSTRING::from(name), RRF_RT_REG_SZ, Some(&mut kind), None, None) }
-            .is_ok()
+        unsafe { RegGetValueW(HKEY_CURRENT_USER, key, &HSTRING::from(name), RRF_RT_REG_SZ, Some(&mut kind), None, None) }.is_ok()
     }
 
     /// Asks a running Batly to quit and waits until it is gone.

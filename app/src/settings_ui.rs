@@ -4,7 +4,6 @@
 
 use crate::config::Config;
 use crate::i18n::{self, tr};
-use crate::model::DeviceKind;
 use crate::win::{self, wide};
 use crate::{hotkey, log};
 use std::cell::RefCell;
@@ -15,8 +14,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, COLOR_WINDOW, HFONT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, NMHDR, TCIF_TEXT, TCITEMW,
-    TCM_GETCURSEL, TCM_INSERTITEMW, TCN_SELCHANGE, WC_TABCONTROLW,
+    InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, NMHDR, TCIF_TEXT, TCITEMW, TCM_GETCURSEL,
+    TCM_INSERTITEMW, TCN_SELCHANGE, WC_TABCONTROLW,
 };
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -89,12 +88,60 @@ struct Field {
 }
 
 fn icon_choices() -> &'static [(&'static str, &'static str)] {
-    const EN: &[(&str, &str)] = &[("", "Automatic"), ("mouse", "Mouse"), ("keyboard", "Keyboard"), ("headset", "Headset"), ("earbuds", "Earbuds"), ("gamepad", "Controller"), ("other", "Other")];
-    const FR: &[(&str, &str)] = &[("", "Automatique"), ("mouse", "Souris"), ("keyboard", "Clavier"), ("headset", "Casque"), ("earbuds", "Écouteurs"), ("gamepad", "Manette"), ("other", "Autre")];
-    const DE: &[(&str, &str)] = &[("", "Automatisch"), ("mouse", "Maus"), ("keyboard", "Tastatur"), ("headset", "Headset"), ("earbuds", "Ohrhörer"), ("gamepad", "Controller"), ("other", "Andere")];
-    const ES: &[(&str, &str)] = &[("", "Automático"), ("mouse", "Ratón"), ("keyboard", "Teclado"), ("headset", "Auriculares"), ("earbuds", "Auriculares in-ear"), ("gamepad", "Mando"), ("other", "Otro")];
-    const IT: &[(&str, &str)] = &[("", "Automatico"), ("mouse", "Mouse"), ("keyboard", "Tastiera"), ("headset", "Cuffie"), ("earbuds", "Auricolari"), ("gamepad", "Controller"), ("other", "Altro")];
-    const PT: &[(&str, &str)] = &[("", "Automático"), ("mouse", "Mouse"), ("keyboard", "Teclado"), ("headset", "Headset"), ("earbuds", "Fones intra"), ("gamepad", "Comando"), ("other", "Outro")];
+    const EN: &[(&str, &str)] = &[
+        ("", "Automatic"),
+        ("mouse", "Mouse"),
+        ("keyboard", "Keyboard"),
+        ("headset", "Headset"),
+        ("earbuds", "Earbuds"),
+        ("gamepad", "Controller"),
+        ("other", "Other"),
+    ];
+    const FR: &[(&str, &str)] = &[
+        ("", "Automatique"),
+        ("mouse", "Souris"),
+        ("keyboard", "Clavier"),
+        ("headset", "Casque"),
+        ("earbuds", "Écouteurs"),
+        ("gamepad", "Manette"),
+        ("other", "Autre"),
+    ];
+    const DE: &[(&str, &str)] = &[
+        ("", "Automatisch"),
+        ("mouse", "Maus"),
+        ("keyboard", "Tastatur"),
+        ("headset", "Headset"),
+        ("earbuds", "Ohrhörer"),
+        ("gamepad", "Controller"),
+        ("other", "Andere"),
+    ];
+    const ES: &[(&str, &str)] = &[
+        ("", "Automático"),
+        ("mouse", "Ratón"),
+        ("keyboard", "Teclado"),
+        ("headset", "Auriculares"),
+        ("earbuds", "Auriculares in-ear"),
+        ("gamepad", "Mando"),
+        ("other", "Otro"),
+    ];
+    const IT: &[(&str, &str)] = &[
+        ("", "Automatico"),
+        ("mouse", "Mouse"),
+        ("keyboard", "Tastiera"),
+        ("headset", "Cuffie"),
+        ("earbuds", "Auricolari"),
+        ("gamepad", "Controller"),
+        ("other", "Altro"),
+    ];
+    const PT: &[(&str, &str)] = &[
+        ("", "Automático"),
+        ("mouse", "Mouse"),
+        ("keyboard", "Teclado"),
+        ("headset", "Headset"),
+        ("earbuds", "Fones intra"),
+        ("gamepad", "Comando"),
+        ("other", "Outro"),
+    ];
     tr([EN, FR, DE, ES, IT, PT])
 }
 
@@ -111,14 +158,7 @@ fn pages() -> Vec<String> {
 
 macro_rules! field {
     ($page:expr, $label:expr, $kind:expr, |$c:ident| $get:expr, |$m:ident, $v:ident| $set:expr) => {
-        Field {
-            page: $page,
-            scope: Scope::Global,
-            label: $label.into(),
-            kind: $kind,
-            get: |$c, _| $get,
-            set: |$m, _, $v| $set,
-        }
+        Field { page: $page, scope: Scope::Global, label: $label.into(), kind: $kind, get: |$c, _| $get, set: |$m, _, $v| $set }
     };
 }
 
@@ -132,7 +172,11 @@ fn b(v: &Value) -> bool {
     matches!(v, Value::Bool(true))
 }
 fn n(v: &Value) -> i64 {
-    if let Value::Num(n) = v { *n } else { 0 }
+    if let Value::Num(n) = v {
+        *n
+    } else {
+        0
+    }
 }
 fn s(v: Value) -> String {
     match v {
@@ -141,67 +185,471 @@ fn s(v: Value) -> String {
     }
 }
 fn lines(v: Value) -> Vec<String> {
-    if let Value::Lines(l) = v { l } else { Vec::new() }
+    if let Value::Lines(l) = v {
+        l
+    } else {
+        Vec::new()
+    }
 }
 
 fn fields() -> Vec<Field> {
     let pct = Kind::Number(0, 100);
     vec![
         // General
-        field!(0, tr(["Language", "Langue", "Sprache", "Idioma", "Lingua", "Idioma"]), Kind::Choice(&i18n::LANGUAGES), |c| Value::Choice(c.ui.language.clone()), |c, v| c.ui.language = s(v)),
+        field!(
+            0,
+            tr(["Language", "Langue", "Sprache", "Idioma", "Lingua", "Idioma"]),
+            Kind::Choice(&i18n::LANGUAGES),
+            |c| Value::Choice(c.ui.language.clone()),
+            |c, v| c.ui.language = s(v)
+        ),
         field!(0, i18n::numeric_display(), Kind::Check, |c| Value::Bool(c.ui.numeric_display), |c, v| c.ui.numeric_display = b(&v)),
-        field!(0, tr(["One icon for all devices (lowest level)", "Une seule icône (le niveau le plus bas)", "Ein Symbol für alle (niedrigster Stand)", "Un solo icono (nivel más bajo)", "Una sola icona (livello più basso)", "Um só ícone (nível mais baixo)"]), Kind::Check, |c| Value::Bool(c.ui.single_icon), |c, v| c.ui.single_icon = b(&v)),
-        field!(0, tr(["Hide an icon above (%, 0 = never)", "Masquer une icône au-dessus de (%, 0 = jamais)", "Symbol ausblenden über (%, 0 = nie)", "Ocultar un icono por encima de (%, 0 = nunca)", "Nascondi un'icona sopra (%, 0 = mai)", "Ocultar um ícone acima de (%, 0 = nunca)"]), pct, |c| Value::Num(c.ui.hide_above as i64), |c, v| c.ui.hide_above = n(&v) as u8),
-        field!(0, tr(["Panel shortcut (e.g. Ctrl+Alt+B)", "Raccourci du panneau (ex. Ctrl+Alt+B)", "Tastenkürzel für das Panel (z. B. Strg+Alt+B)", "Atajo del panel (p. ej. Ctrl+Alt+B)", "Scorciatoia del pannello (es. Ctrl+Alt+B)", "Atalho do painel (ex. Ctrl+Alt+B)"]), Kind::Text, |c| Value::Text(c.ui.hotkey.clone()), |c, v| c.ui.hotkey = s(v)),
-        field!(0, tr(["Check for updates every day", "Rechercher les mises à jour chaque jour", "Täglich nach Updates suchen", "Buscar actualizaciones cada día", "Cerca aggiornamenti ogni giorno", "Procurar atualizações todos os dias"]), Kind::Check, |c| Value::Bool(c.updates.check), |c, v| c.updates.check = b(&v)),
+        field!(
+            0,
+            tr([
+                "One icon for all devices (lowest level)",
+                "Une seule icône (le niveau le plus bas)",
+                "Ein Symbol für alle (niedrigster Stand)",
+                "Un solo icono (nivel más bajo)",
+                "Una sola icona (livello più basso)",
+                "Um só ícone (nível mais baixo)"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.ui.single_icon),
+            |c, v| c.ui.single_icon = b(&v)
+        ),
+        field!(
+            0,
+            tr([
+                "Hide an icon above (%, 0 = never)",
+                "Masquer une icône au-dessus de (%, 0 = jamais)",
+                "Symbol ausblenden über (%, 0 = nie)",
+                "Ocultar un icono por encima de (%, 0 = nunca)",
+                "Nascondi un'icona sopra (%, 0 = mai)",
+                "Ocultar um ícone acima de (%, 0 = nunca)"
+            ]),
+            pct,
+            |c| Value::Num(c.ui.hide_above as i64),
+            |c, v| c.ui.hide_above = n(&v) as u8
+        ),
+        field!(
+            0,
+            tr([
+                "Panel shortcut (e.g. Ctrl+Alt+B)",
+                "Raccourci du panneau (ex. Ctrl+Alt+B)",
+                "Tastenkürzel für das Panel (z. B. Strg+Alt+B)",
+                "Atajo del panel (p. ej. Ctrl+Alt+B)",
+                "Scorciatoia del pannello (es. Ctrl+Alt+B)",
+                "Atalho do painel (ex. Ctrl+Alt+B)"
+            ]),
+            Kind::Text,
+            |c| Value::Text(c.ui.hotkey.clone()),
+            |c, v| c.ui.hotkey = s(v)
+        ),
+        field!(
+            0,
+            tr([
+                "Check for updates every day",
+                "Rechercher les mises à jour chaque jour",
+                "Täglich nach Updates suchen",
+                "Buscar actualizaciones cada día",
+                "Cerca aggiornamenti ogni giorno",
+                "Procurar atualizações todos os dias"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.updates.check),
+            |c, v| c.updates.check = b(&v)
+        ),
         // Alerts
-        field!(1, tr(["Low battery level (%, 0 = no alert)", "Niveau de batterie faible (%, 0 = aucune alerte)", "Niedriger Akkustand (%, 0 = keine Warnung)", "Nivel de batería baja (%, 0 = sin aviso)", "Livello batteria scarica (%, 0 = nessun avviso)", "Nível de bateria fraca (%, 0 = sem alerta)"]), pct, |c| Value::Num(c.ui.low_battery_threshold as i64), |c, v| c.ui.low_battery_threshold = n(&v) as u8),
-        field!(1, tr(["Warn before it runs out (estimate)", "Prévenir avant la panne (estimation)", "Vor dem Leerlaufen warnen (Schätzung)", "Avisar antes de que se agote (estimación)", "Avvisa prima che si scarichi (stima)", "Avisar antes de acabar (estimativa)"]), Kind::Check, |c| Value::Bool(c.alerts.predictive), |c, v| c.alerts.predictive = b(&v)),
-        field!(1, tr(["… when less than (hours) is left", "… quand il reste moins de (heures)", "… wenn weniger als (Stunden) übrig", "… cuando queden menos de (horas)", "… quando restano meno di (ore)", "… quando restar menos de (horas)"]), Kind::Number(1, 336), |c| Value::Num(c.alerts.predictive_hours as i64), |c, v| c.alerts.predictive_hours = n(&v) as u32),
-        field!(1, tr(["Charge limit reminder (%, 0 = off)", "Rappel de limite de charge (%, 0 = désactivé)", "Ladegrenze-Erinnerung (%, 0 = aus)", "Aviso de límite de carga (%, 0 = no)", "Promemoria limite di carica (%, 0 = no)", "Lembrete de limite de carga (%, 0 = não)"]), pct, |c| Value::Num(c.alerts.charge_limit as i64), |c, v| c.alerts.charge_limit = n(&v) as u8),
-        field!(1, tr(["Notify when fully charged", "Prévenir quand la charge est terminée", "Benachrichtigen, wenn voll geladen", "Avisar cuando esté cargado", "Avvisa a carica completata", "Avisar quando estiver carregado"]), Kind::Check, |c| Value::Bool(c.alerts.charge_complete), |c, v| c.alerts.charge_complete = b(&v)),
-        field!(1, tr(["Device offline for (hours, 0 = never)", "Appareil hors ligne depuis (heures, 0 = jamais)", "Gerät offline seit (Stunden, 0 = nie)", "Dispositivo desconectado durante (horas, 0 = nunca)", "Dispositivo offline da (ore, 0 = mai)", "Dispositivo desconectado há (horas, 0 = nunca)"]), Kind::Number(0, 720), |c| Value::Num(c.alerts.offline_hours as i64), |c, v| c.alerts.offline_hours = n(&v) as u32),
-        field!(1, tr(["Hold alerts during games and Do not disturb", "Retenir les alertes en jeu et en Ne pas déranger", "Warnungen bei Spielen und „Nicht stören“ zurückhalten", "Retener avisos en juegos y No molestar", "Trattieni gli avvisi nei giochi e in Non disturbare", "Reter alertas em jogos e Não incomodar"]), Kind::Check, |c| Value::Bool(c.alerts.quiet_when_busy), |c, v| c.alerts.quiet_when_busy = b(&v)),
-        field!(1, tr(["\"Later\" means in (hours)", "« Plus tard » = dans (heures)", "„Später“ bedeutet in (Stunden)", "«Más tarde» = dentro de (horas)", "«Più tardi» = tra (ore)", "«Mais tarde» = daqui a (horas)"]), Kind::Number(1, 168), |c| Value::Num(c.alerts.snooze_hours as i64), |c, v| c.alerts.snooze_hours = n(&v) as u32),
+        field!(
+            1,
+            tr([
+                "Low battery level (%, 0 = no alert)",
+                "Niveau de batterie faible (%, 0 = aucune alerte)",
+                "Niedriger Akkustand (%, 0 = keine Warnung)",
+                "Nivel de batería baja (%, 0 = sin aviso)",
+                "Livello batteria scarica (%, 0 = nessun avviso)",
+                "Nível de bateria fraca (%, 0 = sem alerta)"
+            ]),
+            pct,
+            |c| Value::Num(c.ui.low_battery_threshold as i64),
+            |c, v| c.ui.low_battery_threshold = n(&v) as u8
+        ),
+        field!(
+            1,
+            tr([
+                "Warn before it runs out (estimate)",
+                "Prévenir avant la panne (estimation)",
+                "Vor dem Leerlaufen warnen (Schätzung)",
+                "Avisar antes de que se agote (estimación)",
+                "Avvisa prima che si scarichi (stima)",
+                "Avisar antes de acabar (estimativa)"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.alerts.predictive),
+            |c, v| c.alerts.predictive = b(&v)
+        ),
+        field!(
+            1,
+            tr([
+                "… when less than (hours) is left",
+                "… quand il reste moins de (heures)",
+                "… wenn weniger als (Stunden) übrig",
+                "… cuando queden menos de (horas)",
+                "… quando restano meno di (ore)",
+                "… quando restar menos de (horas)"
+            ]),
+            Kind::Number(1, 336),
+            |c| Value::Num(c.alerts.predictive_hours as i64),
+            |c, v| c.alerts.predictive_hours = n(&v) as u32
+        ),
+        field!(
+            1,
+            tr([
+                "Charge limit reminder (%, 0 = off)",
+                "Rappel de limite de charge (%, 0 = désactivé)",
+                "Ladegrenze-Erinnerung (%, 0 = aus)",
+                "Aviso de límite de carga (%, 0 = no)",
+                "Promemoria limite di carica (%, 0 = no)",
+                "Lembrete de limite de carga (%, 0 = não)"
+            ]),
+            pct,
+            |c| Value::Num(c.alerts.charge_limit as i64),
+            |c, v| c.alerts.charge_limit = n(&v) as u8
+        ),
+        field!(
+            1,
+            tr([
+                "Notify when fully charged",
+                "Prévenir quand la charge est terminée",
+                "Benachrichtigen, wenn voll geladen",
+                "Avisar cuando esté cargado",
+                "Avvisa a carica completata",
+                "Avisar quando estiver carregado"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.alerts.charge_complete),
+            |c, v| c.alerts.charge_complete = b(&v)
+        ),
+        field!(
+            1,
+            tr([
+                "Device offline for (hours, 0 = never)",
+                "Appareil hors ligne depuis (heures, 0 = jamais)",
+                "Gerät offline seit (Stunden, 0 = nie)",
+                "Dispositivo desconectado durante (horas, 0 = nunca)",
+                "Dispositivo offline da (ore, 0 = mai)",
+                "Dispositivo desconectado há (horas, 0 = nunca)"
+            ]),
+            Kind::Number(0, 720),
+            |c| Value::Num(c.alerts.offline_hours as i64),
+            |c, v| c.alerts.offline_hours = n(&v) as u32
+        ),
+        field!(
+            1,
+            tr([
+                "Hold alerts during games and Do not disturb",
+                "Retenir les alertes en jeu et en Ne pas déranger",
+                "Warnungen bei Spielen und „Nicht stören“ zurückhalten",
+                "Retener avisos en juegos y No molestar",
+                "Trattieni gli avvisi nei giochi e in Non disturbare",
+                "Reter alertas em jogos e Não incomodar"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.alerts.quiet_when_busy),
+            |c, v| c.alerts.quiet_when_busy = b(&v)
+        ),
+        field!(
+            1,
+            tr([
+                "\"Later\" means in (hours)",
+                "« Plus tard » = dans (heures)",
+                "„Später“ bedeutet in (Stunden)",
+                "«Más tarde» = dentro de (horas)",
+                "«Più tardi» = tra (ore)",
+                "«Mais tarde» = daqui a (horas)"
+            ]),
+            Kind::Number(1, 168),
+            |c| Value::Num(c.alerts.snooze_hours as i64),
+            |c, v| c.alerts.snooze_hours = n(&v) as u32
+        ),
         // Devices (per device, below the list)
-        device_field!(tr(["Name shown", "Nom affiché", "Angezeigter Name", "Nombre mostrado", "Nome mostrato", "Nome exibido"]), Kind::Text, |c, id| Value::Text(c.device(id).alias), |c, id, v| c.device_mut(id).alias = s(v)),
-        device_field!(tr(["Icon", "Icône", "Symbol", "Icono", "Icona", "Ícone"]), Kind::Choice(icon_choices()), |c, id| Value::Choice(c.device(id).icon), |c, id, v| c.device_mut(id).icon = s(v)),
-        device_field!(tr(["Show its own tray icon", "Afficher sa propre icône", "Eigenes Symbol anzeigen", "Mostrar su propio icono", "Mostra la propria icona", "Mostrar o próprio ícone"]), Kind::Check, |c, id| Value::Bool(c.ui.selected_devices.iter().any(|s| s == id)), |c, id, v| {
-            c.ui.selected_devices.retain(|s| s != id);
-            if b(&v) {
-                c.ui.selected_devices.push(id.to_string());
-                c.ui.first_run_done = true;
+        device_field!(
+            tr(["Name shown", "Nom affiché", "Angezeigter Name", "Nombre mostrado", "Nome mostrato", "Nome exibido"]),
+            Kind::Text,
+            |c, id| Value::Text(c.device(id).alias),
+            |c, id, v| c.device_mut(id).alias = s(v)
+        ),
+        device_field!(
+            tr(["Icon", "Icône", "Symbol", "Icono", "Icona", "Ícone"]),
+            Kind::Choice(icon_choices()),
+            |c, id| Value::Choice(c.device(id).icon),
+            |c, id, v| c.device_mut(id).icon = s(v)
+        ),
+        device_field!(
+            tr([
+                "Show its own tray icon",
+                "Afficher sa propre icône",
+                "Eigenes Symbol anzeigen",
+                "Mostrar su propio icono",
+                "Mostra la propria icona",
+                "Mostrar o próprio ícone"
+            ]),
+            Kind::Check,
+            |c, id| Value::Bool(c.ui.selected_devices.iter().any(|s| s == id)),
+            |c, id, v| {
+                c.ui.selected_devices.retain(|s| s != id);
+                if b(&v) {
+                    c.ui.selected_devices.push(id.to_string());
+                    c.ui.first_run_done = true;
+                }
             }
-        }),
-        device_field!(tr(["Low level for this device (%, -1 = global)", "Niveau faible pour cet appareil (%, -1 = global)", "Niedriger Stand für dieses Gerät (%, -1 = global)", "Nivel bajo para este dispositivo (%, -1 = global)", "Livello basso per questo dispositivo (%, -1 = globale)", "Nível baixo para este dispositivo (%, -1 = global)"]), Kind::Number(-1, 100), |c, id| Value::Num(c.device(id).low_battery_threshold.map_or(-1, i64::from)), |c, id, v| c.device_mut(id).low_battery_threshold = u8::try_from(n(&v)).ok()),
-        device_field!(tr(["No alert for this device", "Aucune alerte pour cet appareil", "Keine Warnung für dieses Gerät", "Sin avisos para este dispositivo", "Nessun avviso per questo dispositivo", "Sem alertas para este dispositivo"]), Kind::Check, |c, id| Value::Bool(c.device(id).muted), |c, id, v| c.device_mut(id).muted = b(&v)),
+        ),
+        device_field!(
+            tr([
+                "Low level for this device (%, -1 = global)",
+                "Niveau faible pour cet appareil (%, -1 = global)",
+                "Niedriger Stand für dieses Gerät (%, -1 = global)",
+                "Nivel bajo para este dispositivo (%, -1 = global)",
+                "Livello basso per questo dispositivo (%, -1 = globale)",
+                "Nível baixo para este dispositivo (%, -1 = global)"
+            ]),
+            Kind::Number(-1, 100),
+            |c, id| Value::Num(c.device(id).low_battery_threshold.map_or(-1, i64::from)),
+            |c, id, v| c.device_mut(id).low_battery_threshold = u8::try_from(n(&v)).ok()
+        ),
+        device_field!(
+            tr([
+                "No alert for this device",
+                "Aucune alerte pour cet appareil",
+                "Keine Warnung für dieses Gerät",
+                "Sin avisos para este dispositivo",
+                "Nessun avviso per questo dispositivo",
+                "Sem alertas para este dispositivo"
+            ]),
+            Kind::Check,
+            |c, id| Value::Bool(c.device(id).muted),
+            |c, id, v| c.device_mut(id).muted = b(&v)
+        ),
         // Sources
-        field!(3, tr(["Logitech devices (direct, HID++)", "Appareils Logitech (direct, HID++)", "Logitech-Geräte (direkt, HID++)", "Dispositivos Logitech (directo, HID++)", "Dispositivi Logitech (diretto, HID++)", "Dispositivos Logitech (direto, HID++)"]), Kind::Check, |c| Value::Bool(c.native.enabled), |c, v| c.native.enabled = b(&v)),
-        field!(3, tr(["Logitech G HUB", "Logitech G HUB", "Logitech G HUB", "Logitech G HUB", "Logitech G HUB", "Logitech G HUB"]), Kind::Check, |c| Value::Bool(c.ghub.enabled), |c, v| c.ghub.enabled = b(&v)),
-        field!(3, tr(["Bluetooth devices (headphones, earbuds…)", "Appareils Bluetooth (casques, écouteurs…)", "Bluetooth-Geräte (Kopfhörer, Ohrhörer…)", "Dispositivos Bluetooth (auriculares…)", "Dispositivi Bluetooth (cuffie, auricolari…)", "Dispositivos Bluetooth (fones…)"]), Kind::Check, |c| Value::Bool(c.other.bluetooth), |c, v| c.other.bluetooth = b(&v)),
-        field!(3, tr(["Xbox and PlayStation controllers", "Manettes Xbox et PlayStation", "Xbox- und PlayStation-Controller", "Mandos Xbox y PlayStation", "Controller Xbox e PlayStation", "Comandos Xbox e PlayStation"]), Kind::Check, |c| Value::Bool(c.other.gamepads), |c, v| c.other.gamepads = b(&v)),
+        field!(
+            3,
+            tr([
+                "Logitech devices (direct, HID++)",
+                "Appareils Logitech (direct, HID++)",
+                "Logitech-Geräte (direkt, HID++)",
+                "Dispositivos Logitech (directo, HID++)",
+                "Dispositivi Logitech (diretto, HID++)",
+                "Dispositivos Logitech (direto, HID++)"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.native.enabled),
+            |c, v| c.native.enabled = b(&v)
+        ),
+        field!(
+            3,
+            tr(["Logitech G HUB", "Logitech G HUB", "Logitech G HUB", "Logitech G HUB", "Logitech G HUB", "Logitech G HUB"]),
+            Kind::Check,
+            |c| Value::Bool(c.ghub.enabled),
+            |c, v| c.ghub.enabled = b(&v)
+        ),
+        field!(
+            3,
+            tr([
+                "Bluetooth devices (headphones, earbuds…)",
+                "Appareils Bluetooth (casques, écouteurs…)",
+                "Bluetooth-Geräte (Kopfhörer, Ohrhörer…)",
+                "Dispositivos Bluetooth (auriculares…)",
+                "Dispositivi Bluetooth (cuffie, auricolari…)",
+                "Dispositivos Bluetooth (fones…)"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.other.bluetooth),
+            |c, v| c.other.bluetooth = b(&v)
+        ),
+        field!(
+            3,
+            tr([
+                "Xbox and PlayStation controllers",
+                "Manettes Xbox et PlayStation",
+                "Xbox- und PlayStation-Controller",
+                "Mandos Xbox y PlayStation",
+                "Controller Xbox e PlayStation",
+                "Comandos Xbox e PlayStation"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.other.gamepads),
+            |c, v| c.other.gamepads = b(&v)
+        ),
         field!(3, "Razer", Kind::Check, |c| Value::Bool(c.other.razer), |c, v| c.other.razer = b(&v)),
         field!(3, "Corsair", Kind::Check, |c| Value::Bool(c.other.corsair), |c, v| c.other.corsair = b(&v)),
         field!(3, "SteelSeries", Kind::Check, |c| Value::Bool(c.other.steelseries), |c, v| c.other.steelseries = b(&v)),
-        field!(3, tr(["Keep a history (time left, charts, wear)", "Garder un historique (autonomie, courbes, usure)", "Verlauf speichern (Restzeit, Diagramme, Verschleiß)", "Guardar historial (autonomía, gráficos, desgaste)", "Conserva la cronologia (autonomia, grafici, usura)", "Guardar histórico (autonomia, gráficos, desgaste)"]), Kind::Check, |c| Value::Bool(c.history.enabled), |c, v| c.history.enabled = b(&v)),
-        field!(3, tr(["Keep it for (days)", "Le conserver (jours)", "Aufbewahren (Tage)", "Conservarlo (días)", "Conservala (giorni)", "Guardar por (dias)"]), Kind::Number(7, 3650), |c| Value::Num(c.history.retention_days as i64), |c, v| c.history.retention_days = n(&v) as u32),
+        field!(
+            3,
+            tr([
+                "Keep a history (time left, charts, wear)",
+                "Garder un historique (autonomie, courbes, usure)",
+                "Verlauf speichern (Restzeit, Diagramme, Verschleiß)",
+                "Guardar historial (autonomía, gráficos, desgaste)",
+                "Conserva la cronologia (autonomia, grafici, usura)",
+                "Guardar histórico (autonomia, gráficos, desgaste)"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.history.enabled),
+            |c, v| c.history.enabled = b(&v)
+        ),
+        field!(
+            3,
+            tr([
+                "Keep it for (days)",
+                "Le conserver (jours)",
+                "Aufbewahren (Tage)",
+                "Conservarlo (días)",
+                "Conservala (giorni)",
+                "Guardar por (dias)"
+            ]),
+            Kind::Number(7, 3650),
+            |c| Value::Num(c.history.retention_days as i64),
+            |c, v| c.history.retention_days = n(&v) as u32
+        ),
         // Network
-        field!(4, tr(["Web page and API", "Page web et API", "Webseite und API", "Página web y API", "Pagina web e API", "Página web e API"]), Kind::Check, |c| Value::Bool(c.http.enabled), |c, v| c.http.enabled = b(&v)),
-        field!(4, tr(["Address (localhost, IP or 0.0.0.0)", "Adresse (localhost, IP ou 0.0.0.0)", "Adresse (localhost, IP oder 0.0.0.0)", "Dirección (localhost, IP o 0.0.0.0)", "Indirizzo (localhost, IP o 0.0.0.0)", "Endereço (localhost, IP ou 0.0.0.0)"]), Kind::Text, |c| Value::Text(c.http.addr.clone()), |c, v| c.http.addr = s(v)),
+        field!(
+            4,
+            tr(["Web page and API", "Page web et API", "Webseite und API", "Página web y API", "Pagina web e API", "Página web e API"]),
+            Kind::Check,
+            |c| Value::Bool(c.http.enabled),
+            |c, v| c.http.enabled = b(&v)
+        ),
+        field!(
+            4,
+            tr([
+                "Address (localhost, IP or 0.0.0.0)",
+                "Adresse (localhost, IP ou 0.0.0.0)",
+                "Adresse (localhost, IP oder 0.0.0.0)",
+                "Dirección (localhost, IP o 0.0.0.0)",
+                "Indirizzo (localhost, IP o 0.0.0.0)",
+                "Endereço (localhost, IP ou 0.0.0.0)"
+            ]),
+            Kind::Text,
+            |c| Value::Text(c.http.addr.clone()),
+            |c, v| c.http.addr = s(v)
+        ),
         field!(4, "Port", Kind::Number(1, 65535), |c| Value::Num(c.http.port as i64), |c, v| c.http.port = n(&v) as u16),
         field!(4, "IPv6", Kind::Check, |c| Value::Bool(c.http.use_ipv6), |c, v| c.http.use_ipv6 = b(&v)),
-        field!(4, tr(["Access token for other computers", "Jeton d'accès pour les autres PC", "Zugriffstoken für andere PCs", "Token de acceso para otros PC", "Token di accesso per altri PC", "Token de acesso para outros PCs"]), Kind::Secret, |c| Value::Text(c.http.token.clone()), |c, v| c.http.token = s(v)),
-        field!(4, tr(["Other PCs to show here (one URL per line, url#token)", "Autres PC à afficher ici (une URL par ligne, url#jeton)", "Andere PCs hier anzeigen (eine URL pro Zeile, url#token)", "Otros PC a mostrar (una URL por línea, url#token)", "Altri PC da mostrare (un URL per riga, url#token)", "Outros PCs a mostrar (um URL por linha, url#token)"]), Kind::Lines, |c| Value::Lines(c.http.peers.clone()), |c, v| c.http.peers = lines(v)),
+        field!(
+            4,
+            tr([
+                "Access token for other computers",
+                "Jeton d'accès pour les autres PC",
+                "Zugriffstoken für andere PCs",
+                "Token de acceso para otros PC",
+                "Token di accesso per altri PC",
+                "Token de acesso para outros PCs"
+            ]),
+            Kind::Secret,
+            |c| Value::Text(c.http.token.clone()),
+            |c, v| c.http.token = s(v)
+        ),
+        field!(
+            4,
+            tr([
+                "Other PCs to show here (one URL per line, url#token)",
+                "Autres PC à afficher ici (une URL par ligne, url#jeton)",
+                "Andere PCs hier anzeigen (eine URL pro Zeile, url#token)",
+                "Otros PC a mostrar (una URL por línea, url#token)",
+                "Altri PC da mostrare (un URL per riga, url#token)",
+                "Outros PCs a mostrar (um URL por linha, url#token)"
+            ]),
+            Kind::Lines,
+            |c| Value::Lines(c.http.peers.clone()),
+            |c, v| c.http.peers = lines(v)
+        ),
         // Home automation
-        field!(5, tr(["Publish to MQTT (Home Assistant)", "Publier en MQTT (Home Assistant)", "Per MQTT veröffentlichen (Home Assistant)", "Publicar por MQTT (Home Assistant)", "Pubblica via MQTT (Home Assistant)", "Publicar por MQTT (Home Assistant)"]), Kind::Check, |c| Value::Bool(c.mqtt.enabled), |c, v| c.mqtt.enabled = b(&v)),
-        field!(5, tr(["Broker", "Serveur (broker)", "Broker", "Servidor (broker)", "Broker", "Servidor (broker)"]), Kind::Text, |c| Value::Text(c.mqtt.host.clone()), |c, v| c.mqtt.host = s(v)),
+        field!(
+            5,
+            tr([
+                "Publish to MQTT (Home Assistant)",
+                "Publier en MQTT (Home Assistant)",
+                "Per MQTT veröffentlichen (Home Assistant)",
+                "Publicar por MQTT (Home Assistant)",
+                "Pubblica via MQTT (Home Assistant)",
+                "Publicar por MQTT (Home Assistant)"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.mqtt.enabled),
+            |c, v| c.mqtt.enabled = b(&v)
+        ),
+        field!(
+            5,
+            tr(["Broker", "Serveur (broker)", "Broker", "Servidor (broker)", "Broker", "Servidor (broker)"]),
+            Kind::Text,
+            |c| Value::Text(c.mqtt.host.clone()),
+            |c, v| c.mqtt.host = s(v)
+        ),
         field!(5, "Port", Kind::Number(1, 65535), |c| Value::Num(c.mqtt.port as i64), |c, v| c.mqtt.port = n(&v) as u16),
-        field!(5, tr(["User", "Utilisateur", "Benutzer", "Usuario", "Utente", "Usuário"]), Kind::Text, |c| Value::Text(c.mqtt.username.clone()), |c, v| c.mqtt.username = s(v)),
-        field!(5, tr(["Password", "Mot de passe", "Passwort", "Contraseña", "Password", "Senha"]), Kind::Secret, |c| Value::Text(c.mqtt.password.clone()), |c, v| c.mqtt.password = s(v)),
-        field!(5, tr(["Base topic", "Sujet de base", "Basis-Topic", "Tema base", "Topic di base", "Tópico base"]), Kind::Text, |c| Value::Text(c.mqtt.base_topic.clone()), |c, v| c.mqtt.base_topic = s(v)),
-        field!(5, tr(["Home Assistant discovery", "Découverte Home Assistant", "Home-Assistant-Erkennung", "Descubrimiento de Home Assistant", "Rilevamento Home Assistant", "Descoberta do Home Assistant"]), Kind::Check, |c| Value::Bool(c.mqtt.discovery), |c, v| c.mqtt.discovery = b(&v)),
-        field!(5, tr(["Webhooks (one URL per line; Discord, Slack…)", "Webhooks (une URL par ligne ; Discord, Slack…)", "Webhooks (eine URL pro Zeile; Discord, Slack…)", "Webhooks (una URL por línea; Discord, Slack…)", "Webhook (un URL per riga; Discord, Slack…)", "Webhooks (um URL por linha; Discord, Slack…)"]), Kind::Lines, |c| Value::Lines(c.webhooks.urls.clone()), |c, v| c.webhooks.urls = lines(v)),
-        field!(5, tr(["Send every change, not only alerts", "Envoyer chaque changement, pas seulement les alertes", "Jede Änderung senden, nicht nur Warnungen", "Enviar cada cambio, no solo avisos", "Invia ogni modifica, non solo avvisi", "Enviar cada alteração, não só alertas"]), Kind::Check, |c| Value::Bool(c.webhooks.all_changes), |c, v| c.webhooks.all_changes = b(&v)),
+        field!(
+            5,
+            tr(["User", "Utilisateur", "Benutzer", "Usuario", "Utente", "Usuário"]),
+            Kind::Text,
+            |c| Value::Text(c.mqtt.username.clone()),
+            |c, v| c.mqtt.username = s(v)
+        ),
+        field!(
+            5,
+            tr(["Password", "Mot de passe", "Passwort", "Contraseña", "Password", "Senha"]),
+            Kind::Secret,
+            |c| Value::Text(c.mqtt.password.clone()),
+            |c, v| c.mqtt.password = s(v)
+        ),
+        field!(
+            5,
+            tr(["Base topic", "Sujet de base", "Basis-Topic", "Tema base", "Topic di base", "Tópico base"]),
+            Kind::Text,
+            |c| Value::Text(c.mqtt.base_topic.clone()),
+            |c, v| c.mqtt.base_topic = s(v)
+        ),
+        field!(
+            5,
+            tr([
+                "Home Assistant discovery",
+                "Découverte Home Assistant",
+                "Home-Assistant-Erkennung",
+                "Descubrimiento de Home Assistant",
+                "Rilevamento Home Assistant",
+                "Descoberta do Home Assistant"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.mqtt.discovery),
+            |c, v| c.mqtt.discovery = b(&v)
+        ),
+        field!(
+            5,
+            tr([
+                "Webhooks (one URL per line; Discord, Slack…)",
+                "Webhooks (une URL par ligne ; Discord, Slack…)",
+                "Webhooks (eine URL pro Zeile; Discord, Slack…)",
+                "Webhooks (una URL por línea; Discord, Slack…)",
+                "Webhook (un URL per riga; Discord, Slack…)",
+                "Webhooks (um URL por linha; Discord, Slack…)"
+            ]),
+            Kind::Lines,
+            |c| Value::Lines(c.webhooks.urls.clone()),
+            |c, v| c.webhooks.urls = lines(v)
+        ),
+        field!(
+            5,
+            tr([
+                "Send every change, not only alerts",
+                "Envoyer chaque changement, pas seulement les alertes",
+                "Jede Änderung senden, nicht nur Warnungen",
+                "Enviar cada cambio, no solo avisos",
+                "Invia ogni modifica, non solo avvisi",
+                "Enviar cada alteração, não só alertas"
+            ]),
+            Kind::Check,
+            |c| Value::Bool(c.webhooks.all_changes),
+            |c, v| c.webhooks.all_changes = b(&v)
+        ),
     ]
 }
 
@@ -210,7 +658,6 @@ fn fields() -> Vec<Field> {
 pub struct KnownDevice {
     pub id: String,
     pub name: String,
-    pub kind: DeviceKind,
 }
 
 struct Ctl {
@@ -266,7 +713,7 @@ pub fn open(owner: HWND, cfg: &Config, path: PathBuf, mut devices: Vec<KnownDevi
     // Devices only known from the settings file are configurable too.
     for id in cfg.devices.keys().chain(cfg.ui.selected_devices.iter()) {
         if !devices.iter().any(|d| &d.id == id) {
-            devices.push(KnownDevice { id: id.clone(), name: id.clone(), kind: DeviceKind::Other });
+            devices.push(KnownDevice { id: id.clone(), name: id.clone() });
         }
     }
     sort_devices(&mut devices, cfg);
@@ -370,7 +817,20 @@ fn build(hwnd: HWND) {
         };
 
         let (width, label_w, ctl_x, ctl_w) = (600, 300, 330, 250);
-        let tab = CreateWindowExW(0, WC_TABCONTROLW, null(), WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, px(10), px(10), px(width - 20), px(30), hwnd, null_mut(), instance, null());
+        let tab = CreateWindowExW(
+            0,
+            WC_TABCONTROLW,
+            null(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            px(10),
+            px(10),
+            px(width - 20),
+            px(30),
+            hwnd,
+            null_mut(),
+            instance,
+            null(),
+        );
         SendMessageW(tab, WM_SETFONT, font as usize, 1);
         for (i, title) in pages().iter().enumerate() {
             let mut w = wide(title);
@@ -392,8 +852,28 @@ fn build(hwnd: HWND) {
 
         // Devices page: list and order buttons above the per-device fields.
         let list = child("LISTBOX", "", WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY_, 0, 20, 56, width - 40 - 110, 150, ID_DEV_LIST);
-        let up = child("BUTTON", tr(["Move up", "Monter", "Nach oben", "Subir", "Su", "Subir"]), WS_TABSTOP | BS_PUSHBUTTON_, 0, width - 120, 56, 100, 28, ID_DEV_UP);
-        let down = child("BUTTON", tr(["Move down", "Descendre", "Nach unten", "Bajar", "Giù", "Descer"]), WS_TABSTOP | BS_PUSHBUTTON_, 0, width - 120, 90, 100, 28, ID_DEV_DOWN);
+        let up = child(
+            "BUTTON",
+            tr(["Move up", "Monter", "Nach oben", "Subir", "Su", "Subir"]),
+            WS_TABSTOP | BS_PUSHBUTTON_,
+            0,
+            width - 120,
+            56,
+            100,
+            28,
+            ID_DEV_UP,
+        );
+        let down = child(
+            "BUTTON",
+            tr(["Move down", "Descendre", "Nach unten", "Bajar", "Giù", "Descer"]),
+            WS_TABSTOP | BS_PUSHBUTTON_,
+            0,
+            width - 120,
+            90,
+            100,
+            28,
+            ID_DEV_DOWN,
+        );
         extras.extend([(2, list), (2, up), (2, down)]);
         if dev_count == 0 {
             let none = child("STATIC", i18n::no_device(), 0, 0, 20, 216, width - 40, 20, 0);
@@ -412,7 +892,17 @@ fn build(hwnd: HWND) {
                 Kind::Check => (child("BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX_, 0, 20, y, width - 40, 24, id), null_mut(), 30),
                 Kind::Lines => {
                     let l = child("STATIC", label, 0, 0, 20, y, width - 40, 20, 0);
-                    let c = child("EDIT", "", WS_TABSTOP | WS_VSCROLL | ES_MULTILINE_ | ES_WANTRETURN_ | ES_AUTOHSCROLL_, WS_EX_CLIENTEDGE, 20, y + 22, width - 40, 64, id);
+                    let c = child(
+                        "EDIT",
+                        "",
+                        WS_TABSTOP | WS_VSCROLL | ES_MULTILINE_ | ES_WANTRETURN_ | ES_AUTOHSCROLL_,
+                        WS_EX_CLIENTEDGE,
+                        20,
+                        y + 22,
+                        width - 40,
+                        64,
+                        id,
+                    );
                     (c, l, 94)
                 }
                 _ => {
@@ -431,11 +921,23 @@ fn build(hwnd: HWND) {
                         }
                         Kind::Secret if *page == 4 => {
                             // Room for the "New" button.
-                            let gen = child("BUTTON", tr(["New", "Nouveau", "Neu", "Nuevo", "Nuovo", "Novo"]), WS_TABSTOP | BS_PUSHBUTTON_, 0, ctl_x + ctl_w - 80, y, 80, 24, ID_TOKEN);
+                            let gen = child(
+                                "BUTTON",
+                                tr(["New", "Nouveau", "Neu", "Nuevo", "Nuovo", "Novo"]),
+                                WS_TABSTOP | BS_PUSHBUTTON_,
+                                0,
+                                ctl_x + ctl_w - 80,
+                                y,
+                                80,
+                                24,
+                                ID_TOKEN,
+                            );
                             extras.push((4, gen));
                             child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_ | ES_PASSWORD_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w - 86, 24, id)
                         }
-                        Kind::Secret => child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_ | ES_PASSWORD_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w, 24, id),
+                        Kind::Secret => {
+                            child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_ | ES_PASSWORD_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w, 24, id)
+                        }
                         _ => child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w, 24, id),
                     };
                     (c, l, 32)
@@ -452,14 +954,57 @@ fn build(hwnd: HWND) {
         }
 
         let bottom = max_y + 16;
-        let raw = child("BUTTON", tr(["Edit the file…", "Modifier le fichier…", "Datei bearbeiten…", "Editar el archivo…", "Modifica il file…", "Editar o arquivo…"]), WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON_, 0, 20, bottom, 150, 30, ID_RAW);
+        let raw = child(
+            "BUTTON",
+            tr([
+                "Edit the file…",
+                "Modifier le fichier…",
+                "Datei bearbeiten…",
+                "Editar el archivo…",
+                "Modifica il file…",
+                "Editar o arquivo…",
+            ]),
+            WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON_,
+            0,
+            20,
+            bottom,
+            150,
+            30,
+            ID_RAW,
+        );
         let _ = raw;
-        child("BUTTON", tr(["Save", "Enregistrer", "Speichern", "Guardar", "Salva", "Salvar"]), WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON_, 0, width - 240, bottom, 105, 30, ID_SAVE);
-        child("BUTTON", tr(["Cancel", "Annuler", "Abbrechen", "Cancelar", "Annulla", "Cancelar"]), WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON_, 0, width - 125, bottom, 105, 30, ID_CANCEL);
+        child(
+            "BUTTON",
+            tr(["Save", "Enregistrer", "Speichern", "Guardar", "Salva", "Salvar"]),
+            WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON_,
+            0,
+            width - 240,
+            bottom,
+            105,
+            30,
+            ID_SAVE,
+        );
+        child(
+            "BUTTON",
+            tr(["Cancel", "Annuler", "Abbrechen", "Cancelar", "Annulla", "Cancelar"]),
+            WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON_,
+            0,
+            width - 125,
+            bottom,
+            105,
+            30,
+            ID_CANCEL,
+        );
 
         // Size the window around the client area.
         let mut r = RECT { left: 0, top: 0, right: px(width), bottom: px(bottom + 46) };
-        windows_sys::Win32::UI::HiDpi::AdjustWindowRectExForDpi(&mut r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 0, WS_EX_CONTROLPARENT, GetDpiForWindow(hwnd));
+        windows_sys::Win32::UI::HiDpi::AdjustWindowRectExForDpi(
+            &mut r,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+            0,
+            WS_EX_CONTROLPARENT,
+            GetDpiForWindow(hwnd),
+        );
         SetWindowPos(hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
         SetWindowPos(tab, null_mut(), 0, 0, px(width - 20), px(bottom - 16), SWP_NOMOVE | SWP_NOZORDER);
 
@@ -667,7 +1212,18 @@ fn save() -> bool {
         cfg.ui.selected_devices.clone_from(&st.cfg.ui.selected_devices);
         cfg.ui.device_order.clone_from(&st.cfg.ui.device_order);
         if !cfg.ui.hotkey.trim().is_empty() && hotkey::parse(&cfg.ui.hotkey).is_none() {
-            errors.push(format!("{} : {}", tr(["Invalid shortcut", "Raccourci invalide", "Ungültiges Tastenkürzel", "Atajo no válido", "Scorciatoia non valida", "Atalho inválido"]), cfg.ui.hotkey));
+            errors.push(format!(
+                "{} : {}",
+                tr([
+                    "Invalid shortcut",
+                    "Raccourci invalide",
+                    "Ungültiges Tastenkürzel",
+                    "Atajo no válido",
+                    "Scorciatoia non valida",
+                    "Atalho inválido"
+                ]),
+                cfg.ui.hotkey
+            ));
         }
         if !errors.is_empty() {
             let title = tr(["Please check", "À vérifier", "Bitte prüfen", "Revise", "Da verificare", "Verifique"]);

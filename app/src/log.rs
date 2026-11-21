@@ -74,6 +74,7 @@ pub fn init(path: &Path) {
 }
 
 /// Stops logging (the file is kept).
+#[cfg(test)]
 pub fn disable() {
     ENABLED.store(false, Ordering::Release);
     if let Ok(mut guard) = SINK.lock() {

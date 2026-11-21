@@ -334,9 +334,7 @@ mod imp {
 
     fn scan(flags: Flags, transactions: &mut HashMap<u16, u8>) -> Vec<Seen> {
         let wanted = |vid: u16| {
-            (flags.razer && vid == RAZER_VID)
-                || (flags.corsair && vid == CORSAIR_VID)
-                || (flags.steelseries && vid == STEELSERIES_VID)
+            (flags.razer && vid == RAZER_VID) || (flags.corsair && vid == CORSAIR_VID) || (flags.steelseries && vid == STEELSERIES_VID)
         };
         let mut out: Vec<Seen> = Vec::new();
         // Physical devices already answered (one collection is enough).

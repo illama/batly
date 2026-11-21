@@ -137,8 +137,7 @@ impl ReceiverKind {
             0xC548 => Self::Bolt,
             0xC52B | 0xC532 => Self::Unifying,
             0xC539 | 0xC53A | 0xC53D | 0xC53F | 0xC541 | 0xC545 | 0xC547 | 0xC54D => Self::Lightspeed,
-            0xC518 | 0xC51A | 0xC51B | 0xC521 | 0xC525 | 0xC526 | 0xC52E | 0xC52F | 0xC531 | 0xC534 | 0xC535
-            | 0xC537 => Self::Nano,
+            0xC518 | 0xC51A | 0xC51B | 0xC521 | 0xC525 | 0xC526 | 0xC52E | 0xC52F | 0xC531 | 0xC534 | 0xC535 | 0xC537 => Self::Nano,
             _ => Self::Unknown,
         }
     }
@@ -219,12 +218,21 @@ pub enum PairingEvent {
     /// Easy-Switch or connect button.
     Waiting,
     /// Bolt: a device has been discovered and is being paired.
-    Found { name: String },
+    Found {
+        name: String,
+    },
     /// Bolt: the user must authenticate. On a keyboard, type `code` then
     /// Enter (`keyboard == true`); on a mouse, click the sequence given by
     /// [`passkey_clicks`] then both buttons together.
-    Passkey { name: String, code: String, keyboard: bool },
-    Paired { slot: u8, name: String },
+    Passkey {
+        name: String,
+        code: String,
+        keyboard: bool,
+    },
+    Paired {
+        slot: u8,
+        name: String,
+    },
     Failed(PairingError),
     Timeout,
     Cancelled,
@@ -324,7 +332,10 @@ pub enum Setting {
     Dpi(u16),
     /// Report interval in milliseconds.
     ReportRate(u8),
-    Backlight { mode: BacklightMode, level: u8 },
+    Backlight {
+        mode: BacklightMode,
+        level: u8,
+    },
     SmartShift(WheelMode),
 }
 
@@ -338,10 +349,20 @@ pub enum Command {
     /// Open the pairing lock; progress is streamed on the channel.
     Pair(Sender<PairingEvent>),
     CancelPairing,
-    Unpair { slot: u8, reply: Sender<Result<(), ActionError>> },
-    GetSettings { device: String, reply: SettingsReply },
+    Unpair {
+        slot: u8,
+        reply: Sender<Result<(), ActionError>>,
+    },
+    GetSettings {
+        device: String,
+        reply: SettingsReply,
+    },
     /// Applies a setting, then answers with the settings read back.
-    SetSetting { device: String, setting: Setting, reply: SettingsReply },
+    SetSetting {
+        device: String,
+        setting: Setting,
+        reply: SettingsReply,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -434,12 +455,11 @@ pub fn parse_voltage(p: &[u8]) -> Option<Battery> {
 
 /// Average discharge curve of a 3.7 V LiPo cell, 100 % down to 1 %.
 const MV_LUT: [u16; 100] = [
-    4186, 4156, 4143, 4133, 4122, 4113, 4103, 4094, 4086, 4075, 4067, 4059, 4051, 4043, 4035, 4027, 4019, 4011, 4003,
-    3997, 3989, 3983, 3976, 3969, 3961, 3955, 3949, 3942, 3935, 3929, 3922, 3916, 3909, 3902, 3896, 3890, 3883, 3877,
-    3870, 3865, 3859, 3853, 3848, 3842, 3837, 3833, 3828, 3824, 3819, 3815, 3811, 3808, 3804, 3800, 3797, 3793, 3790,
-    3787, 3784, 3781, 3778, 3775, 3772, 3770, 3767, 3764, 3762, 3759, 3757, 3754, 3751, 3748, 3744, 3741, 3737, 3734,
-    3730, 3726, 3724, 3720, 3717, 3714, 3710, 3706, 3702, 3697, 3693, 3688, 3683, 3677, 3671, 3666, 3662, 3658, 3654,
-    3646, 3633, 3612, 3579, 3537,
+    4186, 4156, 4143, 4133, 4122, 4113, 4103, 4094, 4086, 4075, 4067, 4059, 4051, 4043, 4035, 4027, 4019, 4011, 4003, 3997, 3989, 3983,
+    3976, 3969, 3961, 3955, 3949, 3942, 3935, 3929, 3922, 3916, 3909, 3902, 3896, 3890, 3883, 3877, 3870, 3865, 3859, 3853, 3848, 3842,
+    3837, 3833, 3828, 3824, 3819, 3815, 3811, 3808, 3804, 3800, 3797, 3793, 3790, 3787, 3784, 3781, 3778, 3775, 3772, 3770, 3767, 3764,
+    3762, 3759, 3757, 3754, 3751, 3748, 3744, 3741, 3737, 3734, 3730, 3726, 3724, 3720, 3717, 3714, 3710, 3706, 3702, 3697, 3693, 3688,
+    3683, 3677, 3671, 3666, 3662, 3658, 3654, 3646, 3633, 3612, 3579, 3537,
 ];
 
 pub fn percent_from_millivolts(mv: u16) -> u8 {
@@ -704,13 +724,7 @@ pub struct Session<T: Transport> {
 }
 
 impl<T: Transport> Session<T> {
-    pub fn new(
-        transport: T,
-        cfg: Settings,
-        commands: Receiver<Command>,
-        sink: impl Fn(Event) + Send + 'static,
-        tag: String,
-    ) -> Self {
+    pub fn new(transport: T, cfg: Settings, commands: Receiver<Command>, sink: impl Fn(Event) + Send + 'static, tag: String) -> Self {
         Self {
             transport,
             cfg,
@@ -771,8 +785,7 @@ impl<T: Transport> Session<T> {
             self.pairing_step()?;
 
             let now = Instant::now();
-            let due: Vec<u8> =
-                self.devices.iter().filter(|(_, s)| s.due.is_some_and(|d| d <= now)).map(|(&i, _)| i).collect();
+            let due: Vec<u8> = self.devices.iter().filter(|(_, s)| s.due.is_some_and(|d| d <= now)).map(|(&i, _)| i).collect();
             if !due.is_empty() {
                 for idx in due {
                     self.service(idx)?;
@@ -1262,13 +1275,7 @@ impl<T: Transport> Session<T> {
         };
 
         log!("[{}] device {}: {:?} id={} battery={:?}", self.tag, idx, name, id, battery);
-        (self.sink)(Event::Init {
-            id: id.clone(),
-            name: name.clone(),
-            kind,
-            source: Source::Native,
-            has_battery: battery.is_some(),
-        });
+        (self.sink)(Event::Init { id: id.clone(), name: name.clone(), kind, source: Source::Native, has_battery: battery.is_some() });
         let mut info = Info::new(id, name, kind, battery);
         info.features.insert(FEAT_DEVICE_NAME, f_name);
         if let Some(f) = f_info {
@@ -1421,12 +1428,8 @@ impl<T: Transport> Session<T> {
         };
 
         if self.direct {
-            let devices: Vec<PairedDevice> = self
-                .devices
-                .iter()
-                .filter(|(_, s)| s.info.is_some())
-                .map(|(&slot, s)| to_paired(slot, s, None))
-                .collect();
+            let devices: Vec<PairedDevice> =
+                self.devices.iter().filter(|(_, s)| s.info.is_some()).map(|(&slot, s)| to_paired(slot, s, None)).collect();
             let name = devices.first().map_or_else(|| kind.name().to_string(), |d| d.name.clone());
             return Ok(ReceiverInfo {
                 id: String::new(),
@@ -1682,11 +1685,8 @@ impl<T: Transport> Session<T> {
     // ----------------------------------------------------------- settings
 
     fn settings_target(&self, device: &str) -> Result<u8, ActionError> {
-        let (&idx, slot) = self
-            .devices
-            .iter()
-            .find(|(_, s)| s.info.as_ref().is_some_and(|i| i.id == device))
-            .ok_or(ActionError::NotSupported)?;
+        let (&idx, slot) =
+            self.devices.iter().find(|(_, s)| s.info.as_ref().is_some_and(|i| i.id == device)).ok_or(ActionError::NotSupported)?;
         if !slot.online {
             return Err(ActionError::Offline);
         }
@@ -2020,7 +2020,7 @@ mod tests {
                 }
                 (8, 3) => {
                     self.dpi = u16::from_be_bytes([req[5], req[6]]);
-                    self.reply(req, &req[4..7].to_vec());
+                    self.reply(req, &req[4..7]);
                 }
                 (9, 0) => self.reply(req, &[0b1000_1011]),
                 (9, 1) => self.reply(req, &[self.rate]),
@@ -2078,10 +2078,10 @@ mod tests {
                     self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x20, 0x01, 8, 0x40, 0x93, 0, 0, 0x02])
                 }
                 (0x83, 0xB5, 0x40) if !self.bolt => self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x40, 5, b'G', b' ', b'P', b'r', b'o']),
-                (0x83, 0xB5, 0x51) if self.bolt && !self.unpaired.contains(&1) => self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x51, 0x02, 0x93, 0x40, 1, 2, 3, 4]),
-                (0x83, 0xB5, 0x61) if self.bolt => {
-                    self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x61, 0x01, 5, b'G', b' ', b'P', b'r', b'o'])
+                (0x83, 0xB5, 0x51) if self.bolt && !self.unpaired.contains(&1) => {
+                    self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x51, 0x02, 0x93, 0x40, 1, 2, 3, 4])
                 }
+                (0x83, 0xB5, 0x61) if self.bolt => self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x61, 0x01, 5, b'G', b' ', b'P', b'r', b'o']),
                 (0x83, 0xB5, 0x41) if !self.bolt => self.long(&[0x11, 0xFF, 0x83, 0xB5, 0x41, 4, b'K', b'4', b'0', b'0']),
                 // Unifying pairing lock.
                 (0x80, 0xB2, action) => {
@@ -2113,10 +2113,7 @@ mod tests {
                         assert_eq!(timeout, PAIRING_WINDOW);
                         self.short([0x10, 0xFF, 0x53, 0x00, 0, 0, 0]);
                         // Discovered keyboard: kind, address, authentication.
-                        self.long(&[
-                            0x11, 0xFF, 0x4F, 0x07, 0x00, 0x00, 0, 0x01, 0, 0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0, 0,
-                            0x01,
-                        ]);
+                        self.long(&[0x11, 0xFF, 0x4F, 0x07, 0x00, 0x00, 0, 0x01, 0, 0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0, 0, 0x01]);
                         // Its name.
                         self.long(&[0x11, 0xFF, 0x4F, 0x07, 0x00, 0x01, 7, b'M', b'X', b' ', b'K', b'e', b'y', b's']);
                         // A notification from another discovery round is ignored.
@@ -2195,12 +2192,7 @@ mod tests {
     }
 
     fn settings() -> Settings {
-        Settings {
-            retry: Duration::from_secs(10),
-            poll: Duration::from_secs(600),
-            disabled: vec![],
-            settle: Duration::from_millis(20),
-        }
+        Settings { retry: Duration::from_secs(10), poll: Duration::from_secs(600), disabled: vec![], settle: Duration::from_millis(20) }
     }
 
     fn run(fake: Fake, cfg: Settings) -> Vec<Event> {
@@ -2285,7 +2277,9 @@ mod tests {
         s.on_unsolicited(&[0x10, 0x01, 0x41, 0x04, 0x42, 0x88, 0x40]);
         let events: Vec<Event> = rx.try_iter().collect();
         assert_eq!(events.len(), 2, "{events:?}");
-        assert!(matches!(&events[0], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Charging));
+        assert!(
+            matches!(&events[0], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Charging)
+        );
         assert!(matches!(&events[1], Event::Offline { id } if id == "X"));
         assert!(s.devices[&1].due.is_none());
         assert!(!s.devices[&1].online);
@@ -2302,8 +2296,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let (cmd_tx, cmd_rx) = mpsc::channel();
         std::mem::forget(cmd_tx); // keep the command channel open
-        let mut s = Session::new(fake, settings(), cmd_rx, move |e| tx.send(e).unwrap(), "t".into())
-            .with_product_id(product_id);
+        let mut s = Session::new(fake, settings(), cmd_rx, move |e| tx.send(e).unwrap(), "t".into()).with_product_id(product_id);
         s.discover().unwrap();
         s.service(1).unwrap();
         (s, rx)

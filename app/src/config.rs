@@ -147,7 +147,7 @@ pub struct Mqtt {
     pub discovery_prefix: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Webhooks {
     /// URLs that receive a JSON POST on every alert (low battery, charged…).
@@ -217,14 +217,7 @@ impl Default for History {
 
 impl Default for Http {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            addr: "localhost".into(),
-            port: 12321,
-            use_ipv6: true,
-            token: String::new(),
-            peers: Vec::new(),
-        }
+        Self { enabled: true, addr: "localhost".into(), port: 12321, use_ipv6: true, token: String::new(), peers: Vec::new() }
     }
 }
 
@@ -258,12 +251,6 @@ impl Default for Mqtt {
             discovery: true,
             discovery_prefix: "homeassistant".into(),
         }
-    }
-}
-
-impl Default for Webhooks {
-    fn default() -> Self {
-        Self { urls: Vec::new(), all_changes: false }
     }
 }
 

@@ -14,6 +14,13 @@
 //! set, requests that do not come from this computer need `?token=` or
 //! `Authorization: Bearer`.
 //!
+//! Web pages: only pages served from this computer (`localhost`, loopback
+//! addresses) get the CORS header, so an ordinary website opened in the
+//! browser cannot read the devices. Without a valid token, the `Host` header
+//! must name this computer (localhost, an IP address or the computer name):
+//! this defeats DNS rebinding, where a website points its own name at
+//! 127.0.0.1 to read the API as if it were local.
+//!
 //! Built on `std::net` only: no HTTP.sys, hence no admin rights needed to
 //! listen on every interface.
 
@@ -115,20 +122,21 @@ fn hostname() -> String {
 /// Starts the listeners; returns the addresses actually bound.
 pub fn start(cfg: &config::Http, ctx: Arc<Context>) -> Vec<SocketAddr> {
     let token: Arc<str> = cfg.token.trim().into();
+    let me: Arc<str> = hostname().into();
     let (connections, streams) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let mut bound = Vec::new();
     for addr in resolve(cfg) {
         match TcpListener::bind(addr) {
             Ok(listener) => {
                 bound.push(listener.local_addr().unwrap_or(addr));
-                let (ctx, token, connections, streams) = (ctx.clone(), token.clone(), connections.clone(), streams.clone());
+                let (ctx, token, me, connections, streams) = (ctx.clone(), token.clone(), me.clone(), connections.clone(), streams.clone());
                 let _ = thread::Builder::new().name("http".into()).stack_size(128 * 1024).spawn(move || {
                     for stream in listener.incoming().flatten() {
                         let Some(slot) = Slot::take(&connections, MAX_CONNECTIONS) else { continue };
-                        let (ctx, token, streams) = (ctx.clone(), token.clone(), streams.clone());
+                        let (ctx, token, me, streams) = (ctx.clone(), token.clone(), me.clone(), streams.clone());
                         let _ = thread::Builder::new().name("http-conn".into()).stack_size(256 * 1024).spawn(move || {
                             let _slot = slot;
-                            if let Err(e) = handle(stream, &ctx, &token, &streams) {
+                            if let Err(e) = handle(stream, &ctx, &token, &me, &streams) {
                                 log!("http: {e}");
                             }
                         });
@@ -174,14 +182,14 @@ fn resolve(cfg: &config::Http) -> Vec<SocketAddr> {
     addrs
 }
 
-fn handle(stream: TcpStream, ctx: &Context, token: &str, streams: &Arc<AtomicUsize>) -> io::Result<()> {
+fn handle(stream: TcpStream, ctx: &Context, token: &str, me: &str, streams: &Arc<AtomicUsize>) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut reader = BufReader::with_capacity(2048, &stream);
     let mut request_line = String::new();
     reader.by_ref().take(4096).read_line(&mut request_line)?;
-    // Read (and drain) the headers; only Authorization matters.
-    let mut auth = None;
+    // Read (and drain) the headers; only Authorization, Host and Origin matter.
+    let (mut auth, mut host, mut origin) = (None, None, None);
     let mut line = String::new();
     for _ in 0..100 {
         line.clear();
@@ -189,8 +197,13 @@ fn handle(stream: TcpStream, ctx: &Context, token: &str, streams: &Arc<AtomicUsi
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("authorization") {
-                auth = Some(value.trim().to_string());
+            let (name, value) = (name.trim(), Some(value.trim().to_string()));
+            if name.eq_ignore_ascii_case("authorization") {
+                auth = value;
+            } else if name.eq_ignore_ascii_case("host") {
+                host = value;
+            } else if name.eq_ignore_ascii_case("origin") {
+                origin = value;
             }
         }
     }
@@ -198,16 +211,18 @@ fn handle(stream: TcpStream, ctx: &Context, token: &str, streams: &Arc<AtomicUsi
     let mut parts = request_line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     let loopback = stream.peer_addr().is_ok_and(|a| is_loopback(a.ip()));
-    let req = Request { method, target, authorized: authorized(token, loopback, target, auth.as_deref()) };
+    let host_ok = host_allowed(host.as_deref(), me);
+    let req = Request { method, target, authorized: authorized(token, loopback, host_ok, target, auth.as_deref()) };
+    let cors = origin.as_deref().filter(|o| origin_allowed(o));
     let mut out = &stream;
     if method == "GET" && req.authorized && split_target(target).0 == "/api/events" {
         return match Slot::take(streams, MAX_STREAMS) {
-            Some(_slot) => event_stream(&stream, ctx, query_flag(target, "local")),
-            None => out.write_all(&Response::new(503, "text/plain", "Too many clients.".into()).to_bytes(false)),
+            Some(_slot) => event_stream(&stream, ctx, query_flag(target, "local"), cors),
+            None => out.write_all(&Response::new(503, "text/plain", "Too many clients.".into()).to_bytes(false, cors)),
         };
     }
     let response = respond(&req, ctx);
-    out.write_all(&response.to_bytes(method == "HEAD"))?;
+    out.write_all(&response.to_bytes(method == "HEAD", cors))?;
     out.flush()
 }
 
@@ -218,17 +233,70 @@ pub fn is_loopback(ip: IpAddr) -> bool {
     }
 }
 
-/// Requests from this computer, or any request when no token is set, are
-/// let through; others must give the token in the query or as a bearer.
-pub fn authorized(token: &str, loopback: bool, target: &str, authorization: Option<&str>) -> bool {
-    if token.is_empty() || loopback {
+/// A request that gives the right token (in the query or as a bearer) is
+/// let through. Without it, requests from this computer, or any request when
+/// no token is set, are let through only when `Host` names this computer
+/// (`host_ok`, see [`host_allowed`]).
+pub fn authorized(token: &str, loopback: bool, host_ok: bool, target: &str, authorization: Option<&str>) -> bool {
+    if !token.is_empty() && token_given(token, target, authorization) {
         return true;
     }
+    (token.is_empty() || loopback) && host_ok
+}
+
+fn token_given(token: &str, target: &str, authorization: Option<&str>) -> bool {
     let bearer = authorization
         .map(str::trim)
         .filter(|h| h.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("bearer ")))
         .map(|h| h[7..].trim().to_string());
     query(target, "token").or(bearer).is_some_and(|given| constant_time_eq(given.as_bytes(), token.as_bytes()))
+}
+
+/// Name part of a `Host` header or of an origin's authority: port and
+/// brackets removed, lower case, no trailing dot.
+fn host_name(authority: &str) -> String {
+    let authority = authority.trim();
+    let name = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        match authority.rsplit_once(':') {
+            Some((name, port)) if port.bytes().all(|b| b.is_ascii_digit()) => name,
+            _ => authority,
+        }
+    };
+    name.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn is_localhost(name: &str) -> bool {
+    name == "localhost" || name.ends_with(".localhost")
+}
+
+/// Whether a `Host` header names this computer: localhost, an IP address
+/// (no DNS involved, so no rebinding), or the computer name, alone or
+/// followed by a local domain (`pc-salon.local`). Old HTTP/1.0 clients
+/// without `Host` are accepted.
+pub fn host_allowed(host: Option<&str>, me: &str) -> bool {
+    let Some(host) = host else { return true };
+    let name = host_name(host);
+    let me = me.trim().to_ascii_lowercase();
+    is_localhost(&name)
+        || name.parse::<IpAddr>().is_ok()
+        || (!me.is_empty() && (name == me || name.strip_prefix(me.as_str()).is_some_and(|rest| rest.starts_with('.'))))
+}
+
+/// Whether a web page from this origin may read the responses (CORS): only
+/// pages served from this computer.
+pub fn origin_allowed(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else { return false };
+    let name = host_name(rest.split('/').next().unwrap_or(""));
+    is_localhost(&name) || name.parse::<IpAddr>().is_ok_and(is_loopback)
+}
+
+fn cors_headers(origin: Option<&str>) -> String {
+    match origin {
+        Some(o) => format!("Access-Control-Allow-Origin: {o}\r\nAccess-Control-Allow-Headers: Authorization\r\nVary: Origin\r\n"),
+        None => "Vary: Origin\r\n".into(),
+    }
 }
 
 /// Compares without stopping at the first difference.
@@ -257,7 +325,7 @@ impl Response {
         Self { status, content_type, body }
     }
 
-    fn to_bytes(&self, head_only: bool) -> Vec<u8> {
+    fn to_bytes(&self, head_only: bool, origin: Option<&str>) -> Vec<u8> {
         let reason = match self.status {
             200 => "OK",
             204 => "No Content",
@@ -269,12 +337,12 @@ impl Response {
         };
         let mut out = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}; charset=utf-8\r\nContent-Length: {}\r\n\
-             Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n\
-             Access-Control-Allow-Headers: Authorization\r\n{}Connection: close\r\n\r\n",
+             Cache-Control: no-store\r\n{}{}Connection: close\r\n\r\n",
             self.status,
             reason,
             self.content_type,
             self.body.len(),
+            cors_headers(origin),
             if self.status == 401 { "WWW-Authenticate: Bearer\r\n" } else { "" },
         )
         .into_bytes();
@@ -420,12 +488,16 @@ fn hello(ctx: &Context) -> String {
 /// Streams `device` events until the client goes away: every device on
 /// connection, then each device whose JSON changed. A removed device is
 /// sent as `{"id": …, "removed": true}`.
-fn event_stream(stream: &TcpStream, ctx: &Context, local: bool) -> io::Result<()> {
+fn event_stream(stream: &TcpStream, ctx: &Context, local: bool, origin: Option<&str>) -> io::Result<()> {
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut out = stream;
     out.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n\
-          Access-Control-Allow-Origin: *\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n",
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n\
+             {}X-Accel-Buffering: no\r\nConnection: close\r\n\r\n",
+            cors_headers(origin)
+        )
+        .as_bytes(),
     )?;
     out.write_all(hello(ctx).as_bytes())?;
     let mut sent: HashMap<String, String> = HashMap::new();
@@ -515,9 +587,7 @@ pub fn json(d: &Device) -> String {
 /// `health_percent`, `cycles` and `host`.
 pub fn device_json(ctx: &Context, d: &Device) -> String {
     let e = ctx.estimate(d);
-    let num = |v: Option<f64>, digits: usize| {
-        v.filter(|v| v.is_finite()).map_or_else(|| "null".to_string(), |v| format!("{v:.digits$}"))
-    };
+    let num = |v: Option<f64>, digits: usize| v.filter(|v| v.is_finite()).map_or_else(|| "null".to_string(), |v| format!("{v:.digits$}"));
     let text = |v: Option<&str>| v.map_or(Value::Null, Value::from);
     let mut s = json(d);
     s.pop();
@@ -527,7 +597,7 @@ pub fn device_json(ctx: &Context, d: &Device) -> String {
         num(e.time_left_hours, 2),
         num(e.time_to_full_hours, 2),
         num(e.stats.health_percent, 0),
-        num(Some(e.stats.cycles).filter(|_| e.stats.samples > 1), 2),
+        num((e.stats.samples > 1).then_some(e.stats.cycles), 2),
         text(d.info.host.as_deref()),
     ));
     s
@@ -548,7 +618,7 @@ pub fn metrics(ctx: &Context, local: bool) -> String {
         ("batly_time_left_hours", "Estimated time until empty.", |_, e| e.time_left_hours),
         ("batly_time_to_full_hours", "Estimated time until full.", |_, e| e.time_to_full_hours),
         ("batly_battery_health_percent", "Full-charge runtime compared with the first weeks.", |_, e| e.stats.health_percent),
-        ("batly_battery_cycles", "Full-charge equivalents recorded.", |_, e| Some(e.stats.cycles).filter(|_| e.stats.samples > 1)),
+        ("batly_battery_cycles", "Full-charge equivalents recorded.", |_, e| (e.stats.samples > 1).then_some(e.stats.cycles)),
         ("batly_last_update_timestamp_seconds", "Time of the last reading.", |d, _| {
             d.last_update.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|t| t.as_secs() as f64)
         }),
@@ -724,7 +794,14 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
 
     pub fn index(ctx: &Context) -> String {
         let devices = ctx.devices(false);
-        let title = tr(["Battery levels", "Niveaux de batterie", "Akkustände", "Niveles de batería", "Livelli della batteria", "Níveis de bateria"]);
+        let title = tr([
+            "Battery levels",
+            "Niveaux de batterie",
+            "Akkustände",
+            "Niveles de batería",
+            "Livelli della batteria",
+            "Níveis de bateria",
+        ]);
         let mut s = format!(
             "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Batly – {title}</title>\
@@ -799,16 +876,49 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         }
         let st = &e.stats;
         if let Some(h) = st.full_runtime_hours {
-            row(tr(["Runtime per charge", "Autonomie par charge", "Laufzeit pro Ladung", "Autonomía por carga", "Autonomia per carica", "Autonomia por carga"]), i18n::duration(h));
+            row(
+                tr([
+                    "Runtime per charge",
+                    "Autonomie par charge",
+                    "Laufzeit pro Ladung",
+                    "Autonomía por carga",
+                    "Autonomia per carica",
+                    "Autonomia por carga",
+                ]),
+                i18n::duration(h),
+            );
         }
         if let Some(h) = st.avg_charge_hours {
-            row(tr(["Usual charge time", "Durée de charge habituelle", "Übliche Ladedauer", "Tiempo de carga habitual", "Durata di carica abituale", "Tempo de carga habitual"]), i18n::duration(h));
+            row(
+                tr([
+                    "Usual charge time",
+                    "Durée de charge habituelle",
+                    "Übliche Ladedauer",
+                    "Tiempo de carga habitual",
+                    "Durata di carica abituale",
+                    "Tempo de carga habitual",
+                ]),
+                i18n::duration(h),
+            );
         }
         if let Some(h) = st.health_percent {
-            row(tr(["Battery health", "Santé de la batterie", "Akkuzustand", "Salud de la batería", "Salute della batteria", "Saúde da bateria"]), i18n::percent(h as f32));
+            row(
+                tr([
+                    "Battery health",
+                    "Santé de la batterie",
+                    "Akkuzustand",
+                    "Salud de la batería",
+                    "Salute della batteria",
+                    "Saúde da bateria",
+                ]),
+                i18n::percent(h as f32),
+            );
         }
         if st.samples > 1 && st.cycles >= 0.1 {
-            row(tr(["Charge cycles", "Cycles de charge", "Ladezyklen", "Ciclos de carga", "Cicli di carica", "Ciclos de carga"]), format!("{:.1}", st.cycles));
+            row(
+                tr(["Charge cycles", "Cycles de charge", "Ladezyklen", "Ciclos de carga", "Cicli di carica", "Ciclos de carga"]),
+                format!("{:.1}", st.cycles),
+            );
         }
         drop(row);
         if let Some(t) = d.last_update {
@@ -830,7 +940,14 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
                 ),
                 None => format!(
                     "<div class=\"chart\"><div class=\"none\">{}</div></div>",
-                    tr(["Not enough readings yet for a chart.", "Pas encore assez de relevés pour un graphique.", "Noch nicht genug Messwerte für ein Diagramm.", "Aún no hay lecturas suficientes para un gráfico.", "Letture ancora insufficienti per un grafico.", "Ainda não há leituras suficientes para um gráfico."])
+                    tr([
+                        "Not enough readings yet for a chart.",
+                        "Pas encore assez de relevés pour un graphique.",
+                        "Noch nicht genug Messwerte für ein Diagramm.",
+                        "Aún no hay lecturas suficientes para un gráfico.",
+                        "Letture ancora insufficienti per un grafico.",
+                        "Ainda não há leituras suficientes para um gráfico."
+                    ])
                 ),
             }
         } else {
@@ -1013,7 +1130,13 @@ mod tests {
     #[test]
     fn alias_time_left_and_remote_filter() {
         let hub = hub();
-        hub.publish(Event::Init { id: "peer:pc:X".into(), name: "K".into(), kind: DeviceKind::Keyboard, source: Source::Remote, has_battery: true });
+        hub.publish(Event::Init {
+            id: "peer:pc:X".into(),
+            name: "K".into(),
+            kind: DeviceKind::Keyboard,
+            source: Source::Remote,
+            has_battery: true,
+        });
         hub.publish(Event::Update {
             id: "peer:pc:X".into(),
             battery: Battery { percent: 40.0, status: Status::Discharging, millivolts: None, mileage: Some(12.5) },
@@ -1032,17 +1155,57 @@ mod tests {
         assert!(get(&ctx, "/").body.contains("Ma souris"));
     }
 
+    fn authorized_t(token: &str, loopback: bool, target: &str, authorization: Option<&str>) -> bool {
+        authorized(token, loopback, true, target, authorization)
+    }
+
+    #[test]
+    fn dns_rebinding_and_cors() {
+        // Host must name this computer unless the token is given.
+        for ok in [
+            "localhost:12321",
+            "LOCALHOST",
+            "127.0.0.1:12321",
+            "[::1]:12321",
+            "192.168.1.2",
+            "pc-salon",
+            "PC-Salon.local:12321",
+            "app.localhost",
+        ] {
+            assert!(host_allowed(Some(ok), "PC-SALON"), "{ok}");
+        }
+        for bad in ["evil.example:12321", "pc-salon-evil.com", "localhost.evil.com", "x"] {
+            assert!(!host_allowed(Some(bad), "PC-SALON"), "{bad}");
+        }
+        assert!(host_allowed(None, "") && !host_allowed(Some("pc"), ""));
+        assert!(!authorized("", true, false, "/", None));
+        assert!(!authorized("s3cret", true, false, "/", None));
+        assert!(authorized("s3cret", true, false, "/?token=s3cret", None));
+        assert!(authorized("s3cret", false, false, "/", Some("Bearer s3cret")));
+        // CORS: pages of this computer only.
+        for ok in ["http://localhost:12321", "http://127.0.0.1:8080", "https://[::1]", "http://obs.localhost"] {
+            assert!(origin_allowed(ok), "{ok}");
+        }
+        for bad in ["https://evil.example", "null", "http://192.168.1.2:12321", "file://", "http://localhost.evil.com"] {
+            assert!(!origin_allowed(bad), "{bad}");
+        }
+        let with = String::from_utf8(Response::new(200, "text/plain", "x".into()).to_bytes(false, Some("http://localhost:3000"))).unwrap();
+        assert!(with.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n") && with.contains("Vary: Origin"));
+        let without = String::from_utf8(Response::new(200, "text/plain", "x".into()).to_bytes(false, None)).unwrap();
+        assert!(!without.contains("Access-Control-Allow-Origin"));
+    }
+
     #[test]
     fn token_checks() {
-        assert!(authorized("", false, "/", None));
-        assert!(authorized("s3cret", true, "/", None));
-        assert!(!authorized("s3cret", false, "/", None));
-        assert!(authorized("s3cret", false, "/api/devices?local=1&token=s3cret", None));
-        assert!(!authorized("s3cret", false, "/api/devices?token=s3cre", None));
-        assert!(authorized("s3cret", false, "/", Some("Bearer s3cret")));
-        assert!(authorized("s3cret", false, "/", Some("bearer  s3cret ")));
-        assert!(!authorized("s3cret", false, "/", Some("Basic s3cret")));
-        assert!(authorized("a b", false, "/?token=a%20b", None));
+        assert!(authorized_t("", false, "/", None));
+        assert!(authorized_t("s3cret", true, "/", None));
+        assert!(!authorized_t("s3cret", false, "/", None));
+        assert!(authorized_t("s3cret", false, "/api/devices?local=1&token=s3cret", None));
+        assert!(!authorized_t("s3cret", false, "/api/devices?token=s3cre", None));
+        assert!(authorized_t("s3cret", false, "/", Some("Bearer s3cret")));
+        assert!(authorized_t("s3cret", false, "/", Some("bearer  s3cret ")));
+        assert!(!authorized_t("s3cret", false, "/", Some("Basic s3cret")));
+        assert!(authorized_t("a b", false, "/?token=a%20b", None));
         assert!(constant_time_eq(b"abc", b"abc") && !constant_time_eq(b"abc", b"abd") && !constant_time_eq(b"ab", b"abc"));
         assert!(!constant_time_eq(b"", b"\xFF"));
         assert!(is_loopback("::ffff:127.0.0.1".parse().unwrap()) && is_loopback("::1".parse().unwrap()));
@@ -1054,12 +1217,16 @@ mod tests {
     #[test]
     fn prometheus_format() {
         let hub = hub();
-        hub.publish(Event::Init { id: "q\"\\\n".into(), name: "N".into(), kind: DeviceKind::Other, source: Source::Vendor, has_battery: true });
+        hub.publish(Event::Init {
+            id: "q\"\\\n".into(),
+            name: "N".into(),
+            kind: DeviceKind::Other,
+            source: Source::Vendor,
+            has_battery: true,
+        });
         let m = metrics(&ctx_of(hub), false);
         assert!(m.contains("# TYPE batly_battery_percent gauge\n"));
-        assert!(m.contains(
-            "batly_battery_percent{id=\"ABC123\",name=\"G <Pro> & Co\",type=\"Mouse\",source=\"native\",host=\"\"} 69\n"
-        ));
+        assert!(m.contains("batly_battery_percent{id=\"ABC123\",name=\"G <Pro> & Co\",type=\"Mouse\",source=\"native\",host=\"\"} 69\n"));
         assert!(m.contains("batly_battery_voltage_volts{id=\"ABC123\"") && m.contains("} 3.92\n"));
         assert!(m.contains("batly_charging{id=\"ABC123\"") && m.contains("batly_online{id=\"q\\\"\\\\\\n\""));
         assert_eq!(prom_escape("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
@@ -1127,12 +1294,12 @@ mod tests {
     fn serves_over_tcp() {
         let (_, addr) = serve("tok");
         let mut s = TcpStream::connect(addr).unwrap();
-        s.write_all(b"GET /device/ABC123 HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        s.write_all(b"GET /device/ABC123 HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\n\r\n").unwrap();
         let mut text = String::new();
         s.read_to_string(&mut text).unwrap();
         // Loopback: no token needed.
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
-        assert!(text.contains("Access-Control-Allow-Origin: *"));
+        assert!(!text.contains("Access-Control-Allow-Origin"));
         assert!(text.ends_with("</xml>"));
     }
 
@@ -1141,7 +1308,7 @@ mod tests {
         let (ctx, addr) = serve("");
         let s = TcpStream::connect(addr).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        (&s).write_all(b"GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        (&s).write_all(b"GET /api/events HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n").unwrap();
         let mut r = BufReader::new(&s);
         let mut read_until = |needle: &str| {
             let mut all = String::new();
@@ -1155,6 +1322,7 @@ mod tests {
         };
         let head = read_until("event: synced");
         assert!(head.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"), "{head}");
+        assert!(head.contains("Access-Control-Allow-Origin: http://localhost:3000"), "{head}");
         assert!(head.contains("event: hello") && head.contains(&ctx.instance) && head.contains("\"battery_percent\":69"));
         ctx.hub.publish(Event::Update {
             id: "ABC123".into(),

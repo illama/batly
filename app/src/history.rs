@@ -140,6 +140,7 @@ impl History {
     }
 
     /// Forgets a device (and deletes its file).
+    #[cfg(test)]
     pub fn forget(&self, id: &str) {
         self.data.lock().unwrap().remove(id);
         if let Some(path) = self.file(id) {
@@ -240,10 +241,7 @@ fn segments(samples: &[Sample]) -> (Vec<Segment>, Vec<Segment>, Vec<(Segment, bo
             charge.push(Segment { start: first, end: samples[j] });
             sessions.push((Segment { start: first, end }, full));
         } else if !plugged(first.status) {
-            while j + 1 < samples.len()
-                && !plugged(samples[j + 1].status)
-                && samples[j + 1].percent <= samples[j].percent + 2.0
-            {
+            while j + 1 < samples.len() && !plugged(samples[j + 1].status) && samples[j + 1].percent <= samples[j].percent + 2.0 {
                 j += 1;
             }
             discharge.push(Segment { start: first, end: samples[j] });
@@ -257,7 +255,7 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     if v.is_empty() {
         return None;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(f64::total_cmp);
     let n = v.len();
     Some(if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 })
 }
@@ -309,8 +307,7 @@ pub fn compute(samples: &[Sample], now: u64) -> Stats {
     }
 
     // Charging speed.
-    let charge_rates: Vec<f64> =
-        charge.iter().filter(|s| s.hours() >= 0.1 && s.delta() >= 3.0).map(|s| s.delta() / s.hours()).collect();
+    let charge_rates: Vec<f64> = charge.iter().filter(|s| s.hours() >= 0.1 && s.delta() >= 3.0).map(|s| s.delta() / s.hours()).collect();
     if last.status == Status::Charging {
         if let Some(r) = median(charge_rates.iter().rev().take(5).copied().collect()) {
             let elapsed = now.saturating_sub(last.t) as f64 / HOUR;
@@ -332,14 +329,8 @@ pub fn compute(samples: &[Sample], now: u64) -> Stats {
             st.health_percent = Some((e / r * 100.0).clamp(1.0, 100.0));
         }
         let full_mv = |range: &dyn Fn(u64) -> bool| {
-            median(
-                samples
-                    .iter()
-                    .filter(|s| s.percent >= 95.0 && range(s.t))
-                    .filter_map(|s| s.millivolts.map(f64::from))
-                    .collect(),
-            )
-            .map(|v| v as u16)
+            median(samples.iter().filter(|s| s.percent >= 95.0 && range(s.t)).filter_map(|s| s.millivolts.map(f64::from)).collect())
+                .map(|v| v as u16)
         };
         st.full_mv_early = full_mv(&|t| t < first + 30 * DAY);
         st.full_mv_recent = full_mv(&|t| t > last.t - 30 * DAY);
@@ -407,7 +398,13 @@ mod tests {
         // 90 days of 2-day cycles; the battery drains 25 % faster at the end.
         let mut t = 0.0;
         for cycle in 0..45 {
-            let rate = if cycle < 15 { 2.0 } else if cycle < 30 { 2.2 } else { 2.5 };
+            let rate = if cycle < 15 {
+                2.0
+            } else if cycle < 30 {
+                2.2
+            } else {
+                2.5
+            };
             let mut p = 100.0f32;
             while p > 10.0 {
                 v.push(Sample { millivolts: (p >= 95.0).then_some(if cycle < 15 { 4150 } else { 4050 }), ..s(t, p, Status::Discharging) });

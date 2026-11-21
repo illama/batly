@@ -6,14 +6,12 @@ use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
 use windows_sys::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
-    RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO,
-    SW_SHOWNORMAL,
+    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO, SW_SHOWNORMAL,
 };
 
 pub const APP_NAME: &str = "Batly";
@@ -168,21 +166,12 @@ pub fn start_menu_shortcut() -> Option<PathBuf> {
 
 pub fn message_box(title: &str, text: &str) {
     // SAFETY: valid NUL-terminated strings, no owner window.
-    unsafe {
-        MessageBoxW(null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OK | MB_SETFOREGROUND | MB_ICONINFORMATION)
-    };
+    unsafe { MessageBoxW(null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OK | MB_SETFOREGROUND | MB_ICONINFORMATION) };
 }
 
 pub fn confirm(title: &str, text: &str) -> bool {
     // SAFETY: valid NUL-terminated strings, no owner window.
-    let r = unsafe {
-        MessageBoxW(
-            null_mut(),
-            wide(text).as_ptr(),
-            wide(title).as_ptr(),
-            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND,
-        )
-    };
+    let r = unsafe { MessageBoxW(null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) };
     r == IDYES
 }
 
@@ -191,13 +180,6 @@ pub fn shell_open(hwnd: HWND, file: &str, args: Option<&str>) {
     let args = args.map(wide);
     // SAFETY: valid NUL-terminated strings.
     unsafe {
-        ShellExecuteW(
-            hwnd,
-            wide("open").as_ptr(),
-            wide(file).as_ptr(),
-            args.as_ref().map_or(null(), |a| a.as_ptr()),
-            null(),
-            SW_SHOWNORMAL,
-        )
+        ShellExecuteW(hwnd, wide("open").as_ptr(), wide(file).as_ptr(), args.as_ref().map_or(null(), |a| a.as_ptr()), null(), SW_SHOWNORMAL)
     };
 }

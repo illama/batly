@@ -10,8 +10,8 @@
 
 use crate::config;
 use crate::hidpp::{
-    self, ActionError, Command, DeviceSettings, Incoming, PairingEvent, ReceiverInfo, Session, Setting, Transport,
-    LONG_LEN, REPORT_LONG, REPORT_SHORT, SHORT_LEN,
+    self, ActionError, Command, DeviceSettings, Incoming, PairingEvent, ReceiverInfo, Session, Setting, Transport, LONG_LEN, REPORT_LONG,
+    REPORT_SHORT, SHORT_LEN,
 };
 use crate::log;
 use crate::model::{Event as HubEvent, Hub, Source};
@@ -26,18 +26,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows_sys::core::GUID;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Get_Device_IDW, CM_Get_Device_Interface_ListW, CM_Get_Device_Interface_List_SizeW,
-    CM_Get_Device_Interface_PropertyW, CM_Get_Parent, CM_Locate_DevNodeW, CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
-    CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
+    CM_Get_Device_IDW, CM_Get_Device_Interface_ListW, CM_Get_Device_Interface_List_SizeW, CM_Get_Device_Interface_PropertyW, CM_Get_Parent,
+    CM_Locate_DevNodeW, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
-    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetHidGuid, HidD_GetPreparsedData, HidP_GetCaps, HIDD_ATTRIBUTES,
-    HIDP_CAPS, HIDP_STATUS_SUCCESS,
+    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetHidGuid, HidD_GetPreparsedData, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS,
+    HIDP_STATUS_SUCCESS,
 };
 use windows_sys::Win32::Devices::Properties::DEVPKEY_Device_InstanceId;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -78,17 +76,13 @@ fn hid_interface_paths() -> Vec<String> {
     for _ in 0..3 {
         let mut len = 0u32;
         // SAFETY: valid out pointer.
-        let rc = unsafe {
-            CM_Get_Device_Interface_List_SizeW(&mut len, &guid, null(), CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
-        };
+        let rc = unsafe { CM_Get_Device_Interface_List_SizeW(&mut len, &guid, null(), CM_GET_DEVICE_INTERFACE_LIST_PRESENT) };
         if rc != CR_SUCCESS || len <= 1 {
             return Vec::new();
         }
         let mut buf = vec![0u16; len as usize];
         // SAFETY: `buf` holds `len` UTF-16 units.
-        let rc = unsafe {
-            CM_Get_Device_Interface_ListW(&guid, null(), buf.as_mut_ptr(), len, CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
-        };
+        let rc = unsafe { CM_Get_Device_Interface_ListW(&guid, null(), buf.as_mut_ptr(), len, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) };
         if rc == CR_SUCCESS {
             return buf.split(|&c| c == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect();
         }
@@ -143,9 +137,8 @@ impl Drop for OwnedHandle {
 
 fn open(path: &str, access: u32, flags: u32) -> Option<OwnedHandle> {
     // SAFETY: valid NUL-terminated path.
-    let h = unsafe {
-        CreateFileW(wide(path).as_ptr(), access, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, flags, null_mut())
-    };
+    let h =
+        unsafe { CreateFileW(wide(path).as_ptr(), access, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, flags, null_mut()) };
     (h != INVALID_HANDLE_VALUE && !h.is_null()).then(|| OwnedHandle(h))
 }
 
@@ -230,8 +223,7 @@ struct Channel {
 
 impl Channel {
     fn open(interface: &Interface) -> io::Result<Self> {
-        let handle = open(&interface.path, GENERIC_READ | GENERIC_WRITE, FILE_FLAG_OVERLAPPED)
-            .ok_or_else(io::Error::last_os_error)?;
+        let handle = open(&interface.path, GENERIC_READ | GENERIC_WRITE, FILE_FLAG_OVERLAPPED).ok_or_else(io::Error::last_os_error)?;
         Ok(Self {
             handle,
             event: Event::new(true)?,
@@ -252,9 +244,7 @@ impl Channel {
         self.overlapped.hEvent = self.event.0;
         // SAFETY: `buf` and `overlapped` are heap allocations that outlive
         // the operation (see `Drop`, which cancels and waits).
-        let ok = unsafe {
-            ReadFile(self.handle.0, self.buf.as_mut_ptr(), self.buf.len() as u32, null_mut(), &mut *self.overlapped)
-        };
+        let ok = unsafe { ReadFile(self.handle.0, self.buf.as_mut_ptr(), self.buf.len() as u32, null_mut(), &mut *self.overlapped) };
         if ok == 0 && unsafe { GetLastError() } != ERROR_IO_PENDING {
             return Err(io::Error::last_os_error());
         }
@@ -568,10 +558,7 @@ fn rescan(running: &mut HashMap<String, Running>, settings: &hidpp::Settings, hu
     // changed (second collection showed up late).
     let stale: Vec<String> = running
         .iter()
-        .filter(|(key, r)| {
-            r.thread.is_finished()
-                || groups.get(*key).is_none_or(|g| g.iter().map(|i| &i.path).ne(r.paths.iter()))
-        })
+        .filter(|(key, r)| r.thread.is_finished() || groups.get(*key).is_none_or(|g| g.iter().map(|i| &i.path).ne(r.paths.iter())))
         .map(|(key, _)| key.clone())
         .collect();
     for key in stale {
@@ -594,16 +581,9 @@ fn rescan(running: &mut HashMap<String, Running>, settings: &hidpp::Settings, hu
     }
 }
 
-fn spawn_session(
-    key: &str,
-    interfaces: &[Interface],
-    settings: &hidpp::Settings,
-    hub: &Arc<Hub>,
-    owners: &Owners,
-) -> io::Result<Running> {
-    let open_kind = |kind: Kind| -> io::Result<Option<Channel>> {
-        interfaces.iter().find(|i| i.kind == kind).map(Channel::open).transpose()
-    };
+fn spawn_session(key: &str, interfaces: &[Interface], settings: &hidpp::Settings, hub: &Arc<Hub>, owners: &Owners) -> io::Result<Running> {
+    let open_kind =
+        |kind: Kind| -> io::Result<Option<Channel>> { interfaces.iter().find(|i| i.kind == kind).map(Channel::open).transpose() };
     let wake = Arc::new(Event::new(false)?);
     let transport =
         WinTransport { short: open_kind(Kind::Short)?, long: open_kind(Kind::Long)?, wake: wake.clone(), write_event: Event::new(true)? };

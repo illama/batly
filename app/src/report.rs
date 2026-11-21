@@ -109,7 +109,8 @@ pub fn issue_url(app_version: &str, windows: &str, zip_name: &str) -> String {
             "<descrição curta>",
         ])
     );
-    let what = tr(["What happened?", "Que s'est-il passé ?", "Was ist passiert?", "¿Qué ha pasado?", "Che cosa è successo?", "O que aconteceu?"]);
+    let what =
+        tr(["What happened?", "Que s'est-il passé ?", "Was ist passiert?", "¿Qué ha pasado?", "Che cosa è successo?", "O que aconteceu?"]);
     let steps = tr([
         "Steps to reproduce",
         "Étapes pour reproduire",
@@ -503,7 +504,10 @@ token = \"not a secret here\"
         assert_eq!(mask_secrets("[HTTPServer]\ntoken = \"\"\n"), "[HTTPServer]\ntoken = \"\"\n");
         assert_eq!(mask_secrets("[ mqtt ]\n\"password\"=\"a\\\"b\"\n"), "[ mqtt ]\n\"password\"=\"***\"\n");
         assert_eq!(mask_secrets("HTTPServer.token = \"x\"\n"), "HTTPServer.token = \"***\"\n");
-        assert_eq!(mask_secrets("[Webhooks]\nurls = [\"a\", [\"b\"]]\nx = \"c\"\n"), "[Webhooks]\nurls = [\"***\", [\"***\"]]\nx = \"c\"\n");
+        assert_eq!(
+            mask_secrets("[Webhooks]\nurls = [\"a\", [\"b\"]]\nx = \"c\"\n"),
+            "[Webhooks]\nurls = [\"***\", [\"***\"]]\nx = \"c\"\n"
+        );
         // The packaged default settings come out unchanged (no secret set).
         let defaults = include_str!("../../packaging/appsettings.toml");
         assert_eq!(mask_secrets(defaults), defaults);
