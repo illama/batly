@@ -762,6 +762,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_CTLCOLORSTATIC => {
+            // Labels and check boxes on the white window background.
+            use windows_sys::Win32::Graphics::Gdi::{GetSysColor, GetSysColorBrush, SetBkColor};
+            SetBkColor(wparam as _, GetSysColor(COLOR_WINDOW));
+            GetSysColorBrush(COLOR_WINDOW) as LRESULT
+        }
         WM_CLOSE => {
             DestroyWindow(hwnd);
             0

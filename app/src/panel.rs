@@ -72,7 +72,6 @@ struct State {
     hot: Option<usize>,
     /// Clickable areas: (command, rect).
     targets: Vec<(usize, RECT)>,
-    closed_at: Option<Instant>,
 }
 
 thread_local! {
@@ -153,7 +152,7 @@ fn open(owner: HWND, content: Content, anchor: Option<POINT>) {
             return;
         }
         STATE.with(|s| {
-            *s.borrow_mut() = Some(State { hwnd, owner, content, hot: None, targets: Vec::new(), closed_at: None })
+            *s.borrow_mut() = Some(State { hwnd, owner, content, hot: None, targets: Vec::new() })
         });
         ui::modern_frame(hwnd, ui::palette().border);
         reposition(hwnd, anchor);
@@ -431,12 +430,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_DESTROY => {
-            STATE.with(|s| {
-                if let Some(st) = s.borrow_mut().as_mut() {
-                    st.closed_at = Some(Instant::now());
-                }
-                *s.borrow_mut() = None;
-            });
+            STATE.with(|s| *s.borrow_mut() = None);
             LAST_CLOSE.with(|c| *c.borrow_mut() = Some(Instant::now()));
             0
         }
