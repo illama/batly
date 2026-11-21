@@ -9,8 +9,8 @@
 //! The window lives on the UI thread; `open` is called from there.
 
 use crate::hidpp::{
-    passkey_clicks, ActionError, BacklightMode, DeviceSettings, PairedDevice, PairingError, PairingEvent, ReceiverInfo,
-    ReceiverKind, Setting, WheelMode,
+    passkey_clicks, ActionError, BacklightMode, DeviceSettings, PairedDevice, PairingError, PairingEvent, ReceiverInfo, ReceiverKind,
+    Setting, WheelMode,
 };
 use crate::i18n::{lang, tr, Lang};
 use crate::model::DeviceKind;
@@ -22,21 +22,21 @@ use std::ptr::{null, null_mut};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, GetSysColorBrush, HFONT, COLOR_BTNFACE};
+use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, GetSysColorBrush, COLOR_BTNFACE, HFONT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, SetWindowTheme, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES,
-    INITCOMMONCONTROLSEX, LVCOLUMNW, LVITEMW, LVN_ITEMCHANGED, NMHDR, NMLISTVIEW,
+    InitCommonControlsEx, SetWindowTheme, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, LVCOLUMNW,
+    LVITEMW, LVN_ITEMCHANGED, NMHDR, NMLISTVIEW,
 };
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, IsChild, IsDialogMessageW, IsIconic, KillTimer,
-    LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK, IDC_ARROW,
-    IDYES, MB_ICONWARNING, MB_YESNO, MSG, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOZORDER, SW_RESTORE, SW_SHOW, WH_GETMESSAGE, WM_APP, WNDCLASSW,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, IsChild, IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, LoadIconW,
+    MessageBoxW, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW,
+    SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK, IDC_ARROW, IDYES, MB_ICONWARNING, MB_YESNO, MSG,
+    NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WH_GETMESSAGE, WM_APP,
+    WNDCLASSW,
 };
 
 const CLASS: &str = "BatlyReceivers";
@@ -625,7 +625,15 @@ impl Ui {
                     let mut r = RECT { left: 0, top: 0, right: scale(CLIENT.0, dpi), bottom: scale(CLIENT.1, dpi) };
                     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
                     AdjustWindowRectExForDpi(&mut r, style, 0, WS_EX_CONTROLPARENT, dpi);
-                    SetWindowPos(self.hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
+                    SetWindowPos(
+                        self.hwnd,
+                        null_mut(),
+                        0,
+                        0,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE,
+                    );
                 }
             }
         }
@@ -1022,9 +1030,7 @@ impl Ui {
             Some(final_event) => {
                 self.pairing_final = true;
                 let text = match final_event {
-                    PairingEvent::Paired { slot, name } => {
-                        s_pair_done().replace("{name}", &name).replace("{slot}", &slot.to_string())
-                    }
+                    PairingEvent::Paired { slot, name } => s_pair_done().replace("{name}", &name).replace("{slot}", &slot.to_string()),
                     PairingEvent::Failed(e) => s_pair_failed().replace("{reason}", pairing_reason(e)),
                     PairingEvent::Timeout => s_pair_timeout().to_string(),
                     _ => s_pair_cancelled().to_string(),

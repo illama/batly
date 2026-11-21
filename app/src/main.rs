@@ -77,14 +77,18 @@ fn print_status(cfg: &config::Config, as_json: bool) -> i32 {
     let url = format!("http://127.0.0.1:{}/api/devices", cfg.http.port);
     let reply = if cfg.http.enabled { fetch::get(&url, &[], std::time::Duration::from_secs(3)).ok() } else { None };
     let Some(reply) = reply.filter(|r| r.ok()) else {
-        let _ = writeln!(out, "{}", i18n::tr([
-            "Batly is not running (or its web server is disabled).",
-            "Batly n'est pas lancé (ou son serveur web est désactivé).",
-            "Batly läuft nicht (oder sein Webserver ist deaktiviert).",
-            "Batly no se está ejecutando (o su servidor web está desactivado).",
-            "Batly non è in esecuzione (o il suo server web è disattivato).",
-            "O Batly não está em execução (ou o servidor web está desativado).",
-        ]));
+        let _ = writeln!(
+            out,
+            "{}",
+            i18n::tr([
+                "Batly is not running (or its web server is disabled).",
+                "Batly n'est pas lancé (ou son serveur web est désactivé).",
+                "Batly läuft nicht (oder sein Webserver ist deaktiviert).",
+                "Batly no se está ejecutando (o su servidor web está desactivado).",
+                "Batly non è in esecuzione (o il suo server web è disattivato).",
+                "O Batly não está em execução (ou o servidor web está desativado).",
+            ])
+        );
         return 2;
     };
     if as_json {
@@ -135,7 +139,10 @@ fn demo(hub: &model::Hub, history: &history::History) {
         }
         hub.publish(Event::Update { id: id.into(), battery: Battery { percent, status, millivolts: Some(3900), mileage: None } });
     }
-    hub.publish(Event::Info { id: "demo-mx".into(), info: DeviceInfo { host_channel: Some((1, 3)), firmware: Some("RBM21.01".into()), ..Default::default() } });
+    hub.publish(Event::Info {
+        id: "demo-mx".into(),
+        info: DeviceInfo { host_channel: Some((1, 3)), firmware: Some("RBM21.01".into()), ..Default::default() },
+    });
 }
 
 #[cfg(windows)]
@@ -261,10 +268,8 @@ fn main() {
     // Settings shared with the servers (aliases), kept current by the tray.
     let shared_cfg = Arc::new(std::sync::Mutex::new(cfg.clone()));
     let names = shared_cfg.clone();
-    let ctx = Arc::new(
-        http::Context::new(hub.clone(), history.clone())
-            .with_names(move |id, name| names.lock().unwrap().display_name(id, name)),
-    );
+    let ctx =
+        Arc::new(http::Context::new(hub.clone(), history.clone()).with_names(move |id, name| names.lock().unwrap().display_name(id, name)));
     let web_url = if cfg.http.enabled && !http::start(&cfg.http, ctx.clone()).is_empty() {
         let host = match cfg.http.addr.trim() {
             "" | "localhost" | "0.0.0.0" | "+" | "*" => "localhost",
@@ -276,10 +281,7 @@ fn main() {
     };
     let known_update = Arc::new(std::sync::Mutex::new(None));
     actions::start_auto_check(&cfg, known_update.clone(), Arc::new(tray::notice_poster(hwnd)));
-    let actions = vec![
-        actions::update_action(cfg_path.clone(), known_update),
-        actions::report_action(hub.clone(), cfg_path.clone()),
-    ];
+    let actions = vec![actions::update_action(cfg_path.clone(), known_update), actions::report_action(hub.clone(), cfg_path.clone())];
     // Integrations. They stop when dropped: the tray keeps them alive.
     let mut keep_alive: Vec<Box<dyn std::any::Any>> = Vec::new();
     keep_alive.push(Box::new(peers::start(&cfg.http.peers, &ctx)));
