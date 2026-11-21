@@ -388,6 +388,8 @@ enum Request {
     ToReceiver(String, Command),
     /// Command for the session that owns a device (hub device id).
     ToDevice(String, Command),
+    /// Stops every session (they give kept LEDs back), then answers.
+    Shutdown(Sender<()>),
 }
 
 /// How long `list_receivers` waits for busy sessions.
@@ -403,14 +405,16 @@ pub struct Native {
 }
 
 impl Native {
-    /// `backup_dir`: where onboard memory is saved before being rewritten.
-    pub fn start(cfg: &config::Native, hub: Arc<Hub>, backup_dir: Option<std::path::PathBuf>) -> Self {
+    /// `data_dir`: folder of the settings; onboard memory backups go to
+    /// `backups\`, the lighting Batly keeps to `lighting.json`.
+    pub fn start(cfg: &config::Native, hub: Arc<Hub>, data_dir: Option<std::path::PathBuf>) -> Self {
         let settings = hidpp::Settings {
             retry: Duration::from_secs(cfg.retry_time as u64),
             poll: Duration::from_secs(cfg.poll_period as u64),
             disabled: cfg.disabled_devices.clone(),
             settle: Duration::from_secs(1),
-            backup_dir,
+            backup_dir: data_dir.as_ref().map(|d| d.join("backups")),
+            lighting_file: data_dir.as_ref().map(|d| d.join("lighting.json")),
         };
         let watcher: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
         let w = watcher.clone();
@@ -452,6 +456,16 @@ impl Native {
                         }
                     }
                     Request::List(reply) => list(&running, reply),
+                    Request::Shutdown(done) => {
+                        for session in running.values() {
+                            session.send(Command::Stop);
+                        }
+                        for (_, session) in running.drain() {
+                            let _ = session.thread.join();
+                        }
+                        let _ = done.send(());
+                        break;
+                    }
                     Request::ToReceiver(key, command) => {
                         // Unknown receiver: the command (and its reply
                         // channel) is dropped, the caller sees a closed channel.
@@ -474,6 +488,15 @@ impl Native {
     /// Call after a device arrival / removal.
     pub fn rescan(&self) {
         let _ = self.requests.send(Request::Rescan);
+    }
+
+    /// Stops the sessions before Batly exits, so LEDs Batly controls go
+    /// back to the devices; waits at most `timeout`.
+    pub fn shutdown(&self, timeout: Duration) {
+        let (done, rx) = mpsc::channel();
+        if self.requests.send(Request::Shutdown(done)).is_ok() {
+            let _ = rx.recv_timeout(timeout);
+        }
     }
 
     /// Re-reads every battery now.
