@@ -79,18 +79,73 @@ pub fn foreground(light: bool) -> [u8; 3] {
     }
 }
 
-/// Renders a `size`×`size` icon, rows top to bottom, straight alpha RGBA.
-pub fn render(spec: &IconSpec, size: usize) -> Vec<u8> {
-    let size = size.clamp(8, SRC);
+fn device_layer(kind: DeviceKind) -> &'static [u8] {
     let l = layers();
-    let fg = foreground(spec.light_foreground);
-    let device = match spec.kind {
+    let layer = match kind {
         DeviceKind::Keyboard => &l.keyboard,
         DeviceKind::Headset => &l.headset,
         DeviceKind::Gamepad => &l.gamepad,
         DeviceKind::Earbuds => &l.earbuds,
         DeviceKind::Mouse | DeviceKind::Other => &l.mouse,
     };
+    layer.as_slice()
+}
+
+/// The device glyph alone (no battery), cropped to its ink, scaled to fit
+/// `w`×`h` and centred. Returns the coverage (0..=1) of each pixel, rows top
+/// to bottom. Used under the number in numeric display mode.
+pub fn glyph_coverage(kind: DeviceKind, w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0f32; w * h];
+    if w == 0 || h == 0 {
+        return out;
+    }
+    let layer = device_layer(kind);
+    let (mut x0, mut y0, mut x1, mut y1) = (SRC, SRC, 0, 0);
+    for y in 0..SRC {
+        for x in 0..SRC {
+            if layer[y * SRC + x] > 0 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return out;
+    }
+    let (bw, bh) = ((x1 - x0) as f32, (y1 - y0) as f32);
+    // Source pixels per destination pixel.
+    let step = (bw / w as f32).max(bh / h as f32);
+    let (dw, dh) = (bw / step, bh / step);
+    let (ox, oy) = ((w as f32 - dw) / 2.0, (h as f32 - dh) / 2.0);
+    // Box filter: average the source footprint of every destination pixel.
+    for dy in 0..h {
+        for dx in 0..w {
+            let sx0 = (dx as f32 - ox) * step + x0 as f32;
+            let sy0 = (dy as f32 - oy) * step + y0 as f32;
+            let (mut sum, mut n) = (0f32, 0u32);
+            let (ys, ye) = (sy0.floor().max(0.0) as usize, ((sy0 + step).ceil().max(0.0) as usize).min(SRC));
+            let (xs, xe) = (sx0.floor().max(0.0) as usize, ((sx0 + step).ceil().max(0.0) as usize).min(SRC));
+            for sy in ys..ye {
+                for sx in xs..xe {
+                    sum += layer[sy * SRC + sx] as f32 / 255.0;
+                    n += 1;
+                }
+            }
+            let full = (step.ceil() as u32).pow(2).max(1);
+            out[dy * w + dx] = (sum / n.max(full) as f32).clamp(0.0, 1.0);
+        }
+    }
+    out
+}
+
+/// Renders a `size`×`size` icon, rows top to bottom, straight alpha RGBA.
+pub fn render(spec: &IconSpec, size: usize) -> Vec<u8> {
+    let size = size.clamp(8, SRC);
+    let l = layers();
+    let fg = foreground(spec.light_foreground);
+    let device = device_layer(spec.kind);
     let overlay = match spec.percent {
         None => Some(&l.missing),
         Some(_) if spec.charging => Some(&l.charging),
@@ -203,6 +258,19 @@ mod tests {
         assert!(pixel(&full, size, 272, 256)[3] > 100);
         // Fully transparent corner.
         assert_eq!(pixel(&full, size, 500, 10)[3], 0);
+    }
+
+    #[test]
+    fn glyph_fits_band() {
+        for kind in [DeviceKind::Mouse, DeviceKind::Keyboard, DeviceKind::Headset, DeviceKind::Gamepad, DeviceKind::Earbuds] {
+            for (w, h) in [(16, 6), (32, 12), (48, 18)] {
+                let g = glyph_coverage(kind, w, h);
+                assert_eq!(g.len(), w * h);
+                assert!(g.iter().all(|c| (0.0..=1.0).contains(c)));
+                assert!(g.iter().sum::<f32>() > 1.0, "{kind:?} {w}x{h} is visible");
+            }
+        }
+        assert_ne!(glyph_coverage(DeviceKind::Mouse, 32, 12), glyph_coverage(DeviceKind::Keyboard, 32, 12));
     }
 
     #[test]

@@ -870,9 +870,14 @@ fn render_number(spec: &IconSpec, percent: f32, n: usize) -> Option<Vec<u8>> {
         icon::foreground(spec.light_foreground)
     };
 
+    // Number on top, device glyph underneath so several icons can be told
+    // apart. At least 5 px for the glyph or it is unreadable.
+    let glyph_h = ((n as f32 * 0.38).round() as usize).max(5).min(n / 2);
+    let text_h = n - glyph_h;
+
     // Draw on a larger canvas, then crop the inked area to the icon.
     let canvas = n * 3;
-    let mut font_px = n as f32 * 1.25;
+    let mut font_px = text_h as f32 * 1.25;
     let mut result = None;
     for _ in 0..3 {
         let coverage = draw_text(&text, canvas, font_px.round() as i32)?;
@@ -892,26 +897,38 @@ fn render_number(spec: &IconSpec, percent: f32, n: usize) -> Option<Vec<u8>> {
         }
         let (w, h) = (x1 - x0, y1 - y0);
         result = Some((coverage, x0, y0, w, h));
-        if w <= n && h <= n {
+        if w <= n && h <= text_h {
             break;
         }
         // Too large ("100"): shrink to fit and try again.
-        font_px *= (n as f32 / w as f32).min(n as f32 / h as f32) * 0.98;
+        font_px *= (n as f32 / w as f32).min(text_h as f32 / h as f32) * 0.98;
     }
     let (coverage, x0, y0, w, h) = result?;
 
+    let opacity = if spec.dimmed { 0.45 } else { 1.0 };
     let mut rgba = vec![0u8; n * n * 4];
-    let (off_x, off_y) = ((n as isize - w as isize) / 2, (n as isize - h as isize) / 2);
+    let (off_x, off_y) = ((n as isize - w as isize) / 2, (text_h as isize - h as isize) / 2);
     for y in 0..h {
         for x in 0..w {
             let (dx, dy) = (x as isize + off_x, y as isize + off_y);
-            if dx < 0 || dy < 0 || dx >= n as isize || dy >= n as isize {
+            if dx < 0 || dy < 0 || dx >= n as isize || dy >= text_h as isize {
                 continue;
             }
             let a = coverage[(y0 + y) * canvas + x0 + x];
-            let alpha = if spec.dimmed { (a as f32 * 0.45) as u8 } else { a };
+            let alpha = (a as f32 * opacity) as u8;
             let o = (dy as usize * n + dx as usize) * 4;
             rgba[o..o + 4].copy_from_slice(&[color[0], color[1], color[2], alpha]);
+        }
+    }
+
+    // Device glyph in the bottom band, in the taskbar foreground colour.
+    let fg = icon::foreground(spec.light_foreground);
+    let glyph = icon::glyph_coverage(spec.kind, n, glyph_h);
+    for (i, &c) in glyph.iter().enumerate() {
+        let alpha = (c * 255.0 * opacity).round() as u8;
+        if alpha > 0 {
+            let o = ((text_h + i / n) * n + i % n) * 4;
+            rgba[o..o + 4].copy_from_slice(&[fg[0], fg[1], fg[2], alpha]);
         }
     }
     Some(rgba)
@@ -1262,5 +1279,60 @@ pub fn notice_poster(hwnd: HWND) -> impl Fn(Notice) + Send + Sync + 'static {
                 drop(Box::from_raw(ptr));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DeviceKind;
+
+    /// `PREVIEW_DIR=/some/dir cargo test numeric_previews` writes a sheet of
+    /// numeric icons (number over device glyph) at several sizes.
+    #[test]
+    fn numeric_previews() {
+        let cases = [
+            (DeviceKind::Mouse, 100.0, false),
+            (DeviceKind::Keyboard, 55.0, false),
+            (DeviceKind::Headset, 25.0, false),
+            (DeviceKind::Gamepad, 8.0, false),
+            (DeviceKind::Earbuds, 70.0, true),
+        ];
+        for n in [16usize, 20, 24, 32, 48] {
+            for &(kind, p, charging) in &cases {
+                let spec = IconSpec { kind, percent: Some(p), charging, light_foreground: true, dimmed: false };
+                let img = render_number(&spec, p, n).expect("gdi text");
+                assert_eq!(img.len(), n * n * 4);
+                // Something is drawn in the glyph band.
+                let band = &img[(n - 4) * n * 4..];
+                assert!(band.chunks(4).any(|px| px[3] > 0), "{kind:?} at {n}px has a glyph");
+            }
+        }
+        let Ok(dir) = std::env::var("PREVIEW_DIR") else { return };
+        let (n, scale) = (24usize, 4usize);
+        let cell = n * scale;
+        let width = cell * cases.len();
+        let mut sheet = vec![0u8; width * cell * 4];
+        for (k, &(kind, p, charging)) in cases.iter().enumerate() {
+            let spec = IconSpec { kind, percent: Some(p), charging, light_foreground: true, dimmed: false };
+            let img = render_number(&spec, p, n).unwrap();
+            for y in 0..cell {
+                for x in 0..cell {
+                    let s = &img[((y / scale) * n + x / scale) * 4..][..4];
+                    let a = s[3] as f32 / 255.0;
+                    let d = &mut sheet[(y * width + k * cell + x) * 4..][..4];
+                    for c in 0..3 {
+                        d[c] = (s[c] as f32 * a + 32.0 * (1.0 - a)) as u8;
+                    }
+                    d[3] = 255;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, width as u32, cell as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&sheet).unwrap();
+        std::fs::write(format!("{dir}/numeric.png"), out).unwrap();
     }
 }
