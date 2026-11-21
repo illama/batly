@@ -287,6 +287,8 @@ pub enum ActionError {
     /// The onboard memory did not read back as written; the previous
     /// content was written back.
     Verify,
+    /// No usable backup to restore from.
+    NoBackup,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -365,6 +367,9 @@ pub enum Setting {
     },
     /// Gives the LEDs back to the device (end of a preview).
     LedRelease,
+    /// Puts back the lighting the active profile had before Batly first
+    /// wrote it (oldest backup).
+    LedRestore,
 }
 
 pub type SettingsReply = Sender<Result<DeviceSettings, ActionError>>;
@@ -1824,6 +1829,7 @@ impl<T: Transport> Session<T> {
             Setting::Led { zone, effect, save: false } => return self.preview_led(idx, zone, effect),
             Setting::Led { zone, effect, save: true } => return self.save_led(idx, zone, effect),
             Setting::LedRelease => return self.release_leds(idx).map(Ok),
+            Setting::LedRestore => return self.restore_leds(idx),
             Setting::Dpi(dpi) => match self.feature(idx, FEAT_ADJUSTABLE_DPI)? {
                 Some(f) => {
                     let [hi, lo] = dpi.to_be_bytes();
@@ -1895,9 +1901,10 @@ impl<T: Transport> Session<T> {
             return Ok(None);
         }
         let (onboard, profile) = self.onboard_profile(idx)?;
-        if let Some((_, _, sector)) = &profile {
+        if let Some((_, desc, sector)) = &profile {
+            let count = zones.len();
             for z in zones.iter_mut() {
-                z.current = lighting::profile_effect(sector, z.index as usize);
+                z.current = lighting::profile_current(sector, z.index as usize, count, desc.profile_format);
             }
         }
         Ok(Some(Lighting { api, zones, onboard }))
@@ -2033,27 +2040,52 @@ impl<T: Transport> Session<T> {
             return Ok(Err(ActionError::NotSupported));
         }
         let (status, profile) = self.onboard_profile(idx)?;
-        let (OnboardStatus::Writable { sector, .. }, Some((f, _, original))) = (status, profile) else {
+        let (OnboardStatus::Writable { sector, .. }, Some((f, desc, original))) = (status, profile) else {
             return Ok(Err(ActionError::Onboard(status)));
         };
         let writes = lighting::profile_writes(zone as usize, zones, &effect, wire.id);
-        let Ok(patched) = lighting::patch_profile(&original, &writes) else {
+        let Ok(patched) = lighting::patch_profile(&original, &writes, desc.profile_format) else {
             return Ok(Err(ActionError::Onboard(OnboardStatus::UnknownFormat)));
         };
+        log!("[{}] device {}: writing onboard sector {} (zone {}, {:?})", self.tag, idx, sector, zone, effect);
+        self.commit_sector(idx, f, sector, &original, &patched)
+    }
+
+    /// Puts back the lighting of the oldest backup of the active profile
+    /// (the one taken before Batly first wrote it): entries and, on the
+    /// G502 X format, the custom animation. DPI, buttons… stay as they are.
+    fn restore_leds(&mut self, idx: u8) -> io::Result<Result<(), ActionError>> {
+        let (status, profile) = self.onboard_profile(idx)?;
+        let (OnboardStatus::Writable { sector, .. }, Some((f, _, current))) = (status, profile) else {
+            return Ok(Err(ActionError::Onboard(status)));
+        };
+        let id = self.device_id(idx);
+        let Some(backup) = self.oldest_backup(&id, sector) else { return Ok(Err(ActionError::NoBackup)) };
+        let Ok(restored) = lighting::restore_lighting(&current, &backup) else { return Ok(Err(ActionError::NoBackup)) };
+        log!("[{}] device {}: restoring the original lighting of sector {}", self.tag, idx, sector);
+        self.commit_sector(idx, f, sector, &current, &restored)
+    }
+
+    fn device_id(&self, idx: u8) -> String {
+        self.devices.get(&idx).and_then(|s| s.info.as_ref()).map(|i| i.id.clone()).unwrap_or_default()
+    }
+
+    /// Backup, write, read back (rewriting `original` on a mismatch), then
+    /// the firmware is put back in charge and the profile reloaded.
+    fn commit_sector(&mut self, idx: u8, f: u8, sector: u16, original: &[u8], patched: &[u8]) -> io::Result<Result<(), ActionError>> {
         if patched == original {
             self.release_leds(idx)?;
             return Ok(Ok(()));
         }
-        let id = self.devices.get(&idx).and_then(|s| s.info.as_ref()).map(|i| i.id.clone()).unwrap_or_default();
-        if !self.backup_sector(&id, sector, &original) {
+        let id = self.device_id(idx);
+        if !self.backup_sector(&id, sector, original) {
             return Ok(Err(ActionError::Backup));
         }
-        log!("[{}] device {}: writing onboard sector {} (zone {}, {:?})", self.tag, idx, sector, zone, effect);
-        let written = self.write_sector(idx, f, sector, &patched)?;
+        let written = self.write_sector(idx, f, sector, patched)?;
         let back = self.read_sector(idx, f, sector, patched.len())?;
-        if !written || back.as_deref() != Some(&patched[..]) {
+        if !written || back.as_deref() != Some(patched) {
             log!("[{}] device {}: sector {} did not read back as written, restoring", self.tag, idx, sector);
-            let restored = self.write_sector(idx, f, sector, &original)?;
+            let restored = self.write_sector(idx, f, sector, original)?;
             log!("[{}] device {}: restore {}", self.tag, idx, if restored { "done" } else { "FAILED" });
             return Ok(Err(ActionError::Verify));
         }
@@ -2064,12 +2096,37 @@ impl<T: Transport> Session<T> {
         Ok(Ok(()))
     }
 
+    /// File name prefix of the backups of a device's sector.
+    fn backup_prefix(device: &str, sector: u16) -> String {
+        let safe: String = device.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        format!("{safe}-sector{sector}-")
+    }
+
+    /// Content of the oldest backup of a sector, if any.
+    fn oldest_backup(&self, device: &str, sector: u16) -> Option<Vec<u8>> {
+        let dir = self.cfg.backup_dir.as_ref()?;
+        let prefix = Self::backup_prefix(device, sector);
+        let oldest = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let stamp: u128 = name.strip_prefix(&prefix)?.strip_suffix(".bin")?.parse().ok()?;
+                Some((stamp, e.path()))
+            })
+            .min()?;
+        std::fs::read(oldest.1).ok()
+    }
+
     /// Saves a sector before it is rewritten; `false` = could not.
     fn backup_sector(&self, device: &str, sector: u16, bytes: &[u8]) -> bool {
         let Some(dir) = &self.cfg.backup_dir else { return false };
-        let safe: String = device.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let path = dir.join(format!("{safe}-sector{sector}-{stamp}.bin"));
+        let mut stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u128);
+        // Never replace an existing backup (two writes in the same second).
+        while dir.join(format!("{}{stamp}.bin", Self::backup_prefix(device, sector))).exists() {
+            stamp += 1;
+        }
+        let path = dir.join(format!("{}{stamp}.bin", Self::backup_prefix(device, sector)));
         match std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, bytes)) {
             Ok(()) => {
                 log!("[{}] onboard sector {} saved to {}", self.tag, sector, path.display());
@@ -2097,6 +2154,19 @@ impl<T: Transport> Session<T> {
             for z in self.led_zones(idx, f, api)? {
                 let ids: Vec<String> = z.effects.iter().map(|e| format!("{}:{:02X}", e.index, e.id)).collect();
                 let _ = writeln!(s, "zone {} location {} effects [{}]", z.index, z.location, ids.join(" "));
+            }
+            if api == LedApi::Rgb {
+                if let Some(info) = self.call(idx, f, 0, &[0xFF, 0xFF, 0])? {
+                    let _ = writeln!(s, "rgb info: {}", log::hex(&info));
+                }
+                // NvConfig (function 3): read each single-bit capability
+                // (sub-function 0 = get; nothing is written).
+                for bit in 0..16u16 {
+                    let [hi, lo] = (1u16 << bit).to_be_bytes();
+                    if let Some(p) = self.call(idx, f, 3, &[0x00, hi, lo])? {
+                        let _ = writeln!(s, "nvconfig {:04X}: {}", 1u16 << bit, log::hex(&p));
+                    }
+                }
             }
         }
         if let Some(f) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
@@ -2274,6 +2344,8 @@ mod tests {
         corrupt_next: bool,
         /// Announce a serial number made of zeros (G502 X PLUS).
         zero_serial: bool,
+        /// Onboard profile format announced (5 = G502 X).
+        profile_format: u8,
         reloads: u32,
     }
 
@@ -2305,6 +2377,7 @@ mod tests {
                 sector_writes: 0,
                 corrupt_next: false,
                 zero_serial: false,
+                profile_format: 3,
                 reloads: 0,
             }
         }
@@ -2423,7 +2496,7 @@ mod tests {
                 }
                 // 0x8100: memory 1, format 3, 5 profiles, 16 buttons,
                 // 16 sectors of 255 bytes.
-                (13, 0) => self.reply(req, &[1, 3, 1, 5, 0, 16, 16, 0, 255, 2]),
+                (13, 0) => self.reply(req, &[1, self.profile_format, 1, 5, 0, 16, 16, 0, 255, 2]),
                 (13, 1) => {
                     self.onboard_mode = req[4];
                     self.reply(req, &[]);
@@ -3098,6 +3171,33 @@ mod tests {
         assert_eq!(command(&mut s5, &id, Some(Setting::Led { zone: 0, effect: other, save: true })), Err(ActionError::Verify));
         assert_eq!(s5.transport.flash[&1], original);
         assert_eq!(s5.transport.sector_writes, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lighting_restore_and_g502x_animation() {
+        let dir = temp_dir("restore");
+        let mut fake = Fake::new(true);
+        fake.profile_format = crate::lighting::FORMAT_G502X;
+        // Factory profile playing custom animation 3.
+        let mut factory = fake.flash[&1].clone();
+        factory[252] = 3;
+        let crc = crate::lighting::crc16(&factory[..253]).to_be_bytes();
+        factory[253..].copy_from_slice(&crc);
+        fake.flash.insert(1, factory.clone());
+        let (mut s, id) = led_session(fake, Some(dir.clone()));
+        assert_eq!(command(&mut s, &id, Some(Setting::LedRestore)), Err(ActionError::NoBackup));
+
+        let effect = LedEffect { color: 0xFF8000, ..LedEffect::default() };
+        command(&mut s, &id, Some(Setting::Led { zone: 0, effect, save: true })).unwrap();
+        assert_eq!(s.transport.flash[&1][252], 0, "custom animation switched off");
+        let second = LedEffect { color: 0x0000FF, ..effect };
+        command(&mut s, &id, Some(Setting::Led { zone: 0, effect: second, save: true })).unwrap();
+
+        // Restore takes the oldest backup: the factory lighting.
+        command(&mut s, &id, Some(Setting::LedRestore)).unwrap();
+        assert_eq!(s.transport.flash[&1], factory);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
