@@ -426,7 +426,21 @@ impl Native {
             // Device id -> endpoint key, kept up to date by the sessions.
             let owners: Owners = Arc::new(Mutex::new(Presence::default()));
             rescan(&mut running, &settings, &hub, &owners);
-            while let Ok(request) = rx.recv() {
+            loop {
+                let request = match rx.recv_timeout(WATCHDOG) {
+                    Ok(request) => request,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // A session that ended on an I/O error (the endpoint
+                        // is still there) is reopened without waiting for a
+                        // device to be plugged in.
+                        if running.values().any(|r| r.thread.is_finished()) {
+                            log!("hid: a session ended, reopening");
+                            rescan(&mut running, &settings, &hub, &owners);
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 match request {
                     Request::Rescan => rescan(&mut running, &settings, &hub, &owners),
                     Request::Refresh => {
@@ -519,6 +533,9 @@ impl Native {
         rx
     }
 }
+
+/// How often the manager checks for sessions that ended on their own.
+const WATCHDOG: Duration = Duration::from_secs(30);
 
 /// Which endpoints see each device (see [`Presence`]).
 type Owners = Arc<Mutex<Presence>>;
