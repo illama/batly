@@ -542,7 +542,7 @@ token = \"not a secret here\"
         let script = "import sys, zipfile, hashlib\n\
             z = zipfile.ZipFile(sys.argv[1])\n\
             for i in z.infolist():\n    print(i.filename, i.file_size, i.date_time, hashlib.sha256(z.read(i)).hexdigest())\n";
-        let listing = std::process::Command::new(py).args(["-c", script]).arg(&path).output().unwrap();
+        let listing = std::process::Command::new(py).env("PYTHONIOENCODING", "utf-8").args(["-c", script]).arg(&path).output().unwrap();
         let listing = String::from_utf8(listing.stdout).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         let lines: Vec<&str> = listing.lines().collect();
