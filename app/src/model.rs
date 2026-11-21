@@ -90,7 +90,7 @@ pub enum Source {
     Gamepad,
     /// Other brands spoken to over HID (Razer, Corsair, SteelSeries…).
     Vendor,
-    /// Reported by another LGSTray instance on the network.
+    /// Reported by another Batly instance on the network.
     Remote,
 }
 

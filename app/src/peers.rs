@@ -1,4 +1,4 @@
-//! Other LGSTray instances on the network, merged into this one.
+//! Other Batly instances on the network, merged into this one.
 //!
 //! One thread per peer (`peers` setting, `url#token` syntax) follows the
 //! peer's `/api/events?local=1` stream (falling back to polling
@@ -96,7 +96,7 @@ impl Peer {
 #[derive(Debug, PartialEq)]
 enum End {
     Stopped,
-    /// No event stream there (older LGSTray, https…): poll instead.
+    /// No event stream there (older Batly, https…): poll instead.
     Unsupported,
     /// The peer is this very instance.
     Myself,

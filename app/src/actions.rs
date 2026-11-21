@@ -27,12 +27,12 @@ fn update_notice(r: &update::Release) -> Notice {
         percent: None,
         hours_left: None,
         title: tr([
-            format!("LGSTray {v} is available"),
-            format!("LGSTray {v} est disponible"),
-            format!("LGSTray {v} ist verfügbar"),
-            format!("LGSTray {v} está disponible"),
-            format!("LGSTray {v} è disponibile"),
-            format!("LGSTray {v} está disponível"),
+            format!("Batly {v} is available"),
+            format!("Batly {v} est disponible"),
+            format!("Batly {v} ist verfügbar"),
+            format!("Batly {v} está disponible"),
+            format!("Batly {v} è disponibile"),
+            format!("Batly {v} está disponível"),
         ]
         .each_ref())
         .clone(),
@@ -76,34 +76,34 @@ pub fn update_action(cfg_path: PathBuf, known: Arc<Mutex<Option<update::Release>
             update::check_in_background(true, move |r| {
                 let Some(r) = r.or_else(|| known.lock().unwrap().clone()) else {
                     let text = tr([
-                        format!("LGSTray {} is up to date.", update::CURRENT),
-                        format!("LGSTray {} est à jour.", update::CURRENT),
-                        format!("LGSTray {} ist auf dem neuesten Stand.", update::CURRENT),
-                        format!("LGSTray {} está actualizado.", update::CURRENT),
-                        format!("LGSTray {} è aggiornato.", update::CURRENT),
-                        format!("O LGSTray {} está atualizado.", update::CURRENT),
+                        format!("Batly {} is up to date.", update::CURRENT),
+                        format!("Batly {} est à jour.", update::CURRENT),
+                        format!("Batly {} ist auf dem neuesten Stand.", update::CURRENT),
+                        format!("Batly {} está actualizado.", update::CURRENT),
+                        format!("Batly {} è aggiornato.", update::CURRENT),
+                        format!("O Batly {} está atualizado.", update::CURRENT),
                     ]
                     .each_ref())
                     .clone();
-                    ask("LGSTray", &text, MB_OK | MB_ICONINFORMATION);
+                    ask("Batly", &text, MB_OK | MB_ICONINFORMATION);
                     return;
                 };
                 let v = &r.version;
                 let notes: String = r.notes.chars().take(600).collect();
                 let question = tr([
-                    format!("LGSTray {v} is available (you have {}).\n\n{notes}\n\nYes: install now\nNo: skip this version\nCancel: later", update::CURRENT),
-                    format!("LGSTray {v} est disponible (vous avez la {}).\n\n{notes}\n\nOui : installer maintenant\nNon : ignorer cette version\nAnnuler : plus tard", update::CURRENT),
-                    format!("LGSTray {v} ist verfügbar (installiert: {}).\n\n{notes}\n\nJa: jetzt installieren\nNein: diese Version überspringen\nAbbrechen: später", update::CURRENT),
-                    format!("LGSTray {v} está disponible (tienes la {}).\n\n{notes}\n\nSí: instalar ahora\nNo: omitir esta versión\nCancelar: más tarde", update::CURRENT),
-                    format!("LGSTray {v} è disponibile (hai la {}).\n\n{notes}\n\nSì: installa ora\nNo: salta questa versione\nAnnulla: più tardi", update::CURRENT),
-                    format!("O LGSTray {v} está disponível (você tem a {}).\n\n{notes}\n\nSim: instalar agora\nNão: ignorar esta versão\nCancelar: mais tarde", update::CURRENT),
+                    format!("Batly {v} is available (you have {}).\n\n{notes}\n\nYes: install now\nNo: skip this version\nCancel: later", update::CURRENT),
+                    format!("Batly {v} est disponible (vous avez la {}).\n\n{notes}\n\nOui : installer maintenant\nNon : ignorer cette version\nAnnuler : plus tard", update::CURRENT),
+                    format!("Batly {v} ist verfügbar (installiert: {}).\n\n{notes}\n\nJa: jetzt installieren\nNein: diese Version überspringen\nAbbrechen: später", update::CURRENT),
+                    format!("Batly {v} está disponible (tienes la {}).\n\n{notes}\n\nSí: instalar ahora\nNo: omitir esta versión\nCancelar: más tarde", update::CURRENT),
+                    format!("Batly {v} è disponibile (hai la {}).\n\n{notes}\n\nSì: installa ora\nNo: salta questa versione\nAnnulla: più tardi", update::CURRENT),
+                    format!("O Batly {v} está disponível (você tem a {}).\n\n{notes}\n\nSim: instalar agora\nNão: ignorar esta versão\nCancelar: mais tarde", update::CURRENT),
                 ]
                 .each_ref())
                 .clone();
-                match ask("LGSTray", &question, MB_YESNOCANCEL | MB_ICONINFORMATION) {
+                match ask("Batly", &question, MB_YESNOCANCEL | MB_ICONINFORMATION) {
                     IDYES => {
                         if let Err(e) = update::install(&r, |_| {}) {
-                            win::message_box("LGSTray", &e);
+                            win::message_box("Batly", &e);
                         }
                     }
                     IDNO => {
@@ -128,9 +128,9 @@ pub fn report_action(hub: Arc<Hub>, cfg_path: PathBuf) -> Action {
             let devices: Vec<String> = hub.snapshot().iter().map(http::json).collect();
             let devices_json = format!("[{}]", devices.join(","));
             let settings = std::fs::read_to_string(&cfg_path).unwrap_or_default();
-            let log_path = log::path().unwrap_or_else(|| cfg_path.with_file_name("lgstray.log"));
+            let log_path = log::path().unwrap_or_else(|| cfg_path.with_file_name("batly.log"));
             if let Err(e) = report::run(&devices_json, &settings, &log_path) {
-                win::message_box("LGSTray", &e.to_string());
+                win::message_box("Batly", &e.to_string());
             }
         }),
     }

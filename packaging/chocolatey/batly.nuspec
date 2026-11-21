@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Template: filled in by packaging/update-manifests.sh (do not push as is). -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>batly</id>
+    <version>{{VERSION}}</version>
+    <title>Batly</title>
+    <authors>illama, Batly contributors</authors>
+    <owners>illama</owners>
+    <projectUrl>https://github.com/illama/batly</projectUrl>
+    <packageSourceUrl>https://github.com/illama/batly/tree/main/packaging/chocolatey</packageSourceUrl>
+    <projectSourceUrl>https://github.com/illama/batly</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/illama/batly/issues</bugTrackerUrl>
+    <docsUrl>https://github.com/illama/batly#readme</docsUrl>
+    <releaseNotes>https://github.com/illama/batly/releases/tag/v{{VERSION}}</releaseNotes>
+    <licenseUrl>https://github.com/illama/batly/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <copyright>illama and Batly contributors</copyright>
+    <tags>batly logitech battery tray mouse keyboard headset hidpp foss</tags>
+    <summary>Battery level of Logitech (and other wireless) devices in the Windows notification area.</summary>
+    <description><![CDATA[Batly shows the battery level of Logitech mice, keyboards and headsets (HID++ receivers, Bluetooth, G HUB) and of other wireless devices in the Windows notification area, with low battery notifications and a local HTTP API.
+
+A single small native executable written in Rust: no .NET runtime, no helper process.
+
+**Note:** Batly installs per user (in `%LOCALAPPDATA%\Programs\Batly`). Chocolatey usually runs elevated: the application is installed for the account that runs `choco install`.]]></description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

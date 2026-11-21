@@ -180,7 +180,7 @@ pub struct PairedDevice {
     /// Device index on the receiver, 1-based (0xFF for a direct connection).
     pub slot: u8,
     /// Device id as published in the hub, once the device has been
-    /// identified (it may be asleep since LGSTray started).
+    /// identified (it may be asleep since Batly started).
     pub id: Option<String>,
     /// Device name, or the receiver's short code name when not identified.
     pub name: String,

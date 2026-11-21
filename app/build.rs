@@ -1,5 +1,5 @@
 include!("../build/resources.rs");
 
 fn main() {
-    embed("LGSTray - Logitech battery tray indicator", "lgstray.exe");
+    embed("Batly - battery levels of your wireless devices", "batly.exe");
 }

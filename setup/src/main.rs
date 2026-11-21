@@ -1,23 +1,23 @@
-//! LGSTray installer: a single executable that carries `lgstray.exe`.
+//! Batly installer: a single executable that carries `batly.exe`.
 //!
 //! Per-user installation (no administrator rights):
-//! * copies the application to `%LOCALAPPDATA%\Programs\LGSTray`,
+//! * copies the application to `%LOCALAPPDATA%\Programs\Batly`,
 //! * creates a Start menu shortcut,
 //! * registers the uninstaller in "Apps & features",
 //! * optionally starts the application with Windows.
 //!
-//! `LGSTray-Setup.exe /S` installs silently (keeps the autostart choice of
+//! `Batly-Setup.exe /S` installs silently (keeps the autostart choice of
 //! a previous installation, enables it on a first one).
 //!
-//! `LGSTray-Setup.exe /S /update` is what the application runs to update
-//! itself: the installer first waits for the running LGSTray to exit
+//! `Batly-Setup.exe /S /update` is what the application runs to update
+//! itself: the installer first waits for the running Batly to exit
 //! (single instance mutex), then replaces it and starts the new version.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("The LGSTray installer only runs on Windows.");
+    eprintln!("The Batly installer only runs on Windows.");
     std::process::exit(1);
 }
 
@@ -54,16 +54,16 @@ mod installer {
         MB_SETFOREGROUND, MB_YESNO, MESSAGEBOX_STYLE, WM_CLOSE,
     };
 
-    static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lgstray.exe"));
+    static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/batly.exe"));
     const VERSION: &str = env!("CARGO_PKG_VERSION");
-    const TITLE: &str = "LGSTray Setup";
+    const TITLE: &str = "Batly Setup";
 
     // Must match `win.rs` in the application.
-    const WINDOW_CLASS: PCWSTR = w!("LGSTrayRsWindow");
+    const WINDOW_CLASS: PCWSTR = w!("BatlyWindow");
     // Must match the single instance mutex in the application's `main.rs`.
-    const INSTANCE_MUTEX: PCWSTR = w!(r"Local\LGSTray-rs-instance");
+    const INSTANCE_MUTEX: PCWSTR = w!(r"Local\Batly-instance");
     const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
-    const UNINSTALL_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\LGSTray");
+    const UNINSTALL_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Batly");
 
     fn french() -> bool {
         // SAFETY: no arguments.
@@ -114,7 +114,7 @@ mod installer {
             .is_ok()
     }
 
-    /// Asks a running LGSTray to quit and waits until it is gone.
+    /// Asks a running Batly to quit and waits until it is gone.
     fn close_running_instance() {
         for attempt in 0..50 {
             // SAFETY: valid class name.
@@ -130,7 +130,7 @@ mod installer {
         }
     }
 
-    /// True while an LGSTray process holds its single instance mutex.
+    /// True while an Batly process holds its single instance mutex.
     fn instance_running() -> bool {
         // SAFETY: valid name; the handle, if any, is closed right away.
         match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, INSTANCE_MUTEX) } {
@@ -175,24 +175,24 @@ mod installer {
     pub fn run(silent: bool, update: bool) -> Result<(), String> {
         let silent = silent || update;
         if PAYLOAD.is_empty() {
-            return Err("This installer was built without its payload (LGSTRAY_PAYLOAD).".into());
+            return Err("This installer was built without its payload (BATLY_PAYLOAD).".into());
         }
         let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).filter(|p| p.is_absolute()).ok_or("LOCALAPPDATA is not set")?;
-        let dir = local.join("Programs").join("LGSTray");
-        let exe = dir.join("lgstray.exe");
+        let dir = local.join("Programs").join("Batly");
+        let exe = dir.join("batly.exe");
         let upgrade = exe.exists();
 
-        let mut autostart = !upgrade || string_exists(RUN_KEY, "LGSTray");
+        let mut autostart = !upgrade || string_exists(RUN_KEY, "Batly");
         if !silent {
             let question = tr(
-                &format!("Install LGSTray {VERSION} for the current user?\n\nFolder: {}", dir.display()),
-                &format!("Installer LGSTray {VERSION} pour l'utilisateur actuel ?\n\nDossier : {}", dir.display()),
+                &format!("Install Batly {VERSION} for the current user?\n\nFolder: {}", dir.display()),
+                &format!("Installer Batly {VERSION} pour l'utilisateur actuel ?\n\nDossier : {}", dir.display()),
             );
             if !message(&question, MB_YESNO | MB_ICONQUESTION) {
                 return Ok(());
             }
             autostart = message(
-                &tr("Start LGSTray automatically with Windows?", "Lancer LGSTray automatiquement au démarrage de Windows ?"),
+                &tr("Start Batly automatically with Windows?", "Lancer Batly automatiquement au démarrage de Windows ?"),
                 MB_YESNO | MB_ICONQUESTION,
             );
         }
@@ -222,33 +222,33 @@ mod installer {
             let programs = appdata.join(r"Microsoft\Windows\Start Menu\Programs");
             let _ = std::fs::create_dir_all(&programs);
             // A missing shortcut is not worth failing the installation.
-            let _ = create_shortcut(&exe, &programs.join("LGSTray.lnk"));
+            let _ = create_shortcut(&exe, &programs.join("Batly.lnk"));
         }
 
-        set_string(UNINSTALL_KEY, "DisplayName", "LGSTray")?;
+        set_string(UNINSTALL_KEY, "DisplayName", "Batly")?;
         set_string(UNINSTALL_KEY, "DisplayVersion", VERSION)?;
-        set_string(UNINSTALL_KEY, "Publisher", "LGSTray contributors")?;
+        set_string(UNINSTALL_KEY, "Publisher", "Batly contributors")?;
         set_string(UNINSTALL_KEY, "DisplayIcon", &exe_str)?;
         set_string(UNINSTALL_KEY, "InstallLocation", &dir.display().to_string())?;
         set_string(UNINSTALL_KEY, "UninstallString", &format!("{quoted} --uninstall"))?;
-        set_string(UNINSTALL_KEY, "URLInfoAbout", "https://github.com/andyvorld/LGSTrayBattery")?;
+        set_string(UNINSTALL_KEY, "URLInfoAbout", "https://github.com/illama/batly")?;
         set_dword(UNINSTALL_KEY, "NoModify", 1)?;
         set_dword(UNINSTALL_KEY, "NoRepair", 1)?;
         set_dword(UNINSTALL_KEY, "EstimatedSize", (PAYLOAD.len() / 1024) as u32)?;
 
         if autostart {
-            set_string(RUN_KEY, "LGSTray", &quoted)?;
+            set_string(RUN_KEY, "Batly", &quoted)?;
         } else if !silent {
             // SAFETY: valid key / value names.
-            let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, w!("LGSTray")) };
+            let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, w!("Batly")) };
         }
 
         std::process::Command::new(&exe).current_dir(&dir).spawn().map_err(|e| format!("{exe_str}: {e}"))?;
         if !silent {
             message(
                 &tr(
-                    "LGSTray is installed and running.\n\nLook for its icon in the notification area (next to the clock); right-click it to choose the devices to display.",
-                    "LGSTray est installé et lancé.\n\nSon icône se trouve dans la zone de notification (près de l'horloge) ; clic droit pour choisir les périphériques à afficher.",
+                    "Batly is installed and running.\n\nLook for its icon in the notification area (next to the clock); right-click it to choose the devices to display.",
+                    "Batly est installé et lancé.\n\nSon icône se trouve dans la zone de notification (près de l'horloge) ; clic droit pour choisir les périphériques à afficher.",
                 ),
                 MB_OK | MB_ICONINFORMATION,
             );

@@ -7,7 +7,7 @@ name: Release
 #
 # Code signing with SignPath (see SIGNING.md) runs only when the secrets
 # SIGNPATH_API_TOKEN and SIGNPATH_ORGANIZATION_ID exist. Optional
-# repository variables: SIGNPATH_PROJECT_SLUG (default "lgstray"),
+# repository variables: SIGNPATH_PROJECT_SLUG (default "batly"),
 # SIGNPATH_POLICY_SLUG ("release-signing"), SIGNPATH_EXE_CONFIG ("exe"),
 # SIGNPATH_SETUP_CONFIG ("installer").
 
@@ -53,28 +53,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Tests
-        run: cargo test -p lgstray
+        run: cargo test -p batly
 
-      - name: Build lgstray.exe
-        run: cargo build --release -p lgstray
+      - name: Build batly.exe
+        run: cargo build --release -p batly
 
       # ---- 1. sign the application (before it is embedded in the installer)
-      - name: Upload unsigned lgstray.exe
+      - name: Upload unsigned batly.exe
         id: upload-exe
         if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-lgstray-exe
-          path: target/release/lgstray.exe
+          name: unsigned-batly-exe
+          path: target/release/batly.exe
           if-no-files-found: error
 
-      - name: Sign lgstray.exe (SignPath)
+      - name: Sign batly.exe (SignPath)
         if: env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'lgstray' }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'batly' }}
           signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
           artifact-configuration-slug: ${{ vars.SIGNPATH_EXE_CONFIG || 'exe' }}
           github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
@@ -84,15 +84,15 @@ jobs:
       - name: Build the installer
         shell: pwsh
         run: |
-          $exe = if ($env:SIGNPATH_ENABLED -eq 'true') { "$PWD\signed\app\lgstray.exe" } else { "$PWD\target\release\lgstray.exe" }
+          $exe = if ($env:SIGNPATH_ENABLED -eq 'true') { "$PWD\signed\app\batly.exe" } else { "$PWD\target\release\batly.exe" }
           if (-not (Test-Path $exe)) { throw "missing $exe" }
           New-Item -ItemType Directory -Force staging | Out-Null
-          Copy-Item $exe staging\lgstray.exe
-          $env:LGSTRAY_PAYLOAD = "$PWD\staging\lgstray.exe"
-          cargo build --release -p lgstray-setup
+          Copy-Item $exe staging\batly.exe
+          $env:BATLY_PAYLOAD = "$PWD\staging\batly.exe"
+          cargo build --release -p batly-setup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force staging\setup | Out-Null
-          Copy-Item target\release\lgstray-setup.exe "staging\setup\LGSTray-Setup-$env:VERSION.exe"
+          Copy-Item target\release\batly-setup.exe "staging\setup\Batly-Setup-$env:VERSION.exe"
 
       # ---- 2. sign the installer
       - name: Upload unsigned installer
@@ -101,7 +101,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unsigned-installer
-          path: staging/setup/LGSTray-Setup-${{ env.VERSION }}.exe
+          path: staging/setup/Batly-Setup-${{ env.VERSION }}.exe
           if-no-files-found: error
 
       - name: Sign the installer (SignPath)
@@ -110,29 +110,29 @@ jobs:
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'lgstray' }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'batly' }}
           signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
           artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_CONFIG || 'installer' }}
           github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: signed/setup
 
-      # ---- 3. same layout as build.sh: dist/LGSTray-Setup-<v>.exe,
-      #         dist/LGSTray-<v>-portable.zip, dist/SHA256SUMS.txt
+      # ---- 3. same layout as build.sh: dist/Batly-Setup-<v>.exe,
+      #         dist/Batly-<v>-portable.zip, dist/SHA256SUMS.txt
       - name: Assemble dist/
         shell: pwsh
         run: |
-          $setup = if ($env:SIGNPATH_ENABLED -eq 'true') { "signed\setup\LGSTray-Setup-$env:VERSION.exe" } else { "staging\setup\LGSTray-Setup-$env:VERSION.exe" }
+          $setup = if ($env:SIGNPATH_ENABLED -eq 'true') { "signed\setup\Batly-Setup-$env:VERSION.exe" } else { "staging\setup\Batly-Setup-$env:VERSION.exe" }
           New-Item -ItemType Directory -Force dist\portable | Out-Null
           Copy-Item $setup dist\
-          Copy-Item staging\lgstray.exe, packaging\appsettings.toml, README.md, LICENSE dist\portable\
+          Copy-Item staging\batly.exe, packaging\appsettings.toml, README.md, LICENSE dist\portable\
           $py = @'
           import hashlib, pathlib, shutil, sys, zipfile
           version = sys.argv[1]
           dist = pathlib.Path("dist")
-          with zipfile.ZipFile(dist / f"LGSTray-{version}-portable.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+          with zipfile.ZipFile(dist / f"Batly-{version}-portable.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
               for f in sorted((dist / "portable").iterdir()):
-                  z.write(f, f"LGSTray/{f.name}")
+                  z.write(f, f"Batly/{f.name}")
           shutil.rmtree(dist / "portable")
           lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n" for f in sorted(dist.iterdir()) if f.is_file()]
           (dist / "SHA256SUMS.txt").write_text("".join(lines), newline="\n")
@@ -145,7 +145,7 @@ jobs:
         if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         run: |
-          foreach ($f in @("staging\lgstray.exe", "dist\LGSTray-Setup-$env:VERSION.exe")) {
+          foreach ($f in @("staging\batly.exe", "dist\Batly-Setup-$env:VERSION.exe")) {
             $s = Get-AuthenticodeSignature $f
             Write-Host "$f : $($s.Status) $($s.SignerCertificate.Subject)"
             if ($s.Status -ne 'Valid') { throw "$f is not validly signed" }
@@ -184,9 +184,9 @@ jobs:
           fi
           case "$TAG" in *-*) prerelease=--prerelease ;; *) prerelease= ;; esac
           if [ -f "$notes" ]; then
-            gh release create "$TAG" dist/* --verify-tag --title "LGSTray $VERSION" $prerelease --notes-file "$notes"
+            gh release create "$TAG" dist/* --verify-tag --title "Batly $VERSION" $prerelease --notes-file "$notes"
           else
-            gh release create "$TAG" dist/* --verify-tag --title "LGSTray $VERSION" $prerelease --generate-notes
+            gh release create "$TAG" dist/* --verify-tag --title "Batly $VERSION" $prerelease --generate-notes
           fi
 
   packages:
@@ -206,8 +206,8 @@ jobs:
           import glob, json, xml.dom.minidom, yaml
           for f in glob.glob("dist/packages/winget/**/*.yaml", recursive=True):
               yaml.safe_load(open(f, encoding="utf-8"))
-          json.load(open("dist/packages/scoop/lgstray.json", encoding="utf-8"))
-          xml.dom.minidom.parse("dist/packages/chocolatey/lgstray.nuspec")
+          json.load(open("dist/packages/scoop/batly.json", encoding="utf-8"))
+          xml.dom.minidom.parse("dist/packages/chocolatey/batly.nuspec")
           print("manifests OK")
           PY
       - uses: actions/upload-artifact@v4

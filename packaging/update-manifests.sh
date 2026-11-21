@@ -5,9 +5,9 @@
 #   packaging/update-manifests.sh <version> [dist-dir] [out-dir]
 #
 # Output (default: dist/packages):
-#   winget/manifests/i/illama/LGSTray/<version>/*.yaml   -> microsoft/winget-pkgs
-#   scoop/lgstray.json                                   -> a Scoop bucket
-#   chocolatey/lgstray.nuspec, chocolatey/tools/*.ps1    -> choco pack / push
+#   winget/manifests/i/illama/Batly/<version>/*.yaml   -> microsoft/winget-pkgs
+#   scoop/batly.json                                   -> a Scoop bucket
+#   chocolatey/batly.nuspec, chocolatey/tools/*.ps1    -> choco pack / push
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,8 +15,8 @@ VERSION=${1:?usage: $0 <version> [dist-dir] [out-dir]}
 VERSION=${VERSION#v}
 DIST=${2:-$ROOT/dist}
 OUT=${3:-$DIST/packages}
-SETUP="LGSTray-Setup-$VERSION.exe"
-ZIP="LGSTray-$VERSION-portable.zip"
+SETUP="Batly-Setup-$VERSION.exe"
+ZIP="Batly-$VERSION-portable.zip"
 
 case $VERSION in
   *[!0-9.]* | "" | .* | *. ) echo "invalid version: $VERSION" >&2; exit 1 ;;
@@ -60,12 +60,12 @@ fill() {
 }
 
 rm -rf "$OUT"
-WINGET="$OUT/winget/manifests/i/illama/LGSTray/$VERSION"
+WINGET="$OUT/winget/manifests/i/illama/Batly/$VERSION"
 for f in "$ROOT"/packaging/winget/*.yaml; do
   fill "$f" "$WINGET/$(basename "$f")"
 done
-fill "$ROOT/packaging/scoop/lgstray.json" "$OUT/scoop/lgstray.json"
-fill "$ROOT/packaging/chocolatey/lgstray.nuspec" "$OUT/chocolatey/lgstray.nuspec"
+fill "$ROOT/packaging/scoop/batly.json" "$OUT/scoop/batly.json"
+fill "$ROOT/packaging/chocolatey/batly.nuspec" "$OUT/chocolatey/batly.nuspec"
 for f in "$ROOT"/packaging/chocolatey/tools/*.ps1; do
   fill "$f" "$OUT/chocolatey/tools/$(basename "$f")"
 done
@@ -73,7 +73,7 @@ done
 sed -i.bak "s/$(echo "$SETUP_SHA256" | tr a-f A-F)/$SETUP_SHA256/" "$OUT/chocolatey/tools/chocolateyinstall.ps1"
 rm -f "$OUT/chocolatey/tools/chocolateyinstall.ps1.bak"
 
-echo "Manifests for LGSTray $VERSION in $OUT"
+echo "Manifests for Batly $VERSION in $OUT"
 echo "  setup  $SETUP_SHA256"
 echo "  zip    $ZIP_SHA256"
 find "$OUT" -type f | sort

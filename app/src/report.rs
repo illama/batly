@@ -1,7 +1,7 @@
 //! "Report a problem": gathers what is needed to investigate an issue in a
 //! zip file and opens a prefilled GitHub issue.
 //!
-//! The zip holds the log (`lgstray.log` and its rotated `.old`), the
+//! The zip holds the log (`batly.log` and its rotated `.old`), the
 //! settings with every secret masked, the device list (JSON from the hub)
 //! and the application / Windows versions. It is written with the "store"
 //! method, so no compression code is needed.
@@ -11,7 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const NEW_ISSUE_URL: &str = "https://github.com/illama/illama_logitechbatteries/issues/new";
+pub const NEW_ISSUE_URL: &str = "https://github.com/illama/batly/issues/new";
 const MASK: &str = "***";
 
 /// Builds the report zip on the Desktop (or in %TEMP% if the Desktop
@@ -19,7 +19,7 @@ const MASK: &str = "***";
 ///
 /// * `devices_json`: the device list as served by the HTTP API.
 /// * `settings_text`: the settings file content (secrets are masked here).
-/// * `log_path`: `lgstray.log` (missing files are simply left out).
+/// * `log_path`: `batly.log` (missing files are simply left out).
 pub fn create(devices_json: &str, settings_text: &str, log_path: &Path) -> io::Result<PathBuf> {
     let now = SystemTime::now();
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
@@ -28,7 +28,7 @@ pub fn create(devices_json: &str, settings_text: &str, log_path: &Path) -> io::R
     entries.push(("appsettings.toml".into(), mask_secrets(settings_text).into_bytes()));
     for path in [crate::log::old_path(log_path), log_path.to_path_buf()] {
         if let Ok(data) = std::fs::read(&path) {
-            let name = path.file_name().map_or_else(|| "lgstray.log".into(), |n| n.to_string_lossy().into_owned());
+            let name = path.file_name().map_or_else(|| "batly.log".into(), |n| n.to_string_lossy().into_owned());
             entries.push((name, data));
         }
     }
@@ -36,7 +36,7 @@ pub fn create(devices_json: &str, settings_text: &str, log_path: &Path) -> io::R
     let zip = zip_store(&refs, now);
 
     let stamp: String = crate::http::iso8601(now).chars().filter(char::is_ascii_digit).collect();
-    let name = format!("LGSTray-report-{}-{}.zip", &stamp[..8], &stamp[8..]);
+    let name = format!("Batly-report-{}-{}.zip", &stamp[..8], &stamp[8..]);
     let mut last_error = None;
     for dir in [desktop(), Some(std::env::temp_dir())].into_iter().flatten() {
         let path = dir.join(&name);
@@ -71,7 +71,7 @@ pub fn run(devices_json: &str, settings_text: &str, log_path: &Path) -> io::Resu
 
 fn system_info(log_path: &Path) -> String {
     format!(
-        "LGSTray {}\nWindows: {}\nLanguage: {}\nPortable: {}\nLog enabled: {}\nLog file: {}\nCreated: {}\n",
+        "Batly {}\nWindows: {}\nLanguage: {}\nPortable: {}\nLog enabled: {}\nLog file: {}\nCreated: {}\n",
         env!("CARGO_PKG_VERSION"),
         windows_version(),
         crate::i18n::lang().code(),
@@ -136,7 +136,7 @@ pub fn issue_url(app_version: &str, windows: &str, zip_name: &str) -> String {
     ])
     .replace("{file}", &format!("`{zip_name}`"));
     let body = format!(
-        "**LGSTray**: {app_version}\n**Windows**: {windows}\n\n### {what}\n\n\n### {steps}\n1. \n\n### {devices}\n\n\n---\n📎 {attach}\n"
+        "**Batly**: {app_version}\n**Windows**: {windows}\n\n### {what}\n\n\n### {steps}\n1. \n\n### {devices}\n\n\n---\n📎 {attach}\n"
     );
     format!("{NEW_ISSUE_URL}?title={}&body={}", percent_encode(&title), percent_encode(&body))
 }
@@ -475,7 +475,7 @@ peers = [\"http://pc:12321#t0k\", \"http://other:1\"]
 [MQTT]
 username = \"me\"
 password = 'p#ss'
-baseTopic = \"lgstray\"
+baseTopic = \"batly\"
 
 [Webhooks]
 urls = [
@@ -495,7 +495,7 @@ token = \"not a secret here\"
         assert!(masked.contains("peers = [\"http://pc:12321#***\", \"http://other:1\"]"));
         assert!(masked.contains("password = '***'"));
         assert!(masked.contains("  \"***\", # main\n  \"***\",\n]\nallChanges = false"));
-        assert!(masked.contains("username = \"me\"") && masked.contains("baseTopic = \"lgstray\""));
+        assert!(masked.contains("username = \"me\"") && masked.contains("baseTopic = \"batly\""));
         assert!(masked.contains("token = \"not a secret here\""));
         assert_eq!(masked.lines().count(), text.lines().count());
 
@@ -511,11 +511,11 @@ token = \"not a secret here\"
 
     #[test]
     fn issue_page() {
-        let url = issue_url("4.1.0", "Windows 11 Pro 24H2 (26100.1)", "LGSTray-report-20260131-180405.zip");
-        assert!(url.starts_with("https://github.com/illama/illama_logitechbatteries/issues/new?title=%5BBug%5D%20"));
-        assert!(url.contains("&body=%2A%2ALGSTray%2A%2A%3A%204.1.0%0A"));
+        let url = issue_url("4.1.0", "Windows 11 Pro 24H2 (26100.1)", "Batly-report-20260131-180405.zip");
+        assert!(url.starts_with("https://github.com/illama/batly/issues/new?title=%5BBug%5D%20"));
+        assert!(url.contains("&body=%2A%2ABatly%2A%2A%3A%204.1.0%0A"));
         assert!(url.contains("Windows%2011%20Pro%2024H2%20%2826100.1%29"));
-        assert!(url.contains("LGSTray-report-20260131-180405.zip"));
+        assert!(url.contains("Batly-report-20260131-180405.zip"));
         assert!(!url[url.find('?').unwrap() + 1..].contains([' ', '\n', '#', '?']));
     }
 
@@ -527,13 +527,13 @@ token = \"not a secret here\"
     fn zip_is_valid() {
         let log: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
         let entries: [(&str, &[u8]); 4] =
-            [("system.txt", b"LGSTray 4.1.0\n"), ("empty.txt", b""), ("réglages.toml", b"a = 1\n"), ("lgstray.log", &log)];
+            [("system.txt", b"Batly 4.1.0\n"), ("empty.txt", b""), ("réglages.toml", b"a = 1\n"), ("batly.log", &log)];
         let zip = zip_store(&entries, UNIX_EPOCH + Duration::from_secs(1_769_882_645));
         assert_eq!(&zip[..4], b"PK\x03\x04");
         assert_eq!(&zip[zip.len() - 22..zip.len() - 18], b"PK\x05\x06");
 
         let Some(py) = python() else { return };
-        let dir = std::env::temp_dir().join(format!("lgstray-zip-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-zip-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.zip");
         std::fs::write(&path, &zip).unwrap();
@@ -555,18 +555,18 @@ token = \"not a secret here\"
 
     #[test]
     fn report_file() {
-        let dir = std::env::temp_dir().join(format!("lgstray-report-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("batly-report-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("lgstray.log");
+        let log = dir.join("batly.log");
         std::fs::write(&log, "line\n").unwrap();
         let path = create("[{\"id\":\"1\"}]", "[MQTT]\npassword = \"pw\"\n", &log).unwrap();
         let data = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&dir);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("LGSTray-report-") && name.ends_with(".zip") && name.len() == "LGSTray-report-20260131-180405.zip".len());
+        assert!(name.starts_with("Batly-report-") && name.ends_with(".zip") && name.len() == "Batly-report-20260131-180405.zip".len());
         let has = |needle: &[u8]| data.windows(needle.len()).any(|w| w == needle);
-        assert!(has(b"devices.json") && has(b"appsettings.toml") && has(b"system.txt") && has(b"lgstray.log"));
+        assert!(has(b"devices.json") && has(b"appsettings.toml") && has(b"system.txt") && has(b"batly.log"));
         assert!(has(b"password = \"***\"") && !has(b"\"pw\"") && has(b"line\n"));
     }
 }

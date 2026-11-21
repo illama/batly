@@ -1,6 +1,6 @@
-# Intégrations LGSTray
+# Intégrations Batly
 
-Toutes s'appuient sur l'API HTTP locale de LGSTray (`http://localhost:12321` par défaut).
+Toutes s'appuient sur l'API HTTP locale de Batly (`http://localhost:12321` par défaut).
 
 | Dossier / fonction | Usage |
 |---|---|

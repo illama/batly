@@ -1,5 +1,5 @@
 [package]
-name = "lgstray"
+name = "batly"
 description = "Logitech battery level in the Windows system tray (HID++ / G HUB)"
 version.workspace = true
 edition.workspace = true

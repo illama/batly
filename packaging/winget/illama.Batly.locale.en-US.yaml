@@ -1,24 +1,24 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 # Template: filled in by packaging/update-manifests.sh (do not submit as is).
-PackageIdentifier: illama.LGSTray
+PackageIdentifier: illama.Batly
 PackageVersion: {{VERSION}}
 PackageLocale: en-US
 Publisher: illama
 PublisherUrl: https://github.com/illama
-PublisherSupportUrl: https://github.com/illama/illama_logitechbatteries/issues
-Author: illama and LGSTray contributors
-PackageName: LGSTray
-PackageUrl: https://github.com/illama/illama_logitechbatteries
+PublisherSupportUrl: https://github.com/illama/batly/issues
+Author: illama and Batly contributors
+PackageName: Batly
+PackageUrl: https://github.com/illama/batly
 License: GPL-3.0-or-later
-LicenseUrl: https://github.com/illama/illama_logitechbatteries/blob/main/LICENSE
-Copyright: Copyright (C) illama and LGSTray contributors
+LicenseUrl: https://github.com/illama/batly/blob/main/LICENSE
+Copyright: Copyright (C) illama and Batly contributors
 ShortDescription: Battery level of Logitech (and other wireless) devices in the Windows notification area.
 Description: |-
-  LGSTray shows the battery level of Logitech mice, keyboards and headsets (HID++ receivers,
+  Batly shows the battery level of Logitech mice, keyboards and headsets (HID++ receivers,
   Bluetooth, G HUB) and of other wireless devices in the Windows notification area, with
   low battery notifications and a local HTTP API. A single small native executable written
   in Rust: no .NET runtime, no helper process. Per-user installation, no administrator rights.
-Moniker: lgstray
+Moniker: batly
 Tags:
   - battery
   - logitech
@@ -27,6 +27,6 @@ Tags:
   - keyboard
   - headset
   - hidpp
-ReleaseNotesUrl: https://github.com/illama/illama_logitechbatteries/releases/tag/v{{VERSION}}
+ReleaseNotesUrl: https://github.com/illama/batly/releases/tag/v{{VERSION}}
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

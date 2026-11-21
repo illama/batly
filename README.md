@@ -1,7 +1,11 @@
-# illama_logitechbatteries — LGSTray (Rust)
+<p align="center"><img src="docs/logo.png" alt="Batly" width="128"></p>
 
-[![CI](https://github.com/illama/illama_logitechbatteries/actions/workflows/ci.yml/badge.svg)](https://github.com/illama/illama_logitechbatteries/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/illama/illama_logitechbatteries)](https://github.com/illama/illama_logitechbatteries/releases/latest)
+<h1 align="center">Batly</h1>
+
+<p align="center"><b>Toutes vos batteries, d'un coup d'œil.</b></p>
+
+[![CI](https://github.com/illama/batly/actions/workflows/ci.yml/badge.svg)](https://github.com/illama/batly/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/illama/batly)](https://github.com/illama/batly/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D6)
 
@@ -10,7 +14,7 @@ claviers et casques Logitech, mais aussi écouteurs Bluetooth, manettes Xbox / P
 périphériques Razer, Corsair, SteelSeries. Avec l'autonomie restante estimée, l'historique,
 des alertes intelligentes, une API et la domotique.
 
-**[⬇ Télécharger la dernière version](https://github.com/illama/illama_logitechbatteries/releases/latest)**
+**[⬇ Télécharger la dernière version](https://github.com/illama/batly/releases/latest)**
 
 <p align="center">
   <img src="docs/panneau.png" alt="Panneau des batteries" width="330">
@@ -26,22 +30,26 @@ natif d'environ 1,5 Mo, sans runtime .NET, sans `hidapi.dll`, sans processus aux
 > API, MQTT…) est couverte par des tests automatisés. L'interface (panneau, réglages, menu,
 > alertes) et l'API ont été vérifiées sous Wine avec des périphériques simulés (`--demo`).
 > L'accès au **vrai matériel** n'a pas encore été essayé : en cas de souci, lancez
-> `lgstray.exe --debug` ou utilisez *Signaler un problème* dans le menu.
+> `batly.exe --debug` ou utilisez *Signaler un problème* dans le menu.
+
+> **Anciennement LGSTray.** Batly 5 est une nouvelle application : elle ne reprend ni les
+> réglages ni l'historique de LGSTray 4.x et ne le met pas à jour. Désinstallez LGSTray
+> (Paramètres Windows → Applications) avant d'installer Batly, sinon les deux tourneront.
 
 ## Installation
 
 | Fichier | Usage |
 |---|---|
-| `LGSTray-Setup-<version>.exe` | Installateur par utilisateur (aucun droit administrateur). `/S` pour une installation silencieuse. |
-| `LGSTray-<version>-portable.zip` | Version portable : décompresser et lancer `lgstray.exe` (les réglages restent dans le dossier). |
+| `Batly-Setup-<version>.exe` | Installateur par utilisateur (aucun droit administrateur). `/S` pour une installation silencieuse. |
+| `Batly-<version>-portable.zip` | Version portable : décompresser et lancer `batly.exe` (les réglages restent dans le dossier). |
 
-Également prévu pour `winget install illama.LGSTray`, Scoop et Chocolatey
+Également prévu pour `winget install illama.Batly`, Scoop et Chocolatey
 (manifestes dans [`packaging/`](packaging/README.md)).
 
 L'appli se met à jour toute seule depuis les releases GitHub (vérification une fois par jour,
 installateur vérifié par SHA-256 avant d'être lancé). Windows 10 (1607) ou plus récent, x64.
 
-## Ce que fait LGSTray
+## Ce que fait Batly
 
 ### Le panneau des batteries
 **Clic gauche** sur l'icône (ou **Ctrl+Alt+B**, réglable) : un panneau façon Windows 11 avec
@@ -81,7 +89,7 @@ moyenne d'une charge, le **nombre de cycles** et, après deux mois, **l'usure de
 | Razer | souris et claviers sans fil (protocole openrazer) |
 | SteelSeries | casques Arctis 1 / 7 / 7X / 7P / Pro Wireless / Nova 7 |
 | Corsair | casques Void / Void Pro / Void Elite / HS70 sans fil |
-| Autres PC | les périphériques d'un autre ordinateur où tourne LGSTray (voir *Plusieurs PC*) |
+| Autres PC | les périphériques d'un autre ordinateur où tourne Batly (voir *Plusieurs PC*) |
 
 Toutes ces sources se désactivent une à une dans les réglages. Les lectures n'envoient jamais
 de commande qui modifie la configuration d'un périphérique.
@@ -119,17 +127,17 @@ dernier état connu** quand il est éteint. Ouvrir l'API au réseau (`0.0.0.0`) 
 - en ligne de commande :
 
 ```bat
-lgstray.exe --status           :: état des périphériques de l'instance lancée
-lgstray.exe --status --json    :: pareil, en JSON (scripts)
-lgstray.exe --panel            :: ouvre le panneau
-lgstray.exe --settings         :: ouvre les réglages
-lgstray.exe --debug            :: écrit lgstray.log à côté des réglages
-lgstray.exe --demo             :: périphériques fictifs (essais, captures)
+batly.exe --status           :: état des périphériques de l'instance lancée
+batly.exe --status --json    :: pareil, en JSON (scripts)
+batly.exe --panel            :: ouvre le panneau
+batly.exe --settings         :: ouvre les réglages
+batly.exe --debug            :: écrit batly.log à côté des réglages
+batly.exe --demo             :: périphériques fictifs (essais, captures)
 ```
 
 ## Ce qui change par rapport à l'original
 
-| | LGSTrayBattery 3.0.3 (C#) | LGSTray 4 (Rust) |
+| | LGSTrayBattery 3.0.3 (C#) | Batly (Rust) |
 |---|---|---|
 | Distribution | zip avec .NET 8 embarqué, ou .NET 8 à installer | installateur ~2 Mo / exe ~1,5 Mo, aucune dépendance, mise à jour automatique |
 | Processus | 2 (interface + `LGSTrayHID`), IPC MessagePack | 1 |
@@ -153,9 +161,9 @@ lgstray.exe --demo             :: périphériques fictifs (essais, captures)
 ## Réglages
 
 Tout se règle dans *Réglages…* (menu ou panneau). Le fichier reste
-`%APPDATA%\LGSTray\appsettings.toml` (ou à côté de l'exécutable en mode portable), commenté
+`%APPDATA%\Batly\appsettings.toml` (ou à côté de l'exécutable en mode portable), commenté
 section par section ([modèle complet](packaging/appsettings.toml)) ; il est relu **dès qu'il
-est enregistré**. Si le changement touche le serveur web, MQTT ou les sources, LGSTray se
+est enregistré**. Si le changement touche le serveur web, MQTT ou les sources, Batly se
 relance tout seul. Le fichier de l'original est accepté tel quel.
 
 | Section | Contenu |
@@ -201,13 +209,13 @@ intégrations et de l'overlay : [`integrations/README.md`](integrations/README.m
 ```sh
 # Linux / macOS / WSL : rustup + zig + cargo-zigbuild
 rustup target add x86_64-pc-windows-gnu
-./build.sh            # tests, puis dist/LGSTray-Setup-<v>.exe, dist/LGSTray-<v>-portable.zip,
+./build.sh            # tests, puis dist/Batly-Setup-<v>.exe, dist/Batly-<v>-portable.zip,
                       # SHA256SUMS.txt et les manifestes winget / Scoop / Chocolatey
 ```
 
-Sous Windows (toolchain MSVC) : `cargo build --release -p lgstray`, puis
-`set LGSTRAY_PAYLOAD=<chemin de lgstray.exe>` et `cargo build --release -p lgstray-setup`.
-`cargo test -p lgstray` fonctionne sur n'importe quel système.
+Sous Windows (toolchain MSVC) : `cargo build --release -p batly`, puis
+`set BATLY_PAYLOAD=<chemin de batly.exe>` et `cargo build --release -p batly-setup`.
+`cargo test -p batly` fonctionne sur n'importe quel système.
 
 Une release se fait en poussant un tag `v<version>` : le workflow
 [`release.yml`](.github/workflows/release.yml) compile, signe (si SignPath est configuré, voir
@@ -235,13 +243,13 @@ app/src/
   panel.rs        panneau des batteries · settings_ui.rs : fenêtre de réglages · ui.rs : dessin
   hotkey.rs       raccourci clavier global
   http.rs         page web, API, SSE, Prometheus, overlay
-  peers.rs        autres instances LGSTray du réseau
+  peers.rs        autres instances Batly du réseau
   mqtt.rs         client MQTT + découverte Home Assistant · webhooks.rs : webhooks
   fetch.rs        requêtes HTTP(S) sortantes (WinHTTP)
   update.rs       mises à jour · sha256.rs · report.rs : « Signaler un problème » · actions.rs : menus associés
   icon.rs         rendu des icônes (RGBA)
   uninstall.rs    désinstallation
-setup/            installateur (embarque lgstray.exe, gère /S et /update)
+setup/            installateur (embarque batly.exe, gère /S et /update)
 integrations/     overlay OBS, plugin Stream Deck, skin Rainmeter
 packaging/        winget, Scoop, Chocolatey
 build/            script de ressources partagé (icône, version, manifeste)

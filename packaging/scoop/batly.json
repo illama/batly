@@ -1,0 +1,42 @@
+{
+    "version": "{{VERSION}}",
+    "description": "Battery level of Logitech (and other wireless) devices in the Windows notification area.",
+    "homepage": "https://github.com/illama/batly",
+    "license": "GPL-3.0-or-later",
+    "notes": [
+        "Portable mode: settings are kept in $persist_dir\\appsettings.toml.",
+        "Updates go through 'scoop update batly' (the in-app updater only opens the release page)."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/illama/batly/releases/download/v{{VERSION}}/Batly-{{VERSION}}-portable.zip",
+            "hash": "{{ZIP_SHA256}}"
+        }
+    },
+    "extract_dir": "Batly",
+    "pre_install": "Get-Process batly -ErrorAction SilentlyContinue | Where-Object { $_.Path -like \"$dir\\*\" } | Stop-Process -Force",
+    "pre_uninstall": "Get-Process batly -ErrorAction SilentlyContinue | Where-Object { $_.Path -like \"$dir\\*\" } | Stop-Process -Force",
+    "shortcuts": [
+        [
+            "batly.exe",
+            "Batly"
+        ]
+    ],
+    "persist": [
+        "appsettings.toml",
+        "history"
+    ],
+    "checkver": {
+        "github": "https://github.com/illama/batly"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/illama/batly/releases/download/v$version/Batly-$version-portable.zip",
+                "hash": {
+                    "url": "$baseurl/SHA256SUMS.txt"
+                }
+            }
+        }
+    }
+}

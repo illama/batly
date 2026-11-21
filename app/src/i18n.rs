@@ -89,7 +89,7 @@ macro_rules! strings {
 
 strings! {
     no_device => "No device found", "Aucun périphérique détecté", "Kein Gerät gefunden", "Ningún dispositivo encontrado", "Nessun dispositivo trovato", "Nenhum dispositivo encontrado";
-    searching => "LGSTray – looking for devices…", "LGSTray – recherche de périphériques…", "LGSTray – Geräte werden gesucht…", "LGSTray – buscando dispositivos…", "LGSTray – ricerca dispositivi…", "LGSTray – procurando dispositivos…";
+    searching => "Batly – looking for devices…", "Batly – recherche de périphériques…", "Batly – Geräte werden gesucht…", "Batly – buscando dispositivos…", "Batly – ricerca dispositivi…", "Batly – procurando dispositivos…";
     numeric_display => "Show level as a number", "Afficher le niveau en chiffres", "Ladestand als Zahl anzeigen", "Mostrar el nivel como número", "Mostra il livello come numero", "Mostrar o nível como número";
     low_battery_alerts => "Low battery notifications", "Notifications de batterie faible", "Benachrichtigung bei niedrigem Akku", "Avisos de batería baja", "Notifiche di batteria scarica", "Avisos de bateria fraca";
     autostart => "Start with Windows", "Lancer au démarrage de Windows", "Mit Windows starten", "Iniciar con Windows", "Avvia con Windows", "Iniciar com o Windows";
@@ -103,11 +103,11 @@ strings! {
     unknown_level => "level unknown", "niveau inconnu", "Ladestand unbekannt", "nivel desconocido", "livello sconosciuto", "nível desconhecido";
     no_battery => "no battery", "sans batterie", "kein Akku", "sin batería", "senza batteria", "sem bateria";
     low_battery_title => "Low battery", "Batterie faible", "Akku schwach", "Batería baja", "Batteria scarica", "Bateria fraca";
-    settings_invalid_title => "LGSTray – invalid settings", "LGSTray – réglages invalides", "LGSTray – ungültige Einstellungen", "LGSTray – ajustes no válidos", "LGSTray – impostazioni non valide", "LGSTray – configurações inválidas";
-    uninstall_title => "Uninstall LGSTray", "Désinstaller LGSTray", "LGSTray deinstallieren", "Desinstalar LGSTray", "Disinstalla LGSTray", "Desinstalar o LGSTray";
-    uninstall_confirm => "Remove LGSTray from this computer?", "Supprimer LGSTray de cet ordinateur ?", "LGSTray von diesem Computer entfernen?", "¿Quitar LGSTray de este equipo?", "Rimuovere LGSTray da questo computer?", "Remover o LGSTray deste computador?";
+    settings_invalid_title => "Batly – invalid settings", "Batly – réglages invalides", "Batly – ungültige Einstellungen", "Batly – ajustes no válidos", "Batly – impostazioni non valide", "Batly – configurações inválidas";
+    uninstall_title => "Uninstall Batly", "Désinstaller Batly", "Batly deinstallieren", "Desinstalar Batly", "Disinstalla Batly", "Desinstalar o Batly";
+    uninstall_confirm => "Remove Batly from this computer?", "Supprimer Batly de cet ordinateur ?", "Batly von diesem Computer entfernen?", "¿Quitar Batly de este equipo?", "Rimuovere Batly da questo computer?", "Remover o Batly deste computador?";
     uninstall_settings => "Also delete your settings?", "Supprimer aussi vos réglages ?", "Auch Ihre Einstellungen löschen?", "¿Borrar también sus ajustes?", "Eliminare anche le impostazioni?", "Apagar também as suas configurações?";
-    uninstall_done => "LGSTray has been removed.", "LGSTray a été désinstallé.", "LGSTray wurde entfernt.", "LGSTray se ha desinstalado.", "LGSTray è stato rimosso.", "O LGSTray foi removido.";
+    uninstall_done => "Batly has been removed.", "Batly a été désinstallé.", "Batly wurde entfernt.", "Batly se ha desinstalado.", "Batly è stato rimosso.", "O Batly foi removido.";
 }
 
 pub fn settings_invalid(path: &str, error: &str) -> String {

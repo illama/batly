@@ -375,7 +375,7 @@ impl App {
         if devices.is_empty() {
             return i18n::searching().into();
         }
-        let mut tip = String::from("LGSTray");
+        let mut tip = String::from("Batly");
         for d in devices.iter().filter(|d| d.has_battery) {
             let line = format!("\n{}: {}", self.name(d), i18n::describe(d));
             if tip.chars().count() + line.chars().count() > 120 {
@@ -713,7 +713,7 @@ impl App {
                 add(ID_ACTION_BASE + n, &action.label, 0);
             }
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            add(0, &format!("LGSTray {}", http::VERSION), MF_GRAYED);
+            add(0, &format!("Batly {}", http::VERSION), MF_GRAYED);
             add(ID_QUIT, i18n::quit(), 0);
             (menu, devices.into_iter().map(|d| d.id).collect())
         }

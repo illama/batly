@@ -4,7 +4,7 @@
 //! Discord (`discord.com/api/webhooks/…`) and Slack (`hooks.slack.com`)
 //! URLs get a message in their own format; other URLs get a generic object:
 //! `{"event": "low_battery", "title", "text", "device": {...}, "percent",
-//! "hours_left", "timestamp", "source": "lgstray", "version"}`.
+//! "hours_left", "timestamp", "source": "batly", "version"}`.
 //!
 //! Sending never blocks the caller: messages go through a bounded queue to
 //! a worker thread, and are dropped when the queue is full.
@@ -61,7 +61,7 @@ pub fn body(format: Format, msg: &Message) -> String {
         Message::Change(d) => (d.name.clone(), i18n::describe(d)),
     };
     match format {
-        Format::Discord => json!({ "content": format!("**{}**\n{}", title, text), "username": "LGSTray" }).to_string(),
+        Format::Discord => json!({ "content": format!("**{}**\n{}", title, text), "username": "Batly" }).to_string(),
         Format::Slack => json!({ "text": format!("*{}*\n{}", title, text) }).to_string(),
         Format::Generic => {
             let timestamp = http::iso8601(SystemTime::now());
@@ -74,7 +74,7 @@ pub fn body(format: Format, msg: &Message) -> String {
                     "percent": n.percent,
                     "hours_left": n.hours_left,
                     "timestamp": timestamp,
-                    "source": "lgstray",
+                    "source": "batly",
                     "version": http::VERSION,
                 }),
                 Message::Change(d) => json!({
@@ -85,7 +85,7 @@ pub fn body(format: Format, msg: &Message) -> String {
                     "percent": d.battery.map(|b| b.percent.round()),
                     "hours_left": Value::Null,
                     "timestamp": timestamp,
-                    "source": "lgstray",
+                    "source": "batly",
                     "version": http::VERSION,
                 }),
             };

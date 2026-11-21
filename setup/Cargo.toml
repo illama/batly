@@ -1,6 +1,6 @@
 [package]
-name = "lgstray-setup"
-description = "Installer for LGSTray"
+name = "batly-setup"
+description = "Installer for Batly"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
