@@ -100,7 +100,7 @@ de commande qui modifie la configuration d'un périphérique.
 Easy-Switch, et régler le **DPI**, le taux de rapport, le **rétroéclairage** et **SmartShift**
 — sans Logi Options+ ni le logiciel Unifying abandonné.
 
-### Éclairage RGB (expérimental, 5.1)
+### Éclairage RGB (5.1)
 Dans la même fenêtre, section **Éclairage** : zone (principale, logo…), effet (couleur fixe,
 respiration, cycle de couleurs, éteint), couleur et vitesse, pour les appareils Logitech
 LIGHTSYNC (HID++ 0x8070 / 0x8071).
@@ -108,7 +108,7 @@ LIGHTSYNC (HID++ 0x8070 / 0x8071).
   les rend à l'appareil.
 - **Enregistrer dans l'appareil** : écrit l'éclairage dans le **profil actif de la mémoire
   embarquée** (comme le gestionnaire de mémoire de G HUB) ; l'appareil le garde sans logiciel.
-  Souris uniquement pour l'instant. Avant toute écriture, la mémoire est vérifiée (taille,
+  Souris dont la mémoire suit le format connu (vérifié sur G502 X PLUS). Avant toute écriture, la mémoire est vérifiée (taille,
   CRC, format) puis **sauvegardée** dans `%APPDATA%\Batly\backups\` ; après l'écriture elle est
   relue, et restaurée si elle ne correspond pas. Un profil d'usine ou un format inconnu n'est
   jamais modifié.
