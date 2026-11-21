@@ -1,17 +1,23 @@
-//! Notification area icons, context menu and the UI message loop.
+//! Notification area icons, context menu, battery panel, alerts and the UI
+//! message loop.
 //!
 //! Everything UI related runs on the main thread. Backends only post a
 //! (coalesced) `WM_APP_SYNC` message when the device registry changes.
 
+use crate::alerts::Engine;
 use crate::config::Config;
 use crate::ghub::GHub;
+use crate::history::{self, History, Stats};
+use crate::i18n::{self, tr};
 use crate::icon::{self, IconSpec};
-use crate::model::{Device, Hub, Source, Status};
+use crate::model::{Device, DeviceKind, Hub, Source, Status};
 use crate::native::Native;
+use crate::notice::{Notice, NoticeKind};
+use crate::panel;
 use crate::win::{self, copy_wide, wide};
-use crate::{http, i18n, log};
+use crate::{hotkey, http, log, settings_ui};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
@@ -25,29 +31,43 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+    SHQueryUserNotificationState, Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE,
+    NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, NOTIFYICON_VERSION_4, QUNS_BUSY, QUNS_PRESENTATION_MODE,
+    QUNS_QUIET_TIME, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
     DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
     RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON,
     HMENU, LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_BOTTOMALIGN,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DEVICECHANGE,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NULL, WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW,
-    WS_OVERLAPPED,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_NULL, WM_POWERBROADCAST, WM_SETTINGCHANGE,
+    WM_TIMER, WM_USER, WNDCLASSW, WS_OVERLAPPED,
 };
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_SYNC: u32 = WM_APP + 2;
+/// The settings file changed (watcher thread or settings window).
+pub const WM_APP_RELOAD: u32 = WM_APP + 3;
+/// A background task asks the UI thread to show a notice (`lparam` =
+/// `Box<Notice>` raw pointer).
+pub const WM_APP_NOTICE: u32 = WM_APP + 4;
 const NIN_SELECT: u32 = WM_USER;
 const NIN_KEYSELECT: u32 = WM_USER + 1;
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 const DBT_DEVNODES_CHANGED: usize = 0x0007;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
 
 const TIMER_RESCAN: usize = 1;
 const TIMER_RESUME: usize = 2;
+/// Re-evaluates the time based alerts (estimate, offline) as time passes.
+const TIMER_ALERTS: usize = 3;
+/// Retries held notices while the user is busy.
+const TIMER_HELD: usize = 4;
+const TIMER_RELOAD: usize = 5;
 
 const ID_NUMERIC: usize = 1;
 const ID_LOW_BATTERY: usize = 2;
@@ -56,7 +76,14 @@ const ID_REFRESH: usize = 4;
 const ID_SETTINGS: usize = 5;
 const ID_WEB: usize = 6;
 const ID_QUIT: usize = 7;
+const ID_PANEL: usize = 8;
+const ID_SETTINGS_FILE: usize = 9;
+const ID_SNOOZE: usize = 10;
+const ID_SINGLE_ICON: usize = 11;
+/// `ID_ACTION_BASE + n`: extra actions registered in `Services::actions`.
+const ID_ACTION_BASE: usize = 500;
 const ID_DEVICE_BASE: usize = 1000;
+const HOTKEY_ID: i32 = 1;
 
 const PLACEHOLDER_UID: u32 = 1;
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -87,17 +114,34 @@ struct Shown {
 
 struct TrayIcon {
     uid: u32,
-    /// `None` for the placeholder icon.
+    /// `None` for the placeholder / summary icon.
     device_id: Option<String>,
     hicon: HICON,
     shown: Option<Shown>,
     added: bool,
 }
 
+/// An extra menu entry provided by an optional module (receivers window,
+/// update check, problem report…). Runs on the UI thread.
+pub struct Action {
+    pub label: String,
+    pub run: Box<dyn Fn(HWND)>,
+}
+
 pub struct Services {
     pub native: Option<Native>,
     pub ghub: Option<GHub>,
     pub web_url: Option<String>,
+    pub history: Arc<History>,
+    /// Other backends: called on "Refresh now" / after resume.
+    pub refresh: Vec<Box<dyn Fn()>>,
+    /// Other backends: called after a device arrival / removal.
+    pub rescan: Vec<Box<dyn Fn()>>,
+    /// Integrations that receive every alert (webhooks, MQTT…).
+    pub notice_sinks: Vec<Box<dyn Fn(&Notice)>>,
+    pub actions: Vec<Action>,
+    /// The settings in effect when the services were started.
+    pub started_with: Config,
 }
 
 struct App {
@@ -109,12 +153,29 @@ struct App {
     icons: Vec<TrayIcon>,
     next_uid: u32,
     light_taskbar: bool,
-    low_notified: HashSet<String>,
+    alerts: Engine,
+    /// Last alert shown, for "remind me later".
+    last_notice: Option<Notice>,
+    hotkey_registered: bool,
+    /// Statistics cache: device id → (history sample count, minute, stats).
+    stats_cache: HashMap<String, (usize, u64, Stats)>,
 }
 
 fn taskbar_is_light() -> bool {
     // Missing value (Windows 8 and earlier): the taskbar is dark.
     win::reg_read_dword(PERSONALIZE_KEY, "SystemUsesLightTheme").is_some_and(|v| v != 0)
+}
+
+/// Full screen game, presentation, "Do not disturb"…
+fn user_busy() -> bool {
+    let mut state = 0;
+    // SAFETY: valid out-pointer.
+    let ok = unsafe { SHQueryUserNotificationState(&mut state) } >= 0;
+    ok && matches!(state, QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE | QUNS_QUIET_TIME)
+}
+
+fn plugged(d: &Device) -> bool {
+    d.battery.is_some_and(|b| matches!(b.status, Status::Charging | Status::Full))
 }
 
 impl App {
@@ -143,6 +204,48 @@ impl App {
         data
     }
 
+    fn name(&self, d: &Device) -> String {
+        self.cfg.display_name(&d.id, &d.name)
+    }
+
+    fn kind(&self, d: &Device) -> DeviceKind {
+        DeviceKind::parse(&self.cfg.device(&d.id).icon).unwrap_or(d.kind)
+    }
+
+    /// Time left (discharging) or to full (charging), from the history,
+    /// cached per device for a minute or until a new reading arrives.
+    fn estimate(&mut self, d: &Device) -> Option<f64> {
+        let stats = self.stats(&d.id);
+        match d.battery?.status {
+            Status::Charging => stats.time_to_full_hours,
+            Status::Full | Status::NotCharging => None,
+            _ => stats.time_left_hours,
+        }
+    }
+
+    fn stats(&mut self, id: &str) -> Stats {
+        let minute = history::now() / 60;
+        let count = self.services.history.samples(id, history::now().saturating_sub(60)).len();
+        if let Some((c, m, s)) = self.stats_cache.get(id) {
+            if *c == count && *m == minute {
+                return s.clone();
+            }
+        }
+        let s = self.services.history.stats(id);
+        self.stats_cache.insert(id.to_string(), (count, minute, s.clone()));
+        s
+    }
+
+    /// Devices in display order: the user's order first, then by name.
+    fn ordered(&self, mut devices: Vec<Device>) -> Vec<Device> {
+        let order = &self.cfg.ui.device_order;
+        let rank = |d: &Device| order.iter().position(|o| *o == d.id).unwrap_or(usize::MAX);
+        devices.sort_by(|a, b| {
+            rank(a).cmp(&rank(b)).then_with(|| self.name(a).to_lowercase().cmp(&self.name(b).to_lowercase()))
+        });
+        devices
+    }
+
     /// Brings the tray icons in line with the device registry.
     fn sync(&mut self) {
         if THEME_DIRTY.swap(false, Ordering::Relaxed) {
@@ -155,27 +258,52 @@ impl App {
                 icon.shown = None;
             }
         }
-        let devices = self.hub.snapshot();
+        let devices = self.ordered(self.hub.snapshot());
 
         // First run: give the first battery powered device an icon.
         if !self.cfg.ui.first_run_done {
-            if let Some(d) = devices.iter().find(|d| d.has_battery) {
+            if let Some(d) = devices.iter().find(|d| d.has_battery && d.source != Source::Remote) {
                 self.cfg.ui.selected_devices.push(d.id.clone());
                 self.cfg.ui.first_run_done = true;
                 self.save();
             }
         }
 
-        let visible: Vec<&Device> =
-            devices.iter().filter(|d| self.cfg.ui.selected_devices.iter().any(|s| *s == d.id)).collect();
-        let wanted: Vec<Option<&Device>> =
-            if visible.is_empty() { vec![None] } else { visible.into_iter().map(Some).collect() };
+        // Which device gets an icon. `None` = summary icon.
+        let with_battery: Vec<&Device> = devices.iter().filter(|d| d.has_battery).collect();
+        let lowest = with_battery
+            .iter()
+            .filter(|d| d.battery.is_some())
+            .min_by(|a, b| {
+                // Online devices first, then the lowest level.
+                (!a.online, a.battery.map_or(101.0, |x| x.percent))
+                    .partial_cmp(&(!b.online, b.battery.map_or(101.0, |x| x.percent)))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .copied();
+        let hide_above = self.cfg.ui.hide_above as f32;
+        let wanted: Vec<(Option<String>, Option<&Device>)> = if self.cfg.ui.single_icon {
+            vec![(None, lowest)]
+        } else {
+            let visible: Vec<&Device> = devices
+                .iter()
+                .filter(|d| self.cfg.ui.selected_devices.iter().any(|s| *s == d.id))
+                .filter(|d| {
+                    hide_above <= 0.0 || plugged(d) || !d.online || d.battery.is_none_or(|b| b.percent <= hide_above)
+                })
+                .collect();
+            if visible.is_empty() {
+                // Keep one icon to click on: the lowest device, as a summary.
+                vec![(None, lowest)]
+            } else {
+                visible.into_iter().map(|d| (Some(d.id.clone()), Some(d))).collect()
+            }
+        };
 
         // Remove icons that are no longer wanted.
         let mut i = 0;
         while i < self.icons.len() {
-            let keep = wanted.iter().any(|w| w.map(|d| &d.id) == self.icons[i].device_id.as_ref());
-            if keep {
+            if wanted.iter().any(|(id, _)| *id == self.icons[i].device_id) {
                 i += 1;
             } else {
                 let icon = self.icons.remove(i);
@@ -185,8 +313,8 @@ impl App {
 
         let size = self.icon_size();
         let numeric = self.cfg.ui.numeric_display;
-        for device in wanted {
-            let id = device.map(|d| d.id.clone());
+        let summary_tip = self.summary_tip(&devices);
+        for (id, device) in wanted {
             let index = match self.icons.iter().position(|i| i.device_id == id) {
                 Some(index) => index,
                 None => {
@@ -196,38 +324,60 @@ impl App {
                         self.next_uid += 1;
                         self.next_uid
                     };
-                    self.icons.push(TrayIcon { uid, device_id: id, hicon: null_mut(), shown: None, added: false });
+                    self.icons.push(TrayIcon { uid, device_id: id.clone(), hicon: null_mut(), shown: None, added: false });
                     self.icons.len() - 1
                 }
+            };
+            let tip = match (&id, device) {
+                (Some(_), Some(d)) => {
+                    let estimate = self.estimate(d);
+                    i18n::tooltip(&self.name(d), d, estimate)
+                }
+                _ => summary_tip.clone(),
             };
             let shown = Shown {
                 spec: match device {
                     Some(d) => IconSpec {
-                        kind: d.kind,
+                        kind: self.kind(d),
                         percent: d.battery.map(|b| b.percent.round()),
                         charging: d.battery.is_some_and(|b| b.status == Status::Charging),
                         light_foreground: !self.light_taskbar,
                         dimmed: !d.online,
                     },
                     None => IconSpec {
-                        kind: crate::model::DeviceKind::Mouse,
+                        kind: DeviceKind::Mouse,
                         percent: None,
                         charging: false,
                         light_foreground: !self.light_taskbar,
                         dimmed: false,
                     },
                 },
-                numeric: numeric && device.is_some(),
+                numeric: numeric && device.is_some_and(|d| d.battery.is_some()),
                 size,
-                tip: match device {
-                    Some(d) => i18n::tooltip(&d.name, d, None),
-                    None => placeholder_tip(&devices),
-                },
+                tip,
             };
             self.update_icon(index, shown);
         }
 
-        self.low_battery_check(&devices);
+        self.check_alerts(&devices);
+        if panel::is_open() {
+            panel::update(self.panel_content(&devices));
+        }
+    }
+
+    fn summary_tip(&mut self, devices: &[Device]) -> String {
+        if devices.is_empty() {
+            return i18n::searching().into();
+        }
+        let mut tip = String::from("LGSTray");
+        for d in devices.iter().filter(|d| d.has_battery) {
+            let line = format!("\n{}: {}", self.name(d), i18n::describe(d));
+            if tip.chars().count() + line.chars().count() > 120 {
+                break;
+            }
+            tip.push_str(&line);
+        }
+        tip
     }
 
     fn update_icon(&mut self, index: usize, shown: Shown) {
@@ -299,43 +449,208 @@ impl App {
         }
     }
 
-    fn low_battery_check(&mut self, devices: &[Device]) {
-        let threshold = self.cfg.ui.low_battery_threshold as f32;
-        for d in devices {
-            let Some(b) = d.battery else { continue };
-            let plugged = matches!(b.status, Status::Charging | Status::Full);
-            if threshold > 0.0 && d.online && !plugged && b.percent <= threshold {
-                if self.low_notified.insert(d.id.clone()) {
-                    self.balloon(d, i18n::low_battery_title(), &i18n::low_battery_text(&d.name, b.percent));
-                }
-            } else if plugged || b.percent > threshold + 5.0 {
-                self.low_notified.remove(&d.id);
+    // ---------------------------------------------------------------- alerts
+
+    fn check_alerts(&mut self, devices: &[Device]) {
+        let history = self.services.history.clone();
+        let notices = self.alerts.evaluate(&self.cfg, devices, |id| history.stats(id), history::now());
+        for n in notices {
+            self.deliver(n);
+        }
+    }
+
+    fn deliver(&mut self, n: Notice) {
+        for sink in &self.services.notice_sinks {
+            sink(&n);
+        }
+        if self.cfg.alerts.quiet_when_busy && user_busy() {
+            self.alerts.hold(n);
+            // SAFETY: timer on our own window.
+            unsafe { SetTimer(self.hwnd, TIMER_HELD, 60_000, None) };
+            return;
+        }
+        self.show_notice(&n);
+    }
+
+    fn show_notice(&mut self, n: &Notice) {
+        let icon = self
+            .icons
+            .iter()
+            .find(|i| i.device_id.as_deref() == Some(n.device_id.as_str()))
+            .or_else(|| self.icons.first());
+        let Some(icon) = icon else { return };
+        let mut data = self.notify_data(icon.uid);
+        data.uFlags = NIF_INFO;
+        let warning = matches!(n.kind, NoticeKind::LowBattery | NoticeKind::RunningOut | NoticeKind::Offline);
+        data.dwInfoFlags = (if warning { NIIF_WARNING } else { NIIF_INFO }) | NIIF_RESPECT_QUIET_TIME;
+        copy_wide(&mut data.szInfoTitle, &n.title);
+        copy_wide(&mut data.szInfo, &n.text);
+        // SAFETY: `data` is fully initialised.
+        unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+        if n.kind != NoticeKind::Update {
+            self.last_notice = Some(n.clone());
+        }
+    }
+
+    fn flush_held(&mut self) {
+        if user_busy() {
+            return;
+        }
+        // SAFETY: our own timer.
+        unsafe { KillTimer(self.hwnd, TIMER_HELD) };
+        for n in self.alerts.take_held() {
+            self.show_notice(&n);
+        }
+    }
+
+    fn snooze(&mut self) {
+        if let Some(n) = self.last_notice.take() {
+            self.alerts.snooze(&n, history::now(), self.cfg.alerts.snooze_hours);
+            if panel::is_open() {
+                let devices = self.ordered(self.hub.snapshot());
+                panel::update(self.panel_content(&devices));
             }
         }
     }
 
-    fn balloon(&self, device: &Device, title: &str, text: &str) {
-        let Some(icon) = self
-            .icons
-            .iter()
-            .find(|i| i.device_id.as_deref() == Some(device.id.as_str()))
-            .or_else(|| self.icons.first())
-        else {
-            return;
-        };
-        let mut data = self.notify_data(icon.uid);
-        data.uFlags = NIF_INFO;
-        data.dwInfoFlags = NIIF_WARNING;
-        copy_wide(&mut data.szInfoTitle, title);
-        copy_wide(&mut data.szInfo, text);
-        // SAFETY: `data` is fully initialised.
-        unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+    // ----------------------------------------------------------------- panel
+
+    fn panel_content(&mut self, devices: &[Device]) -> panel::Content {
+        let mut rows = Vec::new();
+        for d in devices {
+            let mut detail = i18n::describe(d);
+            if d.online {
+                if let Some(h) = self.estimate(d) {
+                    let est = match d.battery.map(|b| b.status) {
+                        Some(Status::Charging) => i18n::time_to_full(h),
+                        _ => i18n::time_left(h),
+                    };
+                    detail = format!("{detail} · {est}");
+                }
+            } else if let Some(t) = d.last_update {
+                let ago = t.elapsed().map_or(0.0, |e| e.as_secs_f64() / 3600.0);
+                detail = format!("{detail} · {}", ago_text(ago));
+            }
+            let mut note = Vec::new();
+            if let Some(host) = &d.info.host {
+                note.push(host.clone());
+            }
+            if let Some((current, count)) = d.info.host_channel {
+                note.push(format!("{current}/{count}"));
+            }
+            if d.source == Source::GHub {
+                note.push("G HUB".into());
+            }
+            rows.push(panel::Row {
+                name: self.name(d),
+                kind: self.kind(d),
+                percent: d.battery.map(|b| b.percent),
+                charging: d.battery.is_some_and(|b| b.status == Status::Charging),
+                online: d.online,
+                has_battery: d.has_battery,
+                detail,
+                note: note.join(" · "),
+            });
+        }
+        let mut buttons = vec![
+            (panel::CMD_REFRESH, i18n::refresh().to_string()),
+            (panel::CMD_SETTINGS, tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]).to_string()),
+        ];
+        if self.services.web_url.is_some() {
+            buttons.push((panel::CMD_WEB, tr(["Web page", "Page web", "Webseite", "Página web", "Pagina web", "Página web"]).to_string()));
+        }
+        panel::Content {
+            title: tr(["Batteries", "Batteries", "Akkus", "Baterías", "Batterie", "Baterias"]).into(),
+            empty: i18n::no_device().into(),
+            rows,
+            alert: self.last_notice.as_ref().map(|n| (format!("{}\n{}", n.title, n.text), later_label())),
+            buttons,
+        }
     }
+
+    fn open_panel(&mut self, anchor: Option<POINT>) {
+        let devices = self.ordered(self.hub.snapshot());
+        let content = self.panel_content(&devices);
+        let anchor = anchor.or_else(|| self.icons.first().and_then(|i| icon_center(self.hwnd, i.uid)));
+        panel::toggle(self.hwnd, content, anchor);
+    }
+
+    fn open_settings(&self) {
+        let devices = self
+            .hub
+            .snapshot()
+            .into_iter()
+            .filter(|d| d.has_battery || self.cfg.devices.contains_key(&d.id))
+            .map(|d| settings_ui::KnownDevice { id: d.id, name: d.name, kind: d.kind })
+            .collect();
+        settings_ui::open(self.hwnd, &self.cfg, self.cfg_path.clone(), devices);
+    }
+
+    // ------------------------------------------------------------ settings
+
+    fn register_hotkey(&mut self) {
+        // SAFETY: hot key of our own window.
+        unsafe {
+            if self.hotkey_registered {
+                UnregisterHotKey(self.hwnd, HOTKEY_ID);
+                self.hotkey_registered = false;
+            }
+            if let Some(k) = hotkey::parse(&self.cfg.ui.hotkey) {
+                self.hotkey_registered = RegisterHotKey(self.hwnd, HOTKEY_ID, k.modifiers, k.vk) != 0;
+                if !self.hotkey_registered {
+                    log!("hotkey {} is already taken", self.cfg.ui.hotkey);
+                }
+            }
+        }
+    }
+
+    /// Re-reads the settings file after a change (by hand or from the
+    /// settings window). Returns true when the application must restart to
+    /// apply it (servers / backends).
+    fn reload(&mut self) -> bool {
+        let text = match std::fs::read_to_string(&self.cfg_path) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let cfg = match Config::parse(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                let title = i18n::settings_invalid_title();
+                let n = Notice {
+                    kind: NoticeKind::Update,
+                    device_id: String::new(),
+                    device_name: String::new(),
+                    percent: None,
+                    hours_left: None,
+                    title: title.into(),
+                    text: e.lines().next().unwrap_or("").chars().take(200).collect(),
+                };
+                self.show_notice(&n);
+                return false;
+            }
+        };
+        if cfg == self.cfg {
+            return false;
+        }
+        log!("settings reloaded");
+        if cfg.services_differ(&self.services.started_with) {
+            self.cfg = cfg;
+            return true;
+        }
+        self.cfg = cfg;
+        i18n::init(&self.cfg.ui.language, crate::system_language());
+        self.register_hotkey();
+        self.stats_cache.clear();
+        self.sync();
+        false
+    }
+
+    // ------------------------------------------------------------------ menu
 
     /// Builds the context menu; returns it with the device ids behind the
     /// `ID_DEVICE_BASE + n` commands.
     fn build_menu(&self) -> (HMENU, Vec<String>) {
-        let devices = self.hub.snapshot();
+        let devices = self.ordered(self.hub.snapshot());
         // SAFETY: menu handles are created and filled on this thread.
         unsafe {
             let menu = CreatePopupMenu();
@@ -348,20 +663,40 @@ impl App {
                 add(0, i18n::no_device(), MF_GRAYED);
             }
             for (n, d) in devices.iter().enumerate() {
-                let source = if d.source == Source::GHub { " (G HUB)" } else { "" };
-                let text = format!("{}{}\t{}", d.name.replace('&', "&&"), source, i18n::describe(d));
+                let source = match (&d.info.host, d.source) {
+                    (Some(host), _) => format!(" ({host})"),
+                    (None, Source::GHub) => " (G HUB)".into(),
+                    _ => String::new(),
+                };
+                let text = format!("{}{}\t{}", self.name(d).replace('&', "&&"), source, i18n::describe(d));
                 let selected = self.cfg.ui.selected_devices.iter().any(|s| *s == d.id);
-                add(ID_DEVICE_BASE + n, &text, check(selected) | if d.has_battery || selected { 0 } else { MF_GRAYED });
+                let usable = (d.has_battery || selected) && !self.cfg.ui.single_icon;
+                add(ID_DEVICE_BASE + n, &text, check(selected && !self.cfg.ui.single_icon) | if usable { 0 } else { MF_GRAYED });
+            }
+            AppendMenuW(menu, MF_SEPARATOR, 0, null());
+            let panel_label = tr(["Battery panel", "Panneau des batteries", "Akku-Übersicht", "Panel de baterías", "Pannello batterie", "Painel de baterias"]);
+            let shortcut = if self.hotkey_registered { format!("\t{}", self.cfg.ui.hotkey) } else { String::new() };
+            add(ID_PANEL, &format!("{panel_label}{shortcut}"), 0);
+            if let Some(n) = &self.last_notice {
+                add(ID_SNOOZE, &format!("{} – {}", later_label(), n.device_name.replace('&', "&&")), 0);
             }
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
             add(ID_NUMERIC, i18n::numeric_display(), check(self.cfg.ui.numeric_display));
+            add(
+                ID_SINGLE_ICON,
+                tr(["One icon for all devices", "Une seule icône pour tout", "Ein Symbol für alle", "Un solo icono para todo", "Una sola icona per tutto", "Um só ícone para tudo"]),
+                check(self.cfg.ui.single_icon),
+            );
             add(ID_LOW_BATTERY, i18n::low_battery_alerts(), check(self.cfg.ui.low_battery_threshold > 0));
             add(ID_AUTOSTART, i18n::autostart(), check(win::autostart_enabled()));
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
             add(ID_REFRESH, i18n::refresh(), 0);
-            add(ID_SETTINGS, i18n::open_settings(), 0);
+            add(ID_SETTINGS, &format!("{}…", tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"])), 0);
             if self.services.web_url.is_some() {
                 add(ID_WEB, i18n::open_web(), 0);
+            }
+            for (n, action) in self.services.actions.iter().enumerate() {
+                add(ID_ACTION_BASE + n, &action.label, 0);
             }
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
             add(0, &format!("LGSTray {}", http::VERSION), MF_GRAYED);
@@ -377,22 +712,34 @@ impl App {
                 self.cfg.ui.numeric_display = !self.cfg.ui.numeric_display;
                 self.save();
             }
+            ID_SINGLE_ICON => {
+                self.cfg.ui.single_icon = !self.cfg.ui.single_icon;
+                self.save();
+            }
             ID_LOW_BATTERY => {
                 self.cfg.ui.low_battery_threshold = if self.cfg.ui.low_battery_threshold > 0 { 0 } else { 15 };
-                self.low_notified.clear();
                 self.save();
             }
             ID_AUTOSTART => win::set_autostart(!win::autostart_enabled()),
-            ID_REFRESH => self.refresh_devices(),
-            ID_SETTINGS => {
+            ID_REFRESH | panel::CMD_REFRESH => self.refresh_devices(),
+            ID_SETTINGS | panel::CMD_SETTINGS => self.open_settings(),
+            ID_SETTINGS_FILE => {
                 win::shell_open(self.hwnd, "notepad.exe", Some(&format!("\"{}\"", self.cfg_path.display())))
             }
-            ID_WEB => {
+            ID_WEB | panel::CMD_WEB => {
                 if let Some(url) = &self.services.web_url {
                     win::shell_open(self.hwnd, url, None);
                 }
             }
+            ID_PANEL => self.open_panel(None),
+            ID_SNOOZE | panel::CMD_SNOOZE => self.snooze(),
             ID_QUIT => return true,
+            n if (panel::CMD_DEVICE..panel::CMD_DEVICE + 1000).contains(&n) => self.open_settings(),
+            n if (ID_ACTION_BASE..ID_DEVICE_BASE).contains(&n) => {
+                if let Some(action) = self.services.actions.get(n - ID_ACTION_BASE) {
+                    (action.run)(self.hwnd);
+                }
+            }
             n if n >= ID_DEVICE_BASE => {
                 if let Some(device_id) = device_ids.get(n - ID_DEVICE_BASE) {
                     let selected = &mut self.cfg.ui.selected_devices;
@@ -419,22 +766,41 @@ impl App {
         if let Some(ghub) = &self.services.ghub {
             ghub.refresh();
         }
+        for f in &self.services.refresh {
+            f();
+        }
+    }
+
+    fn rescan_devices(&self) {
+        if let Some(native) = &self.services.native {
+            native.rescan();
+        }
+        for f in &self.services.rescan {
+            f();
+        }
     }
 }
 
-fn placeholder_tip(devices: &[Device]) -> String {
-    if devices.is_empty() {
-        return i18n::searching().into();
+fn later_label() -> String {
+    tr(["Remind me later", "Me le rappeler plus tard", "Später erinnern", "Recordármelo más tarde", "Ricordamelo più tardi", "Lembrar mais tarde"]).into()
+}
+
+fn ago_text(hours: f64) -> String {
+    let d = i18n::duration(hours);
+    tr([format!("seen {d} ago"), format!("vu il y a {d}"), format!("vor {d} gesehen"), format!("visto hace {d}"), format!("visto {d} fa"), format!("visto há {d}")].each_ref()).clone()
+}
+
+/// Centre of a tray icon on screen (Windows 7+).
+fn icon_center(hwnd: HWND, uid: u32) -> Option<POINT> {
+    // SAFETY: plain data, valid pointers.
+    unsafe {
+        let mut id: NOTIFYICONIDENTIFIER = zeroed();
+        id.cbSize = size_of::<NOTIFYICONIDENTIFIER>() as u32;
+        id.hWnd = hwnd;
+        id.uID = uid;
+        let mut r: RECT = zeroed();
+        (Shell_NotifyIconGetRect(&id, &mut r) >= 0).then(|| POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 })
     }
-    let mut tip = String::from("LGSTray");
-    for d in devices.iter().filter(|d| d.has_battery) {
-        let line = format!("\n{}: {}", d.name, i18n::describe(d));
-        if tip.chars().count() + line.chars().count() > 120 {
-            break;
-        }
-        tip.push_str(&line);
-    }
-    tip
 }
 
 // ------------------------------------------------------------- rendering
@@ -575,6 +941,7 @@ fn draw_text(text: &str, canvas: usize, font_px: i32) -> Option<Vec<u8>> {
     }
 }
 
+
 // ------------------------------------------------------------ window proc
 
 fn request_sync(hwnd: HWND) {
@@ -588,6 +955,7 @@ fn show_menu(hwnd: HWND) {
     if MENU_OPEN.swap(true, Ordering::AcqRel) {
         return;
     }
+    panel::close();
     if let Some((menu, device_ids)) = with_app(|app| app.build_menu()) {
         // The state is NOT borrowed while the menu runs its modal loop, so
         // device updates keep flowing.
@@ -610,6 +978,23 @@ fn show_menu(hwnd: HWND) {
     MENU_OPEN.store(false, Ordering::Release);
 }
 
+/// Starts a new instance (which waits for this one to exit) and quits:
+/// used when changed settings need the servers / backends restarted.
+fn restart(hwnd: HWND) {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--restart");
+        if log::enabled() {
+            cmd.arg("--debug");
+        }
+        if cmd.spawn().is_ok() {
+            log!("restarting to apply the new settings");
+            // SAFETY: our own window; WM_DESTROY cleans up.
+            unsafe { DestroyWindow(hwnd) };
+        }
+    }
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_APP_SYNC => {
@@ -620,9 +1005,39 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_APP_TRAY => {
+            // NOTIFYICON_VERSION_4: wparam holds the anchor point.
+            let anchor = POINT { x: (wparam & 0xFFFF) as i16 as i32, y: (wparam >> 16 & 0xFFFF) as i16 as i32 };
             match (lparam as u32) & 0xFFFF {
-                WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => show_menu(hwnd),
+                WM_CONTEXTMENU => show_menu(hwnd),
+                NIN_SELECT | NIN_KEYSELECT => {
+                    with_app(|app| app.open_panel(Some(anchor)));
+                }
+                NIN_BALLOONUSERCLICK => {
+                    with_app(|app| app.open_panel(None));
+                }
                 _ => {}
+            }
+            0
+        }
+        WM_HOTKEY => {
+            with_app(|app| app.open_panel(None));
+            0
+        }
+        WM_COMMAND => {
+            if with_app(|app| app.command(wparam & 0xFFFF, &[])) == Some(true) {
+                DestroyWindow(hwnd);
+            }
+            0
+        }
+        WM_APP_RELOAD => {
+            // Editors write in several steps: debounce.
+            SetTimer(hwnd, TIMER_RELOAD, 400, None);
+            0
+        }
+        WM_APP_NOTICE => {
+            if lparam != 0 {
+                let notice = Box::from_raw(lparam as *mut Notice);
+                with_app(|app| app.deliver(*notice));
             }
             0
         }
@@ -649,16 +1064,32 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             1
         }
         WM_TIMER => {
-            KillTimer(hwnd, wparam);
-            with_app(|app| match wparam {
+            if wparam != TIMER_ALERTS && wparam != TIMER_HELD {
+                KillTimer(hwnd, wparam);
+            }
+            let restart_needed = with_app(|app| match wparam {
                 TIMER_RESCAN => {
-                    if let Some(native) = &app.services.native {
-                        native.rescan();
-                    }
+                    app.rescan_devices();
+                    false
                 }
-                TIMER_RESUME => app.refresh_devices(),
-                _ => {}
+                TIMER_RESUME => {
+                    app.refresh_devices();
+                    false
+                }
+                TIMER_ALERTS => {
+                    app.sync();
+                    false
+                }
+                TIMER_HELD => {
+                    app.flush_held();
+                    false
+                }
+                TIMER_RELOAD => app.reload(),
+                _ => false,
             });
+            if restart_needed == Some(true) {
+                restart(hwnd);
+            }
             0
         }
         WM_CLOSE => {
@@ -666,6 +1097,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_DESTROY => {
+            panel::close();
             with_app(|app| app.remove_all_icons());
             PostQuitMessage(0);
             0
@@ -720,8 +1152,43 @@ pub fn create_window() -> Option<HWND> {
     }
 }
 
+/// Watches the settings folder and posts `WM_APP_RELOAD` on every change.
+/// Event driven: the thread sleeps in the kernel until something happens.
+fn watch_settings(hwnd: HWND, path: &std::path::Path) {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FindFirstChangeNotificationW, FindNextChangeNotification, FILE_NOTIFY_CHANGE_FILE_NAME,
+        FILE_NOTIFY_CHANGE_LAST_WRITE,
+    };
+    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+    let Some(dir) = path.parent().map(|d| d.to_path_buf()) else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let raw = hwnd as isize;
+    let _ = std::thread::Builder::new().name("settings-watch".into()).stack_size(64 * 1024).spawn(move || {
+        // SAFETY: valid NUL-terminated path; the handle lives for the process.
+        unsafe {
+            let h = FindFirstChangeNotificationW(
+                wide(&dir.display().to_string()).as_ptr(),
+                0,
+                FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME,
+            );
+            if h == INVALID_HANDLE_VALUE || h.is_null() {
+                log!("cannot watch {}", dir.display());
+                return;
+            }
+            while WaitForSingleObject(h, INFINITE) == 0 {
+                PostMessageW(raw as HWND, WM_APP_RELOAD, 0, 0);
+                if FindNextChangeNotification(h) == 0 {
+                    break;
+                }
+            }
+        }
+    });
+}
+
 /// Installs the application state and runs the message loop until quit.
 pub fn run(hwnd: HWND, hub: Arc<Hub>, cfg: Config, cfg_path: PathBuf, services: Services) {
+    watch_settings(hwnd, &cfg_path);
     let app = App {
         hwnd,
         hub: hub.clone(),
@@ -731,15 +1198,26 @@ pub fn run(hwnd: HWND, hub: Arc<Hub>, cfg: Config, cfg_path: PathBuf, services: 
         icons: Vec::new(),
         next_uid: PLACEHOLDER_UID,
         light_taskbar: taskbar_is_light(),
-        low_notified: HashSet::new(),
+        alerts: Engine::new(),
+        last_notice: None,
+        hotkey_registered: false,
+        stats_cache: HashMap::new(),
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
-    with_app(|app| app.sync());
+    with_app(|app| {
+        app.register_hotkey();
+        app.sync();
+    });
+    // SAFETY: timer on our own window.
+    unsafe { SetTimer(hwnd, TIMER_ALERTS, 10 * 60 * 1000, None) };
 
     // SAFETY: standard message loop.
     unsafe {
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            if settings_ui::pre_translate(&msg) {
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -751,4 +1229,19 @@ pub fn run(hwnd: HWND, hub: Arc<Hub>, cfg: Config, cfg_path: PathBuf, services: 
 pub fn sync_notifier(hwnd: HWND) -> impl Fn() + Send + Sync + 'static {
     let raw = hwnd as isize;
     move || request_sync(raw as HWND)
+}
+
+/// Shows a notice from any thread (update available…).
+pub fn notice_poster(hwnd: HWND) -> impl Fn(Notice) + Send + Sync + 'static {
+    let raw = hwnd as isize;
+    move |n| {
+        let ptr = Box::into_raw(Box::new(n));
+        // SAFETY: the UI thread takes ownership back in WM_APP_NOTICE; if the
+        // post fails the box is reclaimed here.
+        unsafe {
+            if PostMessageW(raw as HWND, WM_APP_NOTICE, 0, ptr as LPARAM) == 0 {
+                drop(Box::from_raw(ptr));
+            }
+        }
+    }
 }
