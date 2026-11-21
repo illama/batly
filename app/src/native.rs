@@ -3,20 +3,27 @@
 //! reports and one protocol [`Session`](crate::hidpp::Session) thread per
 //! physical endpoint. Idle threads sleep in `WaitForMultipleObjects`; there
 //! is no periodic wake-up.
+//!
+//! Receiver management (pairing, unpairing) and hardware settings are
+//! forwarded to the session thread that owns the endpoint; answers come
+//! back on channels so the UI thread never blocks on HID I/O.
 
 use crate::config;
-use crate::hidpp::{self, Command, Incoming, Session, Transport, LONG_LEN, REPORT_LONG, REPORT_SHORT, SHORT_LEN};
+use crate::hidpp::{
+    self, ActionError, Command, DeviceSettings, Incoming, PairingEvent, ReceiverInfo, Session, Setting, Transport,
+    LONG_LEN, REPORT_LONG, REPORT_SHORT, SHORT_LEN,
+};
 use crate::log;
-use crate::model::Hub;
+use crate::model::{Event as HubEvent, Hub, Source};
 use crate::win::{wide, Event};
 use std::collections::HashMap;
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows_sys::core::GUID;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_IDW, CM_Get_Device_Interface_ListW, CM_Get_Device_Interface_List_SizeW,
@@ -53,6 +60,7 @@ struct Interface {
     kind: Kind,
     input_len: usize,
     output_len: usize,
+    product_id: u16,
     /// Parent device node: both HID++ collections of an endpoint share it.
     group: String,
 }
@@ -169,6 +177,7 @@ fn probe(path: &str) -> Option<Interface> {
             kind,
             input_len: caps.InputReportByteLength as usize,
             output_len: caps.OutputReportByteLength as usize,
+            product_id: attrs.ProductID,
             group: parent_instance_id(path).unwrap_or_else(|| path.to_ascii_lowercase()),
         })
     }
@@ -383,11 +392,23 @@ impl Running {
 enum Request {
     Rescan,
     Refresh,
+    List(Sender<Vec<ReceiverInfo>>),
+    /// Command for the session of an endpoint (receiver id).
+    ToReceiver(String, Command),
+    /// Command for the session that owns a device (hub device id).
+    ToDevice(String, Command),
 }
 
-/// Handle to the native device manager thread.
+/// How long `list_receivers` waits for busy sessions.
+const LIST_TIMEOUT: Duration = Duration::from_secs(5);
+
+type Watcher = Arc<dyn Fn() + Send + Sync>;
+
+/// Handle to the native device manager thread. Cheap to clone.
+#[derive(Clone)]
 pub struct Native {
     requests: Sender<Request>,
+    watcher: Arc<Mutex<Option<Watcher>>>,
 }
 
 impl Native {
@@ -398,20 +419,49 @@ impl Native {
             disabled: cfg.disabled_devices.clone(),
             settle: Duration::from_secs(1),
         };
+        let watcher: Arc<Mutex<Option<Watcher>>> = Arc::new(Mutex::new(None));
+        let w = watcher.clone();
+        hub.subscribe(move |device| {
+            if device.source == Source::Native {
+                let f = w.lock().unwrap().clone();
+                if let Some(f) = f {
+                    f();
+                }
+            }
+        });
         let (requests, rx) = mpsc::channel();
         let _ = thread::Builder::new().name("hid-manager".into()).stack_size(256 * 1024).spawn(move || {
             let mut running: HashMap<String, Running> = HashMap::new();
-            rescan(&mut running, &settings, &hub);
+            // Device id -> endpoint key, kept up to date by the sessions.
+            let owners: Owners = Arc::new(Mutex::new(HashMap::new()));
+            rescan(&mut running, &settings, &hub, &owners);
             while let Ok(request) = rx.recv() {
-                rescan(&mut running, &settings, &hub);
-                if matches!(request, Request::Refresh) {
-                    for session in running.values() {
-                        session.send(Command::Refresh);
+                match request {
+                    Request::Rescan => rescan(&mut running, &settings, &hub, &owners),
+                    Request::Refresh => {
+                        rescan(&mut running, &settings, &hub, &owners);
+                        for session in running.values() {
+                            session.send(Command::Refresh);
+                        }
+                    }
+                    Request::List(reply) => list(&running, reply),
+                    Request::ToReceiver(key, command) => {
+                        // Unknown receiver: the command (and its reply
+                        // channel) is dropped, the caller sees a closed channel.
+                        if let Some(session) = running.get(&key) {
+                            session.send(command);
+                        }
+                    }
+                    Request::ToDevice(id, command) => {
+                        let key = owners.lock().unwrap().get(&id).cloned();
+                        if let Some(session) = key.and_then(|k| running.get(&k)) {
+                            session.send(command);
+                        }
                     }
                 }
             }
         });
-        Self { requests }
+        Self { requests, watcher }
     }
 
     /// Call after a device arrival / removal.
@@ -423,9 +473,95 @@ impl Native {
     pub fn refresh(&self) {
         let _ = self.requests.send(Request::Refresh);
     }
+
+    /// Calls `f` (on a backend thread) after every change of a native
+    /// device in the hub; `None` removes the watcher.
+    pub fn watch(&self, f: Option<Box<dyn Fn() + Send + Sync>>) {
+        *self.watcher.lock().unwrap() = f.map(Watcher::from);
+    }
+
+    /// Every receiver (and directly connected device) with its paired
+    /// devices, sorted by name. Reads only receiver registers: sleeping
+    /// devices are not woken up.
+    pub fn list_receivers(&self) -> Receiver<Vec<ReceiverInfo>> {
+        let (tx, rx) = mpsc::channel();
+        let _ = self.requests.send(Request::List(tx));
+        rx
+    }
+
+    /// Opens the pairing lock of a receiver. The channel streams the
+    /// progress and closes after the final event (or without one if the
+    /// receiver went away).
+    pub fn pair(&self, receiver_id: &str) -> Receiver<PairingEvent> {
+        let (tx, rx) = mpsc::channel();
+        let _ = self.requests.send(Request::ToReceiver(receiver_id.into(), Command::Pair(tx)));
+        rx
+    }
+
+    pub fn cancel_pairing(&self, receiver_id: &str) {
+        let _ = self.requests.send(Request::ToReceiver(receiver_id.into(), Command::CancelPairing));
+    }
+
+    /// Unpairs the device of `slot`; `Event::Remove` is published for it.
+    /// A closed channel means the receiver is gone.
+    pub fn unpair(&self, receiver_id: &str, slot: u8) -> Receiver<Result<(), ActionError>> {
+        let (reply, rx) = mpsc::channel();
+        let _ = self.requests.send(Request::ToReceiver(receiver_id.into(), Command::Unpair { slot, reply }));
+        rx
+    }
+
+    /// Reads the hardware settings of a device (hub id). A closed channel
+    /// means the device is unknown to the native backend.
+    pub fn get_settings(&self, device_id: &str) -> Receiver<Result<DeviceSettings, ActionError>> {
+        let (reply, rx) = mpsc::channel();
+        let command = Command::GetSettings { device: device_id.into(), reply };
+        let _ = self.requests.send(Request::ToDevice(device_id.into(), command));
+        rx
+    }
+
+    /// Writes one setting (explicit user action), then answers with the
+    /// settings read back from the device.
+    pub fn set_setting(&self, device_id: &str, setting: Setting) -> Receiver<Result<DeviceSettings, ActionError>> {
+        let (reply, rx) = mpsc::channel();
+        let command = Command::SetSetting { device: device_id.into(), setting, reply };
+        let _ = self.requests.send(Request::ToDevice(device_id.into(), command));
+        rx
+    }
 }
 
-fn rescan(running: &mut HashMap<String, Running>, settings: &hidpp::Settings, hub: &Arc<Hub>) {
+type Owners = Arc<Mutex<HashMap<String, String>>>;
+
+/// Asks every session to describe itself and collects the answers on a
+/// helper thread, so a busy session does not hold the manager up.
+fn list(running: &HashMap<String, Running>, reply: Sender<Vec<ReceiverInfo>>) {
+    let waiting: Vec<(String, Receiver<ReceiverInfo>)> = running
+        .iter()
+        .filter(|(_, r)| !r.thread.is_finished())
+        .map(|(key, session)| {
+            let (tx, rx) = mpsc::channel();
+            session.send(Command::Describe(tx));
+            (key.clone(), rx)
+        })
+        .collect();
+    let _ = thread::Builder::new().name("hid-list".into()).stack_size(64 * 1024).spawn(move || {
+        let deadline = Instant::now() + LIST_TIMEOUT;
+        let mut out: Vec<ReceiverInfo> = waiting
+            .into_iter()
+            .filter_map(|(key, rx)| {
+                let mut info = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()?;
+                info.id = key;
+                Some(info)
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            let direct = |r: &ReceiverInfo| r.kind == hidpp::ReceiverKind::Direct;
+            direct(a).cmp(&direct(b)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())).then(a.id.cmp(&b.id))
+        });
+        let _ = reply.send(out);
+    });
+}
+
+fn rescan(running: &mut HashMap<String, Running>, settings: &hidpp::Settings, hub: &Arc<Hub>, owners: &Owners) {
     let mut groups = enumerate();
 
     // Drop sessions that ended (device unplugged) or whose interface set
@@ -449,7 +585,7 @@ fn rescan(running: &mut HashMap<String, Running>, settings: &hidpp::Settings, hu
         if running.contains_key(&key) {
             continue;
         }
-        match spawn_session(&key, &interfaces, settings, hub) {
+        match spawn_session(&key, &interfaces, settings, hub, owners) {
             Ok(session) => {
                 running.insert(key, session);
             }
@@ -463,6 +599,7 @@ fn spawn_session(
     interfaces: &[Interface],
     settings: &hidpp::Settings,
     hub: &Arc<Hub>,
+    owners: &Owners,
 ) -> io::Result<Running> {
     let open_kind = |kind: Kind| -> io::Result<Option<Channel>> {
         interfaces.iter().find(|i| i.kind == kind).map(Channel::open).transpose()
@@ -474,7 +611,21 @@ fn spawn_session(
     let (commands, rx) = mpsc::channel();
     let hub = hub.clone();
     let tag: String = key.rsplit('\\').next().unwrap_or(key).chars().take(24).collect();
-    let session = Session::new(transport, settings.clone(), rx, move |event| hub.publish(event), tag);
+    let (owners, owner) = (owners.clone(), key.to_string());
+    let sink = move |event: HubEvent| {
+        match &event {
+            HubEvent::Init { id, .. } => {
+                owners.lock().unwrap().insert(id.clone(), owner.clone());
+            }
+            HubEvent::Remove { id } => {
+                owners.lock().unwrap().remove(id);
+            }
+            _ => {}
+        }
+        hub.publish(event);
+    };
+    let product_id = interfaces.first().map_or(0, |i| i.product_id);
+    let session = Session::new(transport, settings.clone(), rx, sink, tag).with_product_id(product_id);
     let thread = thread::Builder::new().name("hidpp".into()).stack_size(256 * 1024).spawn(move || session.run())?;
     Ok(Running { paths: interfaces.iter().map(|i| i.path.clone()).collect(), commands, wake, thread })
 }
