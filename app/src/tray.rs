@@ -80,6 +80,7 @@ pub const ID_PANEL: usize = 8;
 const ID_SETTINGS_FILE: usize = 9;
 const ID_SNOOZE: usize = 10;
 const ID_SINGLE_ICON: usize = 11;
+pub const ID_RECEIVERS: usize = 12;
 /// `ID_ACTION_BASE + n`: extra actions registered in `Services::actions`.
 const ID_ACTION_BASE: usize = 500;
 const ID_DEVICE_BASE: usize = 1000;
@@ -705,6 +706,9 @@ impl App {
             if self.services.web_url.is_some() {
                 add(ID_WEB, i18n::open_web(), 0);
             }
+            if self.services.native.is_some() {
+                add(ID_RECEIVERS, tr(["Receivers and devices…", "Récepteurs et appareils…", "Empfänger und Geräte…", "Receptores y dispositivos…", "Ricevitori e dispositivi…", "Receptores e dispositivos…"]), 0);
+            }
             for (n, action) in self.services.actions.iter().enumerate() {
                 add(ID_ACTION_BASE + n, &action.label, 0);
             }
@@ -742,6 +746,11 @@ impl App {
                 }
             }
             ID_PANEL => self.open_panel(None),
+            ID_RECEIVERS | panel::CMD_RECEIVERS => {
+                if let Some(native) = &self.services.native {
+                    crate::receivers::open(native);
+                }
+            }
             ID_SNOOZE | panel::CMD_SNOOZE => self.snooze(),
             ID_QUIT => return true,
             n if (panel::CMD_DEVICE..panel::CMD_DEVICE + 1000).contains(&n) => self.open_settings(),

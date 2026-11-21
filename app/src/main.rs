@@ -40,6 +40,8 @@ mod native;
 #[cfg(windows)]
 mod panel;
 #[cfg(windows)]
+mod receivers;
+#[cfg(windows)]
 mod settings_ui;
 #[cfg(windows)]
 mod tray;
@@ -195,6 +197,8 @@ fn main() {
         Some(tray::ID_SETTINGS)
     } else if has("panel") {
         Some(tray::ID_PANEL)
+    } else if has("receivers") {
+        Some(tray::ID_RECEIVERS)
     } else {
         None
     };
