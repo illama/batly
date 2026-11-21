@@ -21,6 +21,8 @@ mod notice;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
+mod receivers;
+#[cfg(windows)]
 mod tray;
 #[cfg(windows)]
 mod uninstall;
