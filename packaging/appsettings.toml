@@ -1,0 +1,39 @@
+# LGSTray settings - https://toml.io for the syntax (note the "" around strings).
+# Restart LGSTray after editing this file by hand.
+
+[UI]
+# Show the battery level as a number instead of a gauge
+numericDisplay = false
+# Devices that get their own tray icon (managed from the tray menu)
+selectedDevices = []
+# Notify when a device drops to this percentage (0 = never)
+lowBatteryThreshold = 15
+# "auto", "en" or "fr"
+language = "auto"
+firstRunDone = false
+
+[HTTPServer]
+enabled = true
+# "localhost", an IP address / host name of this machine, or "0.0.0.0" for all interfaces
+addr = "localhost"
+port = 12321
+useIpv6 = true
+
+[GHub]
+# Read battery levels from Logitech G HUB (if it is running)
+enabled = true
+
+[Native]
+# Talk to the devices directly (HID++)
+enabled = true
+
+# Time in seconds to retry a device poll on failure
+retryTime = 10
+
+# Time in seconds to next device poll on success. Keep it high: frequent
+# polling can interfere with the power saving modes of the devices.
+pollPeriod = 600
+
+# Devices whose name contains one of these strings are never polled,
+# e.g. ["G403", "G502"]
+disabledDevices = []

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["app", "setup"]
+
+[workspace.package]
+version = "4.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["illama", "LGSTray contributors"]
+repository = "https://github.com/illama/illama_logitechbatteries"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
