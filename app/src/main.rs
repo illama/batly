@@ -6,8 +6,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![cfg_attr(not(windows), allow(dead_code))]
 
+mod bluetooth;
 mod config;
 mod fetch;
+mod gamepad;
 mod ghub;
 mod history;
 mod hidpp;
@@ -17,7 +19,11 @@ mod icon;
 mod log;
 mod model;
 mod notice;
+mod tracker;
+mod vendors;
 
+#[cfg(windows)]
+mod hidio;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
