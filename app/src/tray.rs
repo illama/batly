@@ -872,7 +872,7 @@ fn render_number(spec: &IconSpec, percent: f32, n: usize) -> Option<Vec<u8>> {
 
     // Number on top, device glyph underneath so several icons can be told
     // apart. At least 5 px for the glyph or it is unreadable.
-    let glyph_h = ((n as f32 * 0.38).round() as usize).max(5).min(n / 2);
+    let glyph_h = ((n as f32 * 0.42).round() as usize).max(5).min(n / 2);
     let text_h = n - glyph_h;
 
     // Draw on a larger canvas, then crop the inked area to the icon.
