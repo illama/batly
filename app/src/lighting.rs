@@ -15,11 +15,15 @@
 //! Solaar (lighting at byte 208, four 11-byte entries, CRC-16/CCITT at the
 //! end); it is only written when everything read matches that layout.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::Path;
 
 pub const FEAT_COLOR_LED_EFFECTS: u16 = 0x8070;
 pub const FEAT_RGB_EFFECTS: u16 = 0x8071;
 pub const FEAT_ONBOARD_PROFILES: u16 = 0x8100;
+/// Profile management of recent keyboards (format undocumented).
+pub const FEAT_PROFILE_MANAGEMENT: u16 = 0x8101;
 
 /// Effect ids (Solaar's `LEDEffects`).
 pub const ID_DISABLED: u16 = 0x00;
@@ -227,6 +231,8 @@ pub struct Lighting {
     pub api: LedApi,
     pub zones: Vec<LedZone>,
     pub onboard: OnboardStatus,
+    /// Zone and effect Batly keeps re-applying (no writable memory).
+    pub kept: Option<(u8, LedEffect)>,
 }
 
 /// Location names, for the interface (English; translated by the caller).
@@ -409,6 +415,67 @@ pub fn restore_lighting(current: &[u8], backup: &[u8]) -> Result<Vec<u8>, Profil
     let n = out.len();
     out[PROFILE_LIGHTING_OFFSET..n - 2].copy_from_slice(&backup[PROFILE_LIGHTING_OFFSET..n - 2]);
     Ok(with_crc(out))
+}
+
+// ------------------------------------------------- lighting kept by Batly
+
+/// Effects Batly re-applies itself (devices without writable memory), by
+/// device id: zone and effect. Stored as JSON next to the settings.
+pub type Kept = BTreeMap<String, (u8, LedEffect)>;
+
+fn kind_key(kind: EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Off => "off",
+        EffectKind::Static => "static",
+        EffectKind::Breathe => "breathe",
+        EffectKind::Cycle => "cycle",
+    }
+}
+
+pub fn kept_to_json(kept: &Kept) -> String {
+    let map: serde_json::Map<String, serde_json::Value> = kept
+        .iter()
+        .map(|(id, (zone, e))| {
+            let v = serde_json::json!({
+                "zone": zone,
+                "effect": kind_key(e.kind),
+                "color": format!("{:06X}", e.color & 0xFF_FFFF),
+                "period_ms": e.period_ms,
+                "intensity": e.intensity,
+            });
+            (id.clone(), v)
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
+}
+
+/// Entries that do not parse are left out.
+pub fn kept_from_json(text: &str) -> Kept {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(text) else { return Kept::new() };
+    map.into_iter()
+        .filter_map(|(id, v)| {
+            let kind = EffectKind::ALL.into_iter().find(|k| v["effect"].as_str() == Some(kind_key(*k)))?;
+            let color = u32::from_str_radix(v["color"].as_str()?, 16).ok()? & 0xFF_FFFF;
+            let period_ms = (v["period_ms"].as_u64()? as u16).clamp(PERIOD_MIN_MS, PERIOD_MAX_MS);
+            let intensity = (v["intensity"].as_u64()? as u8).clamp(1, 100);
+            let zone = u8::try_from(v["zone"].as_u64()?).ok()?;
+            Some((id, (zone, LedEffect { kind, color, period_ms, intensity })))
+        })
+        .collect()
+}
+
+pub fn load_kept(path: &Path) -> Kept {
+    std::fs::read_to_string(path).map(|t| kept_from_json(&t)).unwrap_or_default()
+}
+
+/// Atomic write (temporary file, then rename).
+pub fn save_kept(path: &Path, kept: &Kept) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, kept_to_json(kept))?;
+    std::fs::rename(tmp, path)
 }
 
 /// Hex dump, 16 bytes per line, for the diagnostic.
@@ -604,6 +671,26 @@ pub(crate) mod tests {
         assert_eq!(check_profile(&odd, 255), Err(ProfileError::Layout));
         assert_eq!(check_profile(&s[..200], 200), Err(ProfileError::Size));
         assert_eq!(check_profile(&s, 256), Err(ProfileError::Size));
+    }
+
+    #[test]
+    fn kept_round_trip() {
+        let mut kept = Kept::new();
+        kept.insert("K1".into(), (0, LedEffect { kind: EffectKind::Static, color: 0xFF8000, period_ms: 4000, intensity: 100 }));
+        kept.insert("K2".into(), (1, LedEffect { kind: EffectKind::Cycle, color: 0x00A8FF, period_ms: 7000, intensity: 40 }));
+        let text = kept_to_json(&kept);
+        assert!(text.contains("\"color\": \"FF8000\""), "{text}");
+        assert_eq!(kept_from_json(&text), kept);
+        // Broken entries and files are ignored.
+        let mixed =
+            r#"{"A": {"zone": 0, "effect": "static", "color": "00FF00", "period_ms": 4000, "intensity": 100}, "B": {"effect": "laser"}}"#;
+        assert_eq!(kept_from_json(mixed).len(), 1);
+        assert!(kept_from_json("not json").is_empty());
+        let dir = std::env::temp_dir().join(format!("batly-kept-{}", std::process::id()));
+        let path = dir.join("lighting.json");
+        save_kept(&path, &kept).unwrap();
+        assert_eq!(load_kept(&path), kept);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
