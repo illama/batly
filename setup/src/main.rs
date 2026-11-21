@@ -8,6 +8,10 @@
 //!
 //! `LGSTray-Setup.exe /S` installs silently (keeps the autostart choice of
 //! a previous installation, enables it on a first one).
+//!
+//! `LGSTray-Setup.exe /S /update` is what the application runs to update
+//! itself: the installer first waits for the running LGSTray to exit
+//! (single instance mutex), then replaces it and starts the new version.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -19,8 +23,10 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    let silent = std::env::args().skip(1).any(|a| matches!(a.to_ascii_lowercase().as_str(), "/s" | "-s" | "/silent" | "--silent"));
-    if let Err(message) = installer::run(silent) {
+    let args: Vec<String> = std::env::args().skip(1).map(|a| a.to_ascii_lowercase()).collect();
+    let silent = args.iter().any(|a| matches!(a.as_str(), "/s" | "-s" | "/silent" | "--silent"));
+    let update = args.iter().any(|a| matches!(a.as_str(), "/update" | "-update" | "--update"));
+    if let Err(message) = installer::run(silent, update) {
         if !silent {
             installer::error_box(&message);
         }
@@ -33,7 +39,7 @@ mod installer {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
     use windows::core::{w, Interface, HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
     use windows::Win32::Globalization::GetUserDefaultUILanguage;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -41,6 +47,7 @@ mod installer {
     use windows::Win32::System::Registry::{
         RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_DWORD, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_SZ,
     };
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     use windows::Win32::UI::WindowsAndMessaging::{
         FindWindowW, MessageBoxW, PostMessageW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK,
@@ -53,6 +60,8 @@ mod installer {
 
     // Must match `win.rs` in the application.
     const WINDOW_CLASS: PCWSTR = w!("LGSTrayRsWindow");
+    // Must match the single instance mutex in the application's `main.rs`.
+    const INSTANCE_MUTEX: PCWSTR = w!(r"Local\LGSTray-rs-instance");
     const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
     const UNINSTALL_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\LGSTray");
 
@@ -121,6 +130,33 @@ mod installer {
         }
     }
 
+    /// True while an LGSTray process holds its single instance mutex.
+    fn instance_running() -> bool {
+        // SAFETY: valid name; the handle, if any, is closed right away.
+        match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, INSTANCE_MUTEX) } {
+            Ok(handle) => {
+                // SAFETY: handle opened above.
+                let _ = unsafe { CloseHandle(handle) };
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Update mode: the application closes itself after starting us; wait
+    /// until its process is really gone (up to 30 s, asking again halfway).
+    fn wait_for_exit() {
+        for attempt in 0..300 {
+            if !instance_running() {
+                return;
+            }
+            if attempt == 150 {
+                close_running_instance();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn create_shortcut(target: &Path, link: &Path) -> windows::core::Result<()> {
         // SAFETY: standard COM usage on this thread.
         unsafe {
@@ -136,7 +172,8 @@ mod installer {
         }
     }
 
-    pub fn run(silent: bool) -> Result<(), String> {
+    pub fn run(silent: bool, update: bool) -> Result<(), String> {
+        let silent = silent || update;
         if PAYLOAD.is_empty() {
             return Err("This installer was built without its payload (LGSTRAY_PAYLOAD).".into());
         }
@@ -160,6 +197,9 @@ mod installer {
             );
         }
 
+        if update {
+            wait_for_exit();
+        }
         close_running_instance();
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         // The old executable can stay locked for a moment after its
