@@ -13,6 +13,7 @@ use crate::hidpp::{
     Setting, WheelMode,
 };
 use crate::i18n::{lang, tr, Lang};
+use crate::lighting::{self, EffectKind, LedEffect, Lighting, OnboardStatus, PERIOD_MAX_MS, PERIOD_MIN_MS};
 use crate::model::DeviceKind;
 use crate::native::Native;
 use crate::win::wide;
@@ -25,6 +26,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, GetSysColorBrush, COLOR_BTNFACE, HFONT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows_sys::Win32::UI::Controls::{
     InitCommonControlsEx, SetWindowTheme, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, LVCOLUMNW,
     LVITEMW, LVN_ITEMCHANGED, NMHDR, NMLISTVIEW,
@@ -47,6 +49,7 @@ const WM_APP_SETTINGS: u32 = WM_APP + 41; // Option<Result<DeviceSettings, Actio
 const WM_APP_PAIRING: u32 = WM_APP + 42; // Option<PairingEvent>, None = end of stream
 const WM_APP_UNPAIR: u32 = WM_APP + 43; // Option<Result<(), ActionError>>
 const WM_APP_CHANGED: u32 = WM_APP + 44; // no payload
+const WM_APP_DIAG: u32 = WM_APP + 45; // Option<Result<String, ActionError>>
 
 const TIMER_REFRESH: usize = 1;
 
@@ -138,9 +141,17 @@ const ID_BL_MODE: u16 = 112;
 const ID_BL_LEVEL: u16 = 113;
 const ID_WHEEL: u16 = 114;
 const ID_WHEEL_SPEED: u16 = 115;
+const ID_LED_ZONE: u16 = 116;
+const ID_LED_EFFECT: u16 = 117;
+const ID_LED_COLOR: u16 = 118;
+const ID_LED_SPEED: u16 = 119;
+const ID_LED_PREVIEW: u16 = 120;
+const ID_LED_SAVE: u16 = 121;
+const ID_LED_RELEASE: u16 = 122;
+const ID_LED_DIAG: u16 = 123;
 
 /// Client area in pixels at 96 DPI.
-const CLIENT: (i32, i32) = (640, 604);
+const CLIENT: (i32, i32) = (640, 702);
 /// List view columns: width at 96 DPI.
 const COLUMNS: [i32; 5] = [196, 56, 128, 130, 88];
 /// SmartShift speed range shown on the slider (Solaar uses the same).
@@ -222,6 +233,65 @@ text! {
     s_kind_gamepad => "Game controller", "Manette", "Controller", "Mando", "Controller", "Comando";
     s_kind_earbuds => "Earbuds", "Écouteurs", "Ohrhörer", "Auriculares", "Auricolari", "Auriculares";
     s_kind_other => "Device", "Appareil", "Gerät", "Dispositivo", "Dispositivo", "Dispositivo";
+    s_led => "Lighting", "Éclairage", "Beleuchtung", "Iluminación", "Illuminazione", "Iluminação";
+    s_led_speed => "Effect speed", "Vitesse de l'effet", "Effektgeschwindigkeit", "Velocidad del efecto", "Velocità dell'effetto", "Velocidade do efeito";
+    s_led_preview => "Preview", "Aperçu", "Vorschau", "Vista previa", "Anteprima", "Pré-visualizar";
+    s_led_save => "Save on the device…", "Enregistrer dans l'appareil…", "Im Gerät speichern…", "Guardar en el dispositivo…", "Salva nel dispositivo…", "Guardar no dispositivo…";
+    s_led_release => "Give back", "Rendre la main", "Zurückgeben", "Devolver", "Restituisci", "Devolver";
+    s_led_diag => "Diagnostic", "Diagnostic", "Diagnose", "Diagnóstico", "Diagnostica", "Diagnóstico";
+    s_fx_off => "Off", "Éteint", "Aus", "Apagado", "Spento", "Desligado";
+    s_fx_static => "Fixed color", "Couleur fixe", "Feste Farbe", "Color fijo", "Colore fisso", "Cor fixa";
+    s_fx_breathe => "Breathing", "Respiration", "Atmen", "Respiración", "Respiro", "Respiração";
+    s_fx_cycle => "Color cycle", "Cycle de couleurs", "Farbwechsel", "Ciclo de colores", "Ciclo di colori", "Ciclo de cores";
+    s_zone_primary => "Main", "Principale", "Haupt", "Principal", "Principale", "Principal";
+    s_zone_logo => "Logo", "Logo", "Logo", "Logotipo", "Logo", "Logótipo";
+    s_zone_left => "Left side", "Côté gauche", "Linke Seite", "Lado izquierdo", "Lato sinistro", "Lado esquerdo";
+    s_zone_right => "Right side", "Côté droit", "Rechte Seite", "Lado derecho", "Lato destro", "Lado direito";
+    s_zone_combined => "All", "Tout", "Alle", "Todo", "Tutto", "Tudo";
+    s_zone_other => "Zone {n}", "Zone {n}", "Zone {n}", "Zona {n}", "Zona {n}", "Zona {n}";
+    s_led_previewed => "Preview shown. Batly controls the LEDs until you click “Give back” or close this window.", "Aperçu affiché. Batly pilote les LEDs jusqu'à « Rendre la main » ou la fermeture de cette fenêtre.", "Vorschau aktiv. Batly steuert die LEDs, bis Sie auf „Zurückgeben“ klicken oder dieses Fenster schließen.", "Vista previa activa. Batly controla los LED hasta que pulse «Devolver» o cierre esta ventana.", "Anteprima attiva. Batly controlla i LED finché non fai clic su “Restituisci” o chiudi questa finestra.", "Pré-visualização ativa. O Batly controla os LEDs até clicar em “Devolver” ou fechar esta janela.";
+    s_led_released => "The device manages its LEDs again.", "L'appareil gère de nouveau ses LEDs.", "Das Gerät steuert seine LEDs wieder selbst.", "El dispositivo vuelve a gestionar sus LED.", "Il dispositivo gestisce di nuovo i suoi LED.", "O dispositivo voltou a gerir os seus LEDs.";
+    s_led_saved => "Lighting saved in the device's memory (active profile).", "Éclairage enregistré dans la mémoire de l'appareil (profil actif).", "Beleuchtung im Gerätespeicher gespeichert (aktives Profil).", "Iluminación guardada en la memoria del dispositivo (perfil activo).", "Illuminazione salvata nella memoria del dispositivo (profilo attivo).", "Iluminação guardada na memória do dispositivo (perfil ativo).";
+    s_led_save_confirm => "Write this lighting into the active profile stored in “{name}”?\n\nThe device will keep it without any software. The current memory content is saved first in the “backups” folder next to Batly's settings, then read back after writing.\n\nExperimental feature: only devices whose memory matches the known layout are written.", "Écrire cet éclairage dans le profil actif enregistré dans « {name} » ?\n\nL'appareil le gardera sans aucun logiciel. Le contenu actuel de la mémoire est d'abord sauvegardé dans le dossier « backups » à côté des réglages de Batly, puis relu après l'écriture.\n\nFonction expérimentale : seuls les appareils dont la mémoire correspond au format connu sont modifiés.", "Diese Beleuchtung in das aktive Profil von „{name}“ schreiben?\n\nDas Gerät behält sie ohne Software. Der aktuelle Speicherinhalt wird zuvor im Ordner „backups“ neben den Batly-Einstellungen gesichert und nach dem Schreiben erneut gelesen.\n\nExperimentelle Funktion: Nur Geräte, deren Speicher dem bekannten Format entspricht, werden beschrieben.", "¿Escribir esta iluminación en el perfil activo guardado en «{name}»?\n\nEl dispositivo la conservará sin ningún software. El contenido actual de la memoria se guarda antes en la carpeta «backups» junto a los ajustes de Batly y se vuelve a leer después de escribir.\n\nFunción experimental: solo se escriben los dispositivos cuya memoria coincide con el formato conocido.", "Scrivere questa illuminazione nel profilo attivo memorizzato in “{name}”?\n\nIl dispositivo la conserverà senza alcun software. Il contenuto attuale della memoria viene prima salvato nella cartella “backups” accanto alle impostazioni di Batly e riletto dopo la scrittura.\n\nFunzione sperimentale: vengono scritti solo i dispositivi la cui memoria corrisponde al formato noto.", "Gravar esta iluminação no perfil ativo guardado em “{name}”?\n\nO dispositivo vai mantê-la sem qualquer software. O conteúdo atual da memória é primeiro guardado na pasta “backups” junto das configurações do Batly e relido depois da gravação.\n\nFunção experimental: só são gravados os dispositivos cuja memória corresponde ao formato conhecido.";
+    s_onb_absent => "This device has no onboard memory: the lighting can only be previewed.", "Cet appareil n'a pas de mémoire embarquée : l'éclairage ne peut être qu'en aperçu.", "Dieses Gerät hat keinen internen Speicher: Die Beleuchtung ist nur als Vorschau möglich.", "Este dispositivo no tiene memoria integrada: la iluminación solo puede previsualizarse.", "Questo dispositivo non ha memoria integrata: l'illuminazione è solo in anteprima.", "Este dispositivo não tem memória interna: a iluminação só pode ser pré-visualizada.";
+    s_onb_host => "Onboard profiles are disabled on this device (another software controls it): saving is not possible.", "Les profils embarqués sont désactivés sur cet appareil (un autre logiciel le pilote) : impossible d'enregistrer.", "Die internen Profile sind auf diesem Gerät deaktiviert (eine andere Software steuert es): Speichern nicht möglich.", "Los perfiles integrados están desactivados en este dispositivo (otro software lo controla): no se puede guardar.", "I profili integrati sono disattivati su questo dispositivo (un altro software lo controlla): impossibile salvare.", "Os perfis internos estão desativados neste dispositivo (outro software controla-o): não é possível guardar.";
+    s_onb_readonly => "The active profile is a factory one (read only): choose a custom profile on the device to save.", "Le profil actif est un profil d'usine (lecture seule) : choisissez un profil personnalisé sur l'appareil pour enregistrer.", "Das aktive Profil ist ein Werksprofil (schreibgeschützt): Wählen Sie am Gerät ein eigenes Profil zum Speichern.", "El perfil activo es de fábrica (solo lectura): elija un perfil personalizado en el dispositivo para guardar.", "Il profilo attivo è di fabbrica (sola lettura): scegli un profilo personalizzato sul dispositivo per salvare.", "O perfil ativo é de fábrica (só de leitura): escolha um perfil personalizado no dispositivo para guardar.";
+    s_onb_unknown => "This device's memory does not match the known layout: Batly does not write to it. “Diagnostic” creates a report to help support it.", "La mémoire de cet appareil ne correspond pas au format connu : Batly n'y écrit pas. « Diagnostic » crée un rapport pour aider à la prendre en charge.", "Der Speicher dieses Geräts entspricht nicht dem bekannten Format: Batly schreibt nicht hinein. „Diagnose“ erstellt einen Bericht für die Unterstützung.", "La memoria de este dispositivo no coincide con el formato conocido: Batly no escribe en ella. «Diagnóstico» crea un informe para ayudar a admitirla.", "La memoria di questo dispositivo non corrisponde al formato noto: Batly non vi scrive. “Diagnostica” crea un rapporto per aiutare a supportarla.", "A memória deste dispositivo não corresponde ao formato conhecido: o Batly não grava nela. “Diagnóstico” cria um relatório para ajudar a suportá-la.";
+    s_onb_zone => "Only the first two zones can be saved in a profile.", "Seules les deux premières zones peuvent être enregistrées dans un profil.", "Nur die ersten beiden Zonen können in einem Profil gespeichert werden.", "Solo las dos primeras zonas pueden guardarse en un perfil.", "Solo le prime due zone possono essere salvate in un profilo.", "Só as duas primeiras zonas podem ser guardadas num perfil.";
+    s_err_backup => "The memory could not be backed up: nothing was written.", "Impossible de sauvegarder la mémoire : rien n'a été écrit.", "Der Speicher konnte nicht gesichert werden: Es wurde nichts geschrieben.", "No se pudo hacer una copia de la memoria: no se escribió nada.", "Impossibile salvare la memoria: non è stato scritto nulla.", "Não foi possível guardar a memória: nada foi gravado.";
+    s_err_verify => "The memory did not read back as written: its previous content was restored.", "La mémoire relue ne correspond pas à l'écriture : son contenu précédent a été restauré.", "Der Speicher entsprach nach dem Schreiben nicht den Daten: Der vorherige Inhalt wurde wiederhergestellt.", "La memoria no coincidía con lo escrito: se restauró su contenido anterior.", "La memoria riletta non corrisponde alla scrittura: il contenuto precedente è stato ripristinato.", "A memória relida não corresponde à gravação: o conteúdo anterior foi restaurado.";
+    s_diag_done => "Diagnostic opened in a text file.", "Diagnostic ouvert dans un fichier texte.", "Diagnose in einer Textdatei geöffnet.", "Diagnóstico abierto en un archivo de texto.", "Diagnostica aperta in un file di testo.", "Diagnóstico aberto num ficheiro de texto.";
+}
+
+fn effect_name(kind: EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Off => s_fx_off(),
+        EffectKind::Static => s_fx_static(),
+        EffectKind::Breathe => s_fx_breathe(),
+        EffectKind::Cycle => s_fx_cycle(),
+    }
+}
+
+fn zone_name(location: u16, index: u8) -> String {
+    match lighting::location_key(location) {
+        "primary" => s_zone_primary().to_string(),
+        "logo" => s_zone_logo().to_string(),
+        "left" => s_zone_left().to_string(),
+        "right" => s_zone_right().to_string(),
+        "combined" => s_zone_combined().to_string(),
+        _ => s_zone_other().replace("{n}", &(index + 1).to_string()),
+    }
+}
+
+/// Why the lighting cannot be saved on the device, if it cannot.
+fn onboard_reason(status: OnboardStatus) -> Option<&'static str> {
+    match status {
+        OnboardStatus::Writable { .. } => None,
+        OnboardStatus::Absent => Some(s_onb_absent()),
+        OnboardStatus::HostMode => Some(s_onb_host()),
+        OnboardStatus::ReadOnly => Some(s_onb_readonly()),
+        OnboardStatus::UnknownFormat => Some(s_onb_unknown()),
+    }
 }
 
 fn kind_name(kind: DeviceKind) -> &'static str {
@@ -241,6 +311,9 @@ fn action_error(e: ActionError) -> &'static str {
         ActionError::Offline => s_err_offline(),
         ActionError::Busy => s_err_busy(),
         ActionError::Failed => s_err_failed(),
+        ActionError::Onboard(status) => onboard_reason(status).unwrap_or(s_err_failed()),
+        ActionError::Backup => s_err_backup(),
+        ActionError::Verify => s_err_verify(),
     }
 }
 
@@ -332,6 +405,14 @@ struct Controls {
     bl_level: HWND,
     wheel: HWND,
     wheel_speed: HWND,
+    led_zone: HWND,
+    led_effect: HWND,
+    led_color: HWND,
+    led_speed: HWND,
+    led_preview: HWND,
+    led_save: HWND,
+    led_release: HWND,
+    led_diag: HWND,
     status: HWND,
 }
 
@@ -360,6 +441,14 @@ struct Ui {
     pairing_final: bool,
     /// Name of the device being unpaired.
     unpairing: String,
+    /// Lighting being edited: zone index and effect.
+    led: Option<(u8, LedEffect)>,
+    /// Lighting setting waiting for its answer.
+    led_pending: Option<Setting>,
+    /// Device whose LEDs Batly controls (preview shown).
+    led_preview: Option<String>,
+    /// Custom colors of the color dialog.
+    custom_colors: [u32; 16],
     hook: HHOOK,
 }
 
@@ -453,6 +542,10 @@ pub fn open(native: &Native) {
             pairing: None,
             pairing_final: false,
             unpairing: String::new(),
+            led: None,
+            led_pending: None,
+            led_preview: None,
+            custom_colors: [0x00FF_FFFF; 16],
             hook: null_mut(),
         };
         ui.apply_dpi(dpi, None);
@@ -545,7 +638,7 @@ unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
     let unpair = make("BUTTON", s_unpair(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_UNPAIR, [260, 254, 160, 28]);
     let pair_text = make("STATIC", "", SS_LEFT | SS_NOPREFIX, 0, 0, [12, 290, 616, 64]);
     let pair_code = make("STATIC", "", SS_CENTER | SS_NOPREFIX | SS_CENTERIMAGE, 0, 0, [12, 354, 616, 40]);
-    make("BUTTON", s_group(), BS_GROUPBOX, 0, 0, [12, 400, 616, 170]);
+    make("BUTTON", s_group(), BS_GROUPBOX, 0, 0, [12, 400, 616, 266]);
     make("STATIC", s_dpi(), label, 0, 0, [28, 424, 180, 24]);
     let dpi = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_DPI, [212, 424, 150, 300]);
     make("STATIC", s_rate(), label, 0, 0, [28, 458, 180, 24]);
@@ -556,7 +649,17 @@ unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
     make("STATIC", s_wheel(), label, 0, 0, [28, 526, 180, 24]);
     let wheel = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_WHEEL, [212, 526, 150, 300]);
     let wheel_speed = make("msctls_trackbar32", "", track, 0, ID_WHEEL_SPEED, [370, 524, 246, 28]);
-    let status = make("STATIC", "", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, [12, 578, 616, 20]);
+    make("STATIC", s_led(), label, 0, 0, [28, 560, 180, 24]);
+    let led_zone = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_LED_ZONE, [212, 560, 150, 300]);
+    let led_effect = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_LED_EFFECT, [370, 560, 130, 300]);
+    let led_color = make("BUTTON", "#000000", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_COLOR, [508, 558, 108, 28]);
+    make("STATIC", s_led_speed(), label, 0, 0, [28, 594, 180, 24]);
+    let led_speed = make("msctls_trackbar32", "", track, 0, ID_LED_SPEED, [212, 592, 288, 28]);
+    let led_preview = make("BUTTON", s_led_preview(), BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_PREVIEW, [28, 628, 120, 28]);
+    let led_save = make("BUTTON", s_led_save(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_SAVE, [156, 628, 220, 28]);
+    let led_release = make("BUTTON", s_led_release(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_RELEASE, [384, 628, 116, 28]);
+    let led_diag = make("BUTTON", s_led_diag(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_DIAG, [508, 628, 108, 28]);
+    let status = make("STATIC", "", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, [12, 674, 616, 20]);
 
     SetWindowTheme(list, wide("Explorer").as_ptr(), null());
     SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as LPARAM);
@@ -569,15 +672,43 @@ unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
         col.pszText = text.as_mut_ptr();
         SendMessageW(list, LVM_INSERTCOLUMNW, i, &col as *const LVCOLUMNW as LPARAM);
     }
-    for combo in [receiver, dpi, rate, bl_mode, wheel] {
+    for combo in [receiver, dpi, rate, bl_mode, wheel, led_zone, led_effect] {
         SendMessageW(combo, CB_SETMINVISIBLE, 12, 0);
     }
     SendMessageW(wheel_speed, TBM_SETRANGEMIN, 0, 1);
     SendMessageW(wheel_speed, TBM_SETRANGEMAX, 1, WHEEL_MAX as LPARAM);
     SendMessageW(wheel_speed, TBM_SETTICFREQ, 7, 0);
     SendMessageW(wheel_speed, TBM_SETPAGESIZE, 0, 5);
+    // Effect speed: period in seconds, fast (left) to slow (right).
+    SendMessageW(led_speed, TBM_SETRANGEMIN, 0, (PERIOD_MIN_MS / 1000) as LPARAM);
+    SendMessageW(led_speed, TBM_SETRANGEMAX, 1, (PERIOD_MAX_MS / 1000) as LPARAM);
+    SendMessageW(led_speed, TBM_SETTICFREQ, 1, 0);
+    SendMessageW(led_speed, TBM_SETPAGESIZE, 0, 2);
 
-    let c = Controls { receiver, info, list, pair, unpair, pair_text, pair_code, dpi, rate, bl_mode, bl_level, wheel, wheel_speed, status };
+    let c = Controls {
+        receiver,
+        info,
+        list,
+        pair,
+        unpair,
+        pair_text,
+        pair_code,
+        dpi,
+        rate,
+        bl_mode,
+        bl_level,
+        wheel,
+        wheel_speed,
+        led_zone,
+        led_effect,
+        led_color,
+        led_speed,
+        led_preview,
+        led_save,
+        led_release,
+        led_diag,
+        status,
+    };
     (c, layout)
 }
 
@@ -782,8 +913,10 @@ impl Ui {
             }
             return;
         }
+        self.release_preview();
         self.device = id.clone();
         self.settings = None;
+        self.led = None;
         self.busy = false;
         self.seq += 1;
         match (&selected, id) {
@@ -817,6 +950,9 @@ impl Ui {
         }
         if self.settings.as_ref().is_some_and(|s| *s == DeviceSettings::default()) {
             parts.push(s_no_settings().to_string());
+        }
+        if let Some(reason) = self.lighting().and_then(|l| onboard_reason(l.onboard)) {
+            parts.push(reason.to_string());
         }
         self.set_text(self.c.status, &parts.join(" · "));
     }
@@ -899,6 +1035,153 @@ impl Ui {
             fill(self.c.wheel, &items, current, usable);
             SendMessageW(self.c.wheel_speed, TBM_SETPOS, 1, speed as LPARAM);
             EnableWindow(self.c.wheel_speed, (usable && current == Some(2)) as i32);
+
+            let light = s.and_then(|s| s.lighting.as_ref());
+            let (zone, effect) = self.led_state().unwrap_or((0, LedEffect::default()));
+            let zones: Vec<(String, isize)> =
+                light.map(|l| l.zones.iter().map(|z| (zone_name(z.location, z.index), z.index as isize)).collect()).unwrap_or_default();
+            fill(self.c.led_zone, &zones, light.map(|_| zone as isize), usable);
+            let kinds = light.and_then(|l| l.zones.iter().find(|z| z.index == zone)).map(|z| z.kinds()).unwrap_or_default();
+            let items: Vec<(String, isize)> = kinds
+                .iter()
+                .map(|&k| (effect_name(k).to_string(), EffectKind::ALL.iter().position(|x| *x == k).unwrap_or(0) as isize))
+                .collect();
+            let kind_index = EffectKind::ALL.iter().position(|x| *x == effect.kind).unwrap_or(0) as isize;
+            fill(self.c.led_effect, &items, light.map(|_| kind_index), usable);
+            let has = light.is_some() && usable;
+            SetWindowTextW(self.c.led_color, wide(&format!("#{:06X}", effect.color & 0xFF_FFFF)).as_ptr());
+            EnableWindow(self.c.led_color, (has && effect.kind.has_color()) as i32);
+            SendMessageW(self.c.led_speed, TBM_SETPOS, 1, (effect.period_ms / 1000) as LPARAM);
+            EnableWindow(self.c.led_speed, (has && effect.kind.has_speed()) as i32);
+            EnableWindow(self.c.led_preview, has as i32);
+            let can_save =
+                light.is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. })) && (zone as usize) < lighting::PROFILE_ZONES;
+            EnableWindow(self.c.led_save, (has && can_save) as i32);
+            EnableWindow(self.c.led_release, (usable && self.led_preview.is_some() && self.led_preview == self.device) as i32);
+            EnableWindow(self.c.led_diag, (usable && self.settings.is_some()) as i32);
+        }
+    }
+
+    // ----------------------------------------------------------- lighting
+
+    fn lighting(&self) -> Option<&Lighting> {
+        self.settings.as_ref().and_then(|s| s.lighting.as_ref())
+    }
+
+    /// Zone and effect shown: the user's edit, or what the device holds.
+    fn led_state(&self) -> Option<(u8, LedEffect)> {
+        if self.led.is_some() {
+            return self.led;
+        }
+        let zone = self.lighting()?.zones.first()?;
+        Some((zone.index, zone.current.unwrap_or_default()))
+    }
+
+    /// A lighting control changed: update the edited effect.
+    fn on_led_control(&mut self, id: u16) {
+        let Some((mut zone, mut effect)) = self.led_state() else { return };
+        match id {
+            ID_LED_ZONE => {
+                let Some(z) = self.combo_value(self.c.led_zone) else { return };
+                zone = z as u8;
+                // Start from what that zone holds.
+                if let Some(current) = self.lighting().and_then(|l| l.zones.iter().find(|x| x.index == zone)).and_then(|x| x.current) {
+                    effect = current;
+                }
+                let kinds = self.lighting().and_then(|l| l.zones.iter().find(|x| x.index == zone)).map(|x| x.kinds()).unwrap_or_default();
+                if !kinds.contains(&effect.kind) {
+                    effect.kind = kinds.first().copied().unwrap_or(EffectKind::Static);
+                }
+            }
+            ID_LED_EFFECT => {
+                let Some(k) = self.combo_value(self.c.led_effect) else { return };
+                effect.kind = EffectKind::ALL.get(k as usize).copied().unwrap_or(EffectKind::Static);
+            }
+            ID_LED_SPEED => {
+                // SAFETY: trackbar owned by our window.
+                let secs = unsafe { SendMessageW(self.c.led_speed, TBM_GETPOS, 0, 0) };
+                effect.period_ms = (secs.clamp(1, 20) * 1000) as u16;
+            }
+            _ => return,
+        }
+        self.led = Some((zone, effect));
+        self.show_settings();
+        let writable = self.lighting().is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. }));
+        if id == ID_LED_ZONE && writable && zone as usize >= lighting::PROFILE_ZONES {
+            self.set_text(self.c.status, s_onb_zone());
+        }
+    }
+
+    fn set_led_color(&mut self, color: u32) {
+        if let Some((zone, mut effect)) = self.led_state() {
+            effect.color = color & 0xFF_FFFF;
+            self.led = Some((zone, effect));
+            self.show_settings();
+        }
+    }
+
+    /// Sends a lighting setting (preview, save or release).
+    fn send_led(&mut self, setting: Setting) {
+        let Some(device) = self.device.clone() else { return };
+        if self.busy || self.settings.is_none() {
+            return;
+        }
+        match setting {
+            Setting::Led { save: false, .. } => self.led_preview = Some(device.clone()),
+            Setting::LedRelease | Setting::Led { save: true, .. } => self.led_preview = None,
+            _ => {}
+        }
+        self.seq += 1;
+        self.busy = true;
+        self.led_pending = Some(setting);
+        self.set_text(self.c.status, s_applying());
+        self.show_settings();
+        forward_once(self.hwnd, WM_APP_SETTINGS, self.seq << 1 | 1, self.native.set_setting(&device, setting));
+    }
+
+    fn led_preview_now(&mut self) {
+        if let Some((zone, effect)) = self.led_state() {
+            self.send_led(Setting::Led { zone, effect, save: false });
+        }
+    }
+
+    /// Zone, effect and device name for the save confirmation.
+    fn led_save_target(&self) -> Option<(u8, LedEffect, String)> {
+        let (zone, effect) = self.led_state()?;
+        let name = self.selected_device().map(|d| d.name.clone()).unwrap_or_default();
+        Some((zone, effect, name))
+    }
+
+    /// Gives the LEDs of a previewed device back (selection change, close).
+    fn release_preview(&mut self) {
+        if let Some(device) = self.led_preview.take() {
+            let _ = self.native.set_setting(&device, Setting::LedRelease);
+        }
+    }
+
+    fn diagnose(&mut self) {
+        let Some(device) = self.device.clone() else { return };
+        if self.busy {
+            return;
+        }
+        self.set_text(self.c.status, s_reading());
+        forward_once(self.hwnd, WM_APP_DIAG, 0, self.native.diagnose(&device));
+    }
+
+    fn on_diagnose(&mut self, result: Option<Result<String, ActionError>>) {
+        match result {
+            Some(Ok(text)) => {
+                let path = std::env::temp_dir().join("batly-lighting.txt");
+                match std::fs::write(&path, text) {
+                    Ok(()) => {
+                        crate::win::shell_open(self.hwnd, &path.to_string_lossy(), None);
+                        self.set_text(self.c.status, s_diag_done());
+                    }
+                    Err(e) => self.set_text(self.c.status, &e.to_string()),
+                }
+            }
+            Some(Err(e)) => self.set_text(self.c.status, action_error(e)),
+            None => self.set_text(self.c.status, s_err_gone()),
         }
     }
 
@@ -952,6 +1235,7 @@ impl Ui {
                 current.backlight.as_ref().is_some_and(|b| b.mode == mode && (mode != BacklightMode::Manual || b.level == level))
             }
             Setting::SmartShift(m) => current.smart_shift == Some(m),
+            Setting::Led { .. } | Setting::LedRelease => false,
         };
         if unchanged {
             return;
@@ -969,10 +1253,26 @@ impl Ui {
         }
         self.busy = false;
         let was_set = tag & 1 == 1;
+        let led = self.led_pending.take();
+        if result.as_ref().is_some_and(|r| r.is_err()) && matches!(led, Some(Setting::Led { save: false, .. })) {
+            self.led_preview = None;
+        }
         match result {
             Some(Ok(s)) => {
                 self.settings = Some(s);
-                if was_set {
+                if let Some(setting) = led {
+                    if matches!(setting, Setting::Led { save: true, .. }) {
+                        self.led = None; // show what the device now holds
+                    }
+                    self.set_text(
+                        self.c.status,
+                        match setting {
+                            Setting::Led { save: true, .. } => s_led_saved(),
+                            Setting::LedRelease => s_led_released(),
+                            _ => s_led_previewed(),
+                        },
+                    );
+                } else if was_set {
                     self.set_text(self.c.status, s_applied());
                 } else {
                     self.show_status_for(self.selected_device());
@@ -1081,6 +1381,7 @@ impl Ui {
     }
 
     fn destroy(&mut self) {
+        self.release_preview();
         if let Some(id) = self.pairing.take() {
             self.native.cancel_pairing(&id);
         }
@@ -1147,6 +1448,48 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 (ID_DPI | ID_RATE | ID_BL_MODE | ID_WHEEL, CBN_SELCHANGE) => {
                     with_ui(|ui| ui.on_setting_control(id));
                 }
+                (ID_LED_ZONE | ID_LED_EFFECT, CBN_SELCHANGE) => {
+                    with_ui(|ui| ui.on_led_control(id));
+                }
+                (ID_LED_COLOR, BN_CLICKED) => {
+                    // The color dialog runs a modal loop: not under borrow.
+                    if let Some(Some((color, mut custom))) = with_ui(|ui| ui.led_state().map(|(_, e)| (e.color, ui.custom_colors))) {
+                        let mut cc: CHOOSECOLORW = zeroed();
+                        cc.lStructSize = size_of::<CHOOSECOLORW>() as u32;
+                        cc.hwndOwner = hwnd;
+                        // COLORREF is 0x00BBGGRR.
+                        cc.rgbResult = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color >> 16) & 0xFF);
+                        cc.lpCustColors = custom.as_mut_ptr();
+                        cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+                        if ChooseColorW(&mut cc) != 0 {
+                            let c = cc.rgbResult;
+                            let rgb = ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
+                            with_ui(|ui| {
+                                ui.custom_colors = custom;
+                                ui.set_led_color(rgb);
+                            });
+                        }
+                    }
+                }
+                (ID_LED_PREVIEW, BN_CLICKED) => {
+                    with_ui(|ui| ui.led_preview_now());
+                }
+                (ID_LED_RELEASE, BN_CLICKED) => {
+                    with_ui(|ui| ui.send_led(Setting::LedRelease));
+                }
+                (ID_LED_DIAG, BN_CLICKED) => {
+                    with_ui(|ui| ui.diagnose());
+                }
+                (ID_LED_SAVE, BN_CLICKED) => {
+                    // The confirmation runs a modal loop: not under borrow.
+                    if let Some(Some((zone, effect, name))) = with_ui(|ui| ui.led_save_target()) {
+                        let text = s_led_save_confirm().replace("{name}", &name);
+                        let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_led_save()).as_ptr(), MB_YESNO | MB_ICONWARNING);
+                        if answer == IDYES {
+                            with_ui(|ui| ui.send_led(Setting::Led { zone, effect, save: true }));
+                        }
+                    }
+                }
                 (ID_PAIR, BN_CLICKED) => {
                     with_ui(|ui| ui.start_or_cancel_pairing());
                 }
@@ -1185,6 +1528,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         ui.on_setting_control(ID_BL_LEVEL);
                     } else if from == ui.c.wheel_speed {
                         ui.on_setting_control(ID_WHEEL_SPEED);
+                    } else if from == ui.c.led_speed {
+                        ui.on_led_control(ID_LED_SPEED);
                     }
                 });
             }
@@ -1206,6 +1551,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_APP_PAIRING => {
             let event = take::<PairingEvent>(lparam);
             with_ui(|ui| ui.on_pairing(event));
+            0
+        }
+        WM_APP_DIAG if busy() => repost(hwnd, msg, wparam, lparam),
+        WM_APP_DIAG => {
+            let result = take::<Result<String, ActionError>>(lparam);
+            with_ui(|ui| ui.on_diagnose(result));
             0
         }
         WM_APP_UNPAIR if busy() => repost(hwnd, msg, wparam, lparam),

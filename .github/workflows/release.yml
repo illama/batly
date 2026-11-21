@@ -191,6 +191,8 @@ jobs:
 
   packages:
     needs: build
+    # Package managers only get final releases.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

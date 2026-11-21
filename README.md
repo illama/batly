@@ -100,6 +100,21 @@ de commande qui modifie la configuration d'un périphérique.
 Easy-Switch, et régler le **DPI**, le taux de rapport, le **rétroéclairage** et **SmartShift**
 — sans Logi Options+ ni le logiciel Unifying abandonné.
 
+### Éclairage RGB (expérimental, 5.1)
+Dans la même fenêtre, section **Éclairage** : zone (principale, logo…), effet (couleur fixe,
+respiration, cycle de couleurs, éteint), couleur et vitesse, pour les appareils Logitech
+LIGHTSYNC (HID++ 0x8070 / 0x8071).
+- **Aperçu** : Batly pilote les LEDs tout de suite ; **Rendre la main** (ou fermer la fenêtre)
+  les rend à l'appareil.
+- **Enregistrer dans l'appareil** : écrit l'éclairage dans le **profil actif de la mémoire
+  embarquée** (comme le gestionnaire de mémoire de G HUB) ; l'appareil le garde sans logiciel.
+  Souris uniquement pour l'instant. Avant toute écriture, la mémoire est vérifiée (taille,
+  CRC, format) puis **sauvegardée** dans `%APPDATA%\Batly\backups\` ; après l'écriture elle est
+  relue, et restaurée si elle ne correspond pas. Un profil d'usine ou un format inconnu n'est
+  jamais modifié.
+- **Diagnostic** : rapport en lecture seule (zones, effets, mémoire) pour aider à prendre en
+  charge un appareil.
+
 ### Plusieurs PC
 Une souris Easy-Switch passe d'un PC à l'autre ? Ajoutez l'autre PC dans *Réglages → Réseau →
 Autres PC* (`http://pc-salon:12321`) : ses périphériques apparaissent ici aussi, avec **leur
@@ -231,7 +246,8 @@ app/src/
   i18n.rs         textes en 6 langues
   hidpp.rs        moteur HID++ 1.0/2.0 (batterie, infos, appairage, réglages), testé avec un périphérique simulé
   native.rs       Windows : énumération HID, E/S overlapped, un fil par récepteur
-  receivers.rs    fenêtre « Récepteurs et appareils »
+  receivers.rs    fenêtre « Récepteurs et appareils » (dont l'éclairage)
+  lighting.rs     effets LED, profils embarqués (CRC, vérifications), sans E/S
   ghub.rs         client WebSocket de Logitech G HUB
   bluetooth.rs    batterie Bluetooth classique et LE (GATT)
   gamepad.rs      manettes XInput, DualSense, DualShock 4
