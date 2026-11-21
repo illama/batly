@@ -18,7 +18,7 @@ use crate::log;
 use crate::model::{Battery, Device, DeviceInfo, DeviceKind, Event, Hub, Source, Status};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::{self, BufRead, BufReader, Read as _, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -205,12 +205,13 @@ fn sse_session(peer: &Peer, mirror: &mut Mirror, instance: &str, stop: &mpsc::Re
         return lost;
     }
 
-    let mut reader = BufReader::new(&stream);
+    // Short read timeouts so a stop request is seen quickly: on Windows,
+    // shutting the socket down from another thread does not always wake a
+    // blocked read.
+    let _ = stream.set_read_timeout(Some(STOP_CHECK));
+    let mut reader = LineReader::new(&stream);
     let mut line = String::new();
-    let mut read = |line: &mut String| {
-        line.clear();
-        matches!(reader.by_ref().take(1 << 20).read_line(line), Ok(n) if n > 0)
-    };
+    let mut read = |line: &mut String| reader.next_line(line, stop);
     if !read(&mut line) {
         return lost;
     }
@@ -270,6 +271,54 @@ fn sse_session(peer: &Peer, mirror: &mut Mirror, instance: &str, stop: &mpsc::Re
         return End::Stopped;
     }
     End::Lost { synced }
+}
+
+/// How often a blocked read checks for a stop request.
+const STOP_CHECK: Duration = Duration::from_millis(250);
+
+/// Reads lines from a socket whose read timeout is short, giving up after
+/// `READ_TIMEOUT` of silence or when asked to stop.
+struct LineReader<'a> {
+    stream: &'a TcpStream,
+    buf: Vec<u8>,
+}
+
+impl<'a> LineReader<'a> {
+    fn new(stream: &'a TcpStream) -> Self {
+        LineReader { stream, buf: Vec::new() }
+    }
+
+    /// Fills `line` with the next line (newline included); false at the end.
+    fn next_line(&mut self, line: &mut String, stop: &mpsc::Receiver<()>) -> bool {
+        line.clear();
+        let mut silent_since = std::time::Instant::now();
+        let mut chunk = [0u8; 4096];
+        loop {
+            if let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
+                let rest = self.buf.split_off(i + 1);
+                line.push_str(&String::from_utf8_lossy(&self.buf));
+                self.buf = rest;
+                return true;
+            }
+            if self.buf.len() > 1 << 20 {
+                return false;
+            }
+            match (&*self.stream).read(&mut chunk) {
+                Ok(0) => return false,
+                Ok(n) => {
+                    self.buf.extend_from_slice(&chunk[..n]);
+                    silent_since = std::time::Instant::now();
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    if !matches!(stop.try_recv(), Err(mpsc::TryRecvError::Empty)) || silent_since.elapsed() >= READ_TIMEOUT {
+                        return false;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return false,
+            }
+        }
+    }
 }
 
 /// Incremental Server-Sent Events parser: feed it lines, get `(event, data)`
