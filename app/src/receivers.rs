@@ -254,7 +254,7 @@ text! {
     s_led_released => "The device manages its LEDs again.", "L'appareil gère de nouveau ses LEDs.", "Das Gerät steuert seine LEDs wieder selbst.", "El dispositivo vuelve a gestionar sus LED.", "Il dispositivo gestisce di nuovo i suoi LED.", "O dispositivo voltou a gerir os seus LEDs.";
     s_led_saved => "Lighting saved in the device's memory (active profile).", "Éclairage enregistré dans la mémoire de l'appareil (profil actif).", "Beleuchtung im Gerätespeicher gespeichert (aktives Profil).", "Iluminación guardada en la memoria del dispositivo (perfil activo).", "Illuminazione salvata nella memoria del dispositivo (profilo attivo).", "Iluminação guardada na memória do dispositivo (perfil ativo).";
     s_led_save_confirm => "Write this lighting into the active profile stored in “{name}”?\n\nThe device will keep it without any software. The current memory content is saved first in the “backups” folder next to Batly's settings, then read back after writing.\n\nExperimental feature: only devices whose memory matches the known layout are written.", "Écrire cet éclairage dans le profil actif enregistré dans « {name} » ?\n\nL'appareil le gardera sans aucun logiciel. Le contenu actuel de la mémoire est d'abord sauvegardé dans le dossier « backups » à côté des réglages de Batly, puis relu après l'écriture.\n\nFonction expérimentale : seuls les appareils dont la mémoire correspond au format connu sont modifiés.", "Diese Beleuchtung in das aktive Profil von „{name}“ schreiben?\n\nDas Gerät behält sie ohne Software. Der aktuelle Speicherinhalt wird zuvor im Ordner „backups“ neben den Batly-Einstellungen gesichert und nach dem Schreiben erneut gelesen.\n\nExperimentelle Funktion: Nur Geräte, deren Speicher dem bekannten Format entspricht, werden beschrieben.", "¿Escribir esta iluminación en el perfil activo guardado en «{name}»?\n\nEl dispositivo la conservará sin ningún software. El contenido actual de la memoria se guarda antes en la carpeta «backups» junto a los ajustes de Batly y se vuelve a leer después de escribir.\n\nFunción experimental: solo se escriben los dispositivos cuya memoria coincide con el formato conocido.", "Scrivere questa illuminazione nel profilo attivo memorizzato in “{name}”?\n\nIl dispositivo la conserverà senza alcun software. Il contenuto attuale della memoria viene prima salvato nella cartella “backups” accanto alle impostazioni di Batly e riletto dopo la scrittura.\n\nFunzione sperimentale: vengono scritti solo i dispositivi la cui memoria corrisponde al formato noto.", "Gravar esta iluminação no perfil ativo guardado em “{name}”?\n\nO dispositivo vai mantê-la sem qualquer software. O conteúdo atual da memória é primeiro guardado na pasta “backups” junto das configurações do Batly e relido depois da gravação.\n\nFunção experimental: só são gravados os dispositivos cuja memória corresponde ao formato conhecido.";
-    s_onb_absent => "This device has no onboard memory: the lighting can only be previewed.", "Cet appareil n'a pas de mémoire embarquée : l'éclairage ne peut être qu'en aperçu.", "Dieses Gerät hat keinen internen Speicher: Die Beleuchtung ist nur als Vorschau möglich.", "Este dispositivo no tiene memoria integrada: la iluminación solo puede previsualizarse.", "Questo dispositivo non ha memoria integrata: l'illuminazione è solo in anteprima.", "Este dispositivo não tem memória interna: a iluminação só pode ser pré-visualizada.";
+    s_onb_absent => "No onboard memory: “Save” makes Batly keep this lighting, applied again at every connection while Batly runs.", "Pas de mémoire embarquée : « Enregistrer » fait garder cet éclairage par Batly, réappliqué à chaque connexion tant que Batly tourne.", "Kein interner Speicher: „Speichern“ lässt Batly diese Beleuchtung behalten und bei jeder Verbindung neu anwenden, solange Batly läuft.", "Sin memoria integrada: «Guardar» hace que Batly conserve esta iluminación y la vuelva a aplicar en cada conexión mientras Batly esté abierto.", "Nessuna memoria integrata: “Salva” fa mantenere a Batly questa illuminazione, riapplicata a ogni connessione finché Batly è in esecuzione.", "Sem memória interna: “Guardar” faz o Batly manter esta iluminação, reaplicada a cada ligação enquanto o Batly estiver a correr.";
     s_onb_host => "Onboard profiles are disabled on this device (another software controls it): saving is not possible.", "Les profils embarqués sont désactivés sur cet appareil (un autre logiciel le pilote) : impossible d'enregistrer.", "Die internen Profile sind auf diesem Gerät deaktiviert (eine andere Software steuert es): Speichern nicht möglich.", "Los perfiles integrados están desactivados en este dispositivo (otro software lo controla): no se puede guardar.", "I profili integrati sono disattivati su questo dispositivo (un altro software lo controlla): impossibile salvare.", "Os perfis internos estão desativados neste dispositivo (outro software controla-o): não é possível guardar.";
     s_onb_readonly => "The active profile is a factory one (read only): choose a custom profile on the device to save.", "Le profil actif est un profil d'usine (lecture seule) : choisissez un profil personnalisé sur l'appareil pour enregistrer.", "Das aktive Profil ist ein Werksprofil (schreibgeschützt): Wählen Sie am Gerät ein eigenes Profil zum Speichern.", "El perfil activo es de fábrica (solo lectura): elija un perfil personalizado en el dispositivo para guardar.", "Il profilo attivo è di fabbrica (sola lettura): scegli un profilo personalizzato sul dispositivo per salvare.", "O perfil ativo é de fábrica (só de leitura): escolha um perfil personalizado no dispositivo para guardar.";
     s_onb_unknown => "This device's memory does not match the known layout: Batly does not write to it. “Diagnostic” creates a report to help support it.", "La mémoire de cet appareil ne correspond pas au format connu : Batly n'y écrit pas. « Diagnostic » crée un rapport pour aider à la prendre en charge.", "Der Speicher dieses Geräts entspricht nicht dem bekannten Format: Batly schreibt nicht hinein. „Diagnose“ erstellt einen Bericht für die Unterstützung.", "La memoria de este dispositivo no coincide con el formato conocido: Batly no escribe en ella. «Diagnóstico» crea un informe para ayudar a admitirla.", "La memoria di questo dispositivo non corrisponde al formato noto: Batly non vi scrive. “Diagnostica” crea un rapporto per aiutare a supportarla.", "A memória deste dispositivo não corresponde ao formato conhecido: o Batly não grava nela. “Diagnóstico” cria um relatório para ajudar a suportá-la.";
@@ -263,6 +263,10 @@ text! {
     s_err_verify => "The memory did not read back as written: its previous content was restored.", "La mémoire relue ne correspond pas à l'écriture : son contenu précédent a été restauré.", "Der Speicher entsprach nach dem Schreiben nicht den Daten: Der vorherige Inhalt wurde wiederhergestellt.", "La memoria no coincidía con lo escrito: se restauró su contenido anterior.", "La memoria riletta non corrisponde alla scrittura: il contenuto precedente è stato ripristinato.", "A memória relida não corresponde à gravação: o conteúdo anterior foi restaurado.";
     s_led_restore => "Restore…", "Restaurer…", "Wiederherstellen…", "Restaurar…", "Ripristina…", "Restaurar…";
     s_led_restore_confirm => "Put back the lighting “{name}” had before Batly first changed it?\n\nOnly the lighting is restored, from the oldest backup; the other settings stored in the device stay as they are.", "Remettre l'éclairage qu'avait « {name} » avant la première modification par Batly ?\n\nSeul l'éclairage est restauré, depuis la plus ancienne sauvegarde ; les autres réglages enregistrés dans l'appareil restent tels quels.", "Die Beleuchtung wiederherstellen, die „{name}“ vor der ersten Änderung durch Batly hatte?\n\nNur die Beleuchtung wird aus der ältesten Sicherung wiederhergestellt; die übrigen im Gerät gespeicherten Einstellungen bleiben unverändert.", "¿Volver a la iluminación que tenía «{name}» antes de que Batly la cambiara por primera vez?\n\nSolo se restaura la iluminación, desde la copia más antigua; los demás ajustes guardados en el dispositivo no cambian.", "Ripristinare l'illuminazione che “{name}” aveva prima della prima modifica di Batly?\n\nViene ripristinata solo l'illuminazione, dal backup più vecchio; le altre impostazioni memorizzate nel dispositivo restano invariate.", "Repor a iluminação que “{name}” tinha antes da primeira alteração do Batly?\n\nSó a iluminação é restaurada, a partir da cópia mais antiga; as outras configurações guardadas no dispositivo mantêm-se.";
+    s_led_keep_confirm => "Keep this lighting on “{name}”?\n\nThis device cannot store it: Batly applies it now and again at every connection or wake-up, as long as Batly runs on this PC. The LEDs still turn off when the device is idle. “Restore…” stops it.", "Garder cet éclairage sur « {name} » ?\n\nCet appareil ne peut pas l'enregistrer lui-même : Batly l'applique maintenant puis à chaque connexion ou réveil, tant que Batly tourne sur ce PC. Les LEDs s'éteignent toujours quand l'appareil est inactif. « Restaurer… » l'arrête.", "Diese Beleuchtung auf „{name}“ behalten?\n\nDieses Gerät kann sie nicht speichern: Batly wendet sie jetzt und bei jeder Verbindung oder jedem Aufwachen an, solange Batly auf diesem PC läuft. Die LEDs gehen bei Inaktivität weiterhin aus. „Wiederherstellen…“ beendet es.", "¿Mantener esta iluminación en «{name}»?\n\nEste dispositivo no puede guardarla: Batly la aplica ahora y en cada conexión o reactivación, mientras Batly esté abierto en este PC. Los LED se siguen apagando cuando el dispositivo está inactivo. «Restaurar…» lo detiene.", "Mantenere questa illuminazione su “{name}”?\n\nQuesto dispositivo non può memorizzarla: Batly la applica ora e a ogni connessione o risveglio, finché Batly è in esecuzione su questo PC. I LED si spengono comunque quando il dispositivo è inattivo. “Ripristina…” la interrompe.", "Manter esta iluminação em “{name}”?\n\nEste dispositivo não a consegue guardar: o Batly aplica-a agora e a cada ligação ou despertar, enquanto o Batly estiver a correr neste PC. Os LEDs continuam a apagar-se quando o dispositivo está inativo. “Restaurar…” termina-o.";
+    s_led_kept => "Lighting kept by Batly: applied again at every connection.", "Éclairage gardé par Batly : réappliqué à chaque connexion.", "Beleuchtung von Batly behalten: bei jeder Verbindung neu angewendet.", "Iluminación mantenida por Batly: se vuelve a aplicar en cada conexión.", "Illuminazione mantenuta da Batly: riapplicata a ogni connessione.", "Iluminação mantida pelo Batly: reaplicada a cada ligação.";
+    s_led_forget_confirm => "Stop keeping the lighting of “{name}”?\n\nThe device goes back to its own lighting.", "Ne plus garder l'éclairage de « {name} » ?\n\nL'appareil reprend son propre éclairage.", "Die Beleuchtung von „{name}“ nicht mehr behalten?\n\nDas Gerät kehrt zu seiner eigenen Beleuchtung zurück.", "¿Dejar de mantener la iluminación de «{name}»?\n\nEl dispositivo vuelve a su propia iluminación.", "Smettere di mantenere l'illuminazione di “{name}”?\n\nIl dispositivo torna alla propria illuminazione.", "Deixar de manter a iluminação de “{name}”?\n\nO dispositivo volta à sua própria iluminação.";
+    s_led_forgotten => "The device shows its own lighting again.", "L'appareil reprend son propre éclairage.", "Das Gerät zeigt wieder seine eigene Beleuchtung.", "El dispositivo vuelve a mostrar su propia iluminación.", "Il dispositivo mostra di nuovo la propria illuminazione.", "O dispositivo volta a mostrar a sua própria iluminação.";
     s_led_restored => "Original lighting restored.", "Éclairage d'origine restauré.", "Ursprüngliche Beleuchtung wiederhergestellt.", "Iluminación original restaurada.", "Illuminazione originale ripristinata.", "Iluminação original restaurada.";
     s_err_no_backup => "No backup of this device's memory was found.", "Aucune sauvegarde de la mémoire de cet appareil n'a été trouvée.", "Es wurde keine Sicherung des Gerätespeichers gefunden.", "No se encontró ninguna copia de la memoria de este dispositivo.", "Nessun backup della memoria di questo dispositivo trovato.", "Não foi encontrada nenhuma cópia da memória deste dispositivo.";
     s_diag_done => "Diagnostic opened in a text file.", "Diagnostic ouvert dans un fichier texte.", "Diagnose in einer Textdatei geöffnet.", "Diagnóstico abierto en un archivo de texto.", "Diagnostica aperta in un file di testo.", "Diagnóstico aberto num ficheiro de texto.";
@@ -960,7 +964,9 @@ impl Ui {
         if self.settings.as_ref().is_some_and(|s| *s == DeviceSettings::default()) {
             parts.push(s_no_settings().to_string());
         }
-        if let Some(reason) = self.lighting().and_then(|l| onboard_reason(l.onboard)) {
+        if self.lighting().is_some_and(|l| l.kept.is_some()) {
+            parts.push(s_led_kept().to_string());
+        } else if let Some(reason) = self.lighting().and_then(|l| onboard_reason(l.onboard)) {
             parts.push(reason.to_string());
         }
         self.set_text(self.c.status, &parts.join(" · "));
@@ -1063,11 +1069,12 @@ impl Ui {
             SendMessageW(self.c.led_speed, TBM_SETPOS, 1, (effect.period_ms / 1000) as LPARAM);
             EnableWindow(self.c.led_speed, (has && effect.kind.has_speed()) as i32);
             EnableWindow(self.c.led_preview, has as i32);
-            let can_save =
-                light.is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. })) && (zone as usize) < lighting::PROFILE_ZONES;
-            EnableWindow(self.c.led_save, (has && can_save) as i32);
             let writable = light.is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. }));
-            EnableWindow(self.c.led_restore, (usable && writable) as i32);
+            // Writable memory: saved in the device; otherwise kept by Batly.
+            let can_save = !writable || (zone as usize) < lighting::PROFILE_ZONES;
+            EnableWindow(self.c.led_save, (has && can_save) as i32);
+            let kept = light.is_some_and(|l| l.kept.is_some());
+            EnableWindow(self.c.led_restore, (usable && light.is_some() && (writable || kept)) as i32);
             EnableWindow(self.c.led_release, (usable && self.led_preview.is_some() && self.led_preview == self.device) as i32);
             EnableWindow(self.c.led_diag, (usable && self.settings.is_some()) as i32);
         }
@@ -1084,7 +1091,11 @@ impl Ui {
         if self.led.is_some() {
             return self.led;
         }
-        let zone = self.lighting()?.zones.first()?;
+        let light = self.lighting()?;
+        if light.kept.is_some() {
+            return light.kept;
+        }
+        let zone = light.zones.first()?;
         Some((zone.index, zone.current.unwrap_or_default()))
     }
 
@@ -1139,7 +1150,9 @@ impl Ui {
         }
         match setting {
             Setting::Led { save: false, .. } => self.led_preview = Some(device.clone()),
-            Setting::LedRelease | Setting::LedRestore | Setting::Led { save: true, .. } => self.led_preview = None,
+            Setting::LedRelease | Setting::LedRestore | Setting::LedForget | Setting::LedKeep { .. } | Setting::Led { save: true, .. } => {
+                self.led_preview = None
+            }
             _ => {}
         }
         self.seq += 1;
@@ -1156,11 +1169,13 @@ impl Ui {
         }
     }
 
-    /// Zone, effect and device name for the save confirmation.
-    fn led_save_target(&self) -> Option<(u8, LedEffect, String)> {
+    /// Zone, effect, device name and whether its memory is writable (else
+    /// Batly keeps the lighting) and a lighting is kept, for the dialogs.
+    fn led_save_target(&self) -> Option<(u8, LedEffect, String, bool, bool)> {
         let (zone, effect) = self.led_state()?;
         let name = self.selected_device().map(|d| d.name.clone()).unwrap_or_default();
-        Some((zone, effect, name))
+        let light = self.lighting()?;
+        Some((zone, effect, name, matches!(light.onboard, OnboardStatus::Writable { .. }), light.kept.is_some()))
     }
 
     /// Gives the LEDs of a previewed device back (selection change, close).
@@ -1246,7 +1261,7 @@ impl Ui {
                 current.backlight.as_ref().is_some_and(|b| b.mode == mode && (mode != BacklightMode::Manual || b.level == level))
             }
             Setting::SmartShift(m) => current.smart_shift == Some(m),
-            Setting::Led { .. } | Setting::LedRelease | Setting::LedRestore => false,
+            Setting::Led { .. } | Setting::LedRelease | Setting::LedRestore | Setting::LedKeep { .. } | Setting::LedForget => false,
         };
         if unchanged {
             return;
@@ -1272,7 +1287,10 @@ impl Ui {
             Some(Ok(s)) => {
                 self.settings = Some(s);
                 if let Some(setting) = led {
-                    if matches!(setting, Setting::Led { save: true, .. } | Setting::LedRestore) {
+                    if matches!(
+                        setting,
+                        Setting::Led { save: true, .. } | Setting::LedRestore | Setting::LedKeep { .. } | Setting::LedForget
+                    ) {
                         self.led = None; // show what the device now holds
                     }
                     self.set_text(
@@ -1281,6 +1299,8 @@ impl Ui {
                             Setting::Led { save: true, .. } => s_led_saved(),
                             Setting::LedRelease => s_led_released(),
                             Setting::LedRestore => s_led_restored(),
+                            Setting::LedKeep { .. } => s_led_kept(),
+                            Setting::LedForget => s_led_forgotten(),
                             _ => s_led_previewed(),
                         },
                     );
@@ -1493,21 +1513,33 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     with_ui(|ui| ui.diagnose());
                 }
                 (ID_LED_RESTORE, BN_CLICKED) => {
-                    if let Some(Some((_, _, name))) = with_ui(|ui| ui.led_save_target()) {
-                        let text = s_led_restore_confirm().replace("{name}", &name);
+                    if let Some(Some((_, _, name, writable, kept))) = with_ui(|ui| ui.led_save_target()) {
+                        let (text, setting) = if writable {
+                            (s_led_restore_confirm(), Setting::LedRestore)
+                        } else if kept {
+                            (s_led_forget_confirm(), Setting::LedForget)
+                        } else {
+                            return 0;
+                        };
+                        let text = text.replace("{name}", &name);
                         let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_led_restore()).as_ptr(), MB_YESNO | MB_ICONWARNING);
                         if answer == IDYES {
-                            with_ui(|ui| ui.send_led(Setting::LedRestore));
+                            with_ui(|ui| ui.send_led(setting));
                         }
                     }
                 }
                 (ID_LED_SAVE, BN_CLICKED) => {
                     // The confirmation runs a modal loop: not under borrow.
-                    if let Some(Some((zone, effect, name))) = with_ui(|ui| ui.led_save_target()) {
-                        let text = s_led_save_confirm().replace("{name}", &name);
+                    if let Some(Some((zone, effect, name, writable, _))) = with_ui(|ui| ui.led_save_target()) {
+                        let (text, setting) = if writable {
+                            (s_led_save_confirm(), Setting::Led { zone, effect, save: true })
+                        } else {
+                            (s_led_keep_confirm(), Setting::LedKeep { zone, effect })
+                        };
+                        let text = text.replace("{name}", &name);
                         let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_led_save()).as_ptr(), MB_YESNO | MB_ICONWARNING);
                         if answer == IDYES {
-                            with_ui(|ui| ui.send_led(Setting::Led { zone, effect, save: true }));
+                            with_ui(|ui| ui.send_led(setting));
                         }
                     }
                 }

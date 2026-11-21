@@ -1284,6 +1284,11 @@ pub fn run(hwnd: HWND, hub: Arc<Hub>, cfg: Config, cfg_path: PathBuf, services: 
             DispatchMessageW(&msg);
         }
     }
+    // Sessions stop cleanly: LEDs kept by Batly go back to the devices.
+    let native = with_app(|app| app.services.native.clone()).flatten();
+    if let Some(native) = native {
+        native.shutdown(std::time::Duration::from_secs(3));
+    }
     APP.with(|cell| cell.borrow_mut().take());
 }
 

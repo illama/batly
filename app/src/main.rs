@@ -325,7 +325,10 @@ fn main() {
     }
 
     let services = tray::Services {
-        native: cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone(), Some(cfg_path.with_file_name("backups")))),
+        native: cfg
+            .native
+            .enabled
+            .then(|| native::Native::start(&cfg.native, hub.clone(), cfg_path.parent().map(std::path::Path::to_path_buf))),
         ghub: cfg.ghub.enabled.then(|| ghub::GHub::start(hub.clone())),
         web_url,
         history,

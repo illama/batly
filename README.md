@@ -112,6 +112,12 @@ LIGHTSYNC (HID++ 0x8070 / 0x8071).
   CRC, format) puis **sauvegardée** dans `%APPDATA%\Batly\backups\` ; après l'écriture elle est
   relue, et restaurée si elle ne correspond pas. Un profil d'usine ou un format inconnu n'est
   jamais modifié.
+- **Restaurer…** : remet l'éclairage d'origine depuis la plus ancienne sauvegarde (l'éclairage
+  seulement ; DPI et boutons restent tels quels).
+- **Appareils sans mémoire inscriptible** (claviers comme le PRO X 60) : *Enregistrer* fait
+  **garder l'éclairage par Batly**, réappliqué à chaque connexion ou réveil tant que Batly tourne ;
+  les LEDs s'éteignent toujours en fondu quand l'appareil est inactif, et sont rendues au
+  périphérique quand Batly se ferme. *Restaurer…* arrête.
 - **Diagnostic** : rapport en lecture seule (zones, effets, mémoire) pour aider à prendre en
   charge un appareil.
 
