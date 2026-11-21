@@ -99,6 +99,34 @@ fn print_status(cfg: &config::Config, as_json: bool) -> i32 {
     0
 }
 
+/// `--demo`: fake devices with some history, for screenshots and tests
+/// without hardware.
+#[cfg(windows)]
+fn demo(hub: &model::Hub, history: &history::History) {
+    use model::{Battery, DeviceInfo, DeviceKind, Event, Source, Status};
+    let now = history::now();
+    let devices = [
+        ("demo-mx", "MX Master 3S", DeviceKind::Mouse, Source::Native, 62.0, Status::Discharging, 1.1),
+        ("demo-kb", "MX Keys S", DeviceKind::Keyboard, Source::Native, 14.0, Status::Discharging, 0.4),
+        ("demo-hs", "PRO X Wireless", DeviceKind::Headset, Source::GHub, 48.0, Status::Charging, -30.0),
+        ("demo-pad", "Xbox Wireless Controller", DeviceKind::Gamepad, Source::Gamepad, 85.0, Status::Discharging, 3.0),
+        ("demo-buds", "Galaxy Buds2", DeviceKind::Earbuds, Source::Bluetooth, 100.0, Status::Full, 0.0),
+    ];
+    for (id, name, kind, source, percent, status, rate) in devices {
+        hub.publish(Event::Init { id: id.into(), name: name.into(), kind, source, has_battery: true });
+        // Readings of the last hours at `rate` %/h, so estimates show up.
+        let mut d = hub.find(id).unwrap();
+        for h in (1..=20).rev() {
+            let p = (percent + rate * h as f32).clamp(0.0, 100.0);
+            let s = if rate < 0.0 { Status::Charging } else { status };
+            d.battery = Some(Battery { percent: p, status: s, millivolts: None, mileage: None });
+            history.record_at(&d, now - h * 3600 / if rate < 0.0 { 20 } else { 1 });
+        }
+        hub.publish(Event::Update { id: id.into(), battery: Battery { percent, status, millivolts: Some(3900), mileage: None } });
+    }
+    hub.publish(Event::Info { id: "demo-mx".into(), info: DeviceInfo { host_channel: Some((1, 3)), firmware: Some("RBM21.01".into()), ..Default::default() } });
+}
+
 #[cfg(windows)]
 fn main() {
     use config::{Config, LoadError};
@@ -152,7 +180,27 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
+    // `--panel` / `--settings`: open that window, in the running instance
+    // when there is one.
+    let open_command = if has("settings") {
+        Some(tray::ID_SETTINGS)
+    } else if has("panel") {
+        Some(tray::ID_PANEL)
+    } else {
+        None
+    };
     if !acquired {
+        if let Some(command) = open_command {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_COMMAND};
+            // SAFETY: valid class name; posting to another process's window.
+            unsafe {
+                let other = FindWindowW(win::wide(win::WINDOW_CLASS).as_ptr(), null());
+                if !other.is_null() {
+                    windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX);
+                    PostMessageW(other, WM_COMMAND, command, 0);
+                }
+            }
+        }
         return;
     }
 
@@ -182,7 +230,8 @@ fn main() {
     let hub = Arc::new(model::Hub::new());
 
     // History first, so the statistics include the reading that woke the UI.
-    let history_dir = cfg.history.enabled.then(|| cfg_path.with_file_name("history"));
+    // The demo keeps its fake readings in memory only.
+    let history_dir = (cfg.history.enabled && !has("demo")).then(|| cfg_path.with_file_name("history"));
     let history = Arc::new(history::History::open(history_dir, cfg.history.retention_days));
     {
         let history = history.clone();
@@ -191,6 +240,10 @@ fn main() {
         });
     }
     hub.on_change(tray::sync_notifier(hwnd));
+
+    if has("demo") {
+        demo(&hub, &history);
+    }
 
     let web_url = if cfg.http.enabled && !http::start(&cfg.http, hub.clone()).is_empty() {
         let host = match cfg.http.addr.trim() {
@@ -219,5 +272,10 @@ fn main() {
         started_with: cfg.clone(),
     };
 
+    if let Some(command) = open_command {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_COMMAND};
+        // SAFETY: our own window; handled once the message loop runs.
+        unsafe { PostMessageW(hwnd, WM_COMMAND, command, 0) };
+    }
     tray::run(hwnd, hub, cfg, cfg_path, services);
 }

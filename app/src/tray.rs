@@ -73,10 +73,10 @@ const ID_NUMERIC: usize = 1;
 const ID_LOW_BATTERY: usize = 2;
 const ID_AUTOSTART: usize = 3;
 const ID_REFRESH: usize = 4;
-const ID_SETTINGS: usize = 5;
+pub const ID_SETTINGS: usize = 5;
 const ID_WEB: usize = 6;
 const ID_QUIT: usize = 7;
-const ID_PANEL: usize = 8;
+pub const ID_PANEL: usize = 8;
 const ID_SETTINGS_FILE: usize = 9;
 const ID_SNOOZE: usize = 10;
 const ID_SINGLE_ICON: usize = 11;
@@ -518,19 +518,20 @@ impl App {
     fn panel_content(&mut self, devices: &[Device]) -> panel::Content {
         let mut rows = Vec::new();
         for d in devices {
-            let mut detail = i18n::describe(d);
+            let mut detail = vec![i18n::state(d)];
             if d.online {
                 if let Some(h) = self.estimate(d) {
-                    let est = match d.battery.map(|b| b.status) {
+                    detail.push(match d.battery.map(|b| b.status) {
                         Some(Status::Charging) => i18n::time_to_full(h),
                         _ => i18n::time_left(h),
-                    };
-                    detail = format!("{detail} · {est}");
+                    });
                 }
             } else if let Some(t) = d.last_update {
                 let ago = t.elapsed().map_or(0.0, |e| e.as_secs_f64() / 3600.0);
-                detail = format!("{detail} · {}", ago_text(ago));
+                detail.push(ago_text(ago));
             }
+            detail.retain(|s| !s.is_empty());
+            let detail = detail.join(" · ");
             let mut note = Vec::new();
             if let Some(host) = &d.info.host {
                 note.push(host.clone());
@@ -563,7 +564,10 @@ impl App {
             title: tr(["Batteries", "Batteries", "Akkus", "Baterías", "Batterie", "Baterias"]).into(),
             empty: i18n::no_device().into(),
             rows,
-            alert: self.last_notice.as_ref().map(|n| (format!("{}\n{}", n.title, n.text), later_label())),
+            alert: self.last_notice.as_ref().map(|n| {
+                let later = tr(["Later", "Plus tard", "Später", "Más tarde", "Più tardi", "Mais tarde"]);
+                (format!("{}\n{}", n.title, n.text), later.to_string())
+            }),
             buttons,
         }
     }

@@ -178,6 +178,27 @@ pub fn time_to_full(hours: f64) -> String {
     format!("{prefix} ≈ {d}")
 }
 
+/// State without the level, for places that show the level next to it:
+/// `en charge`, `chargé`, `hors ligne`… (empty while discharging).
+pub fn state(d: &Device) -> String {
+    if !d.has_battery {
+        return no_battery().into();
+    }
+    let Some(b) = d.battery else {
+        return if d.online { unknown_level().into() } else { offline().into() };
+    };
+    let mut parts = Vec::new();
+    match b.status {
+        Status::Charging => parts.push(charging()),
+        Status::Full => parts.push(full()),
+        _ => {}
+    }
+    if !d.online {
+        parts.push(offline());
+    }
+    parts.join(" · ")
+}
+
 /// Short state used in the menu and tooltips, e.g. `85% · charging`.
 pub fn describe(d: &Device) -> String {
     if !d.has_battery {
