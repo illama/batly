@@ -1,5 +1,5 @@
 # LGSTray settings - https://toml.io for the syntax (note the "" around strings).
-# Restart LGSTray after editing this file by hand.
+# Changes made here are applied as soon as the file is saved.
 
 [UI]
 # Show the battery level as a number instead of a gauge
@@ -8,9 +8,37 @@ numericDisplay = false
 selectedDevices = []
 # Notify when a device drops to this percentage (0 = never)
 lowBatteryThreshold = 15
-# "auto", "en" or "fr"
+# "auto", "en", "fr", "de", "es", "it" or "pt"
 language = "auto"
 firstRunDone = false
+# One single icon showing the device with the lowest battery
+singleIcon = false
+# Hide a device icon while its level is above this percentage (0 = never hide)
+hideAbove = 0
+# Shortcut that opens the battery panel, e.g. "Ctrl+Alt+B" or "Win+Shift+F9" ("" = none)
+hotkey = "Ctrl+Alt+B"
+# Device ids in display order
+deviceOrder = []
+
+[Alerts]
+# Warn when the estimated time left drops below predictiveHours
+predictive = true
+predictiveHours = 24
+# Notify when a charging device reaches this level, e.g. 80 to preserve the battery (0 = off)
+chargeLimit = 0
+# Notify when a device is fully charged
+chargeComplete = true
+# Notify when a device has been offline for this many hours (0 = off)
+offlineHours = 0
+# Hold notifications during full screen games and "Do not disturb"
+quietWhenBusy = true
+# "Remind me later" delay in hours
+snoozeHours = 4
+
+[History]
+# Record the readings (time left estimate, charts, battery wear)
+enabled = true
+retentionDays = 730
 
 [HTTPServer]
 enabled = true
@@ -18,6 +46,11 @@ enabled = true
 addr = "localhost"
 port = 12321
 useIpv6 = true
+# Token required from other computers: ?token=... or "Authorization: Bearer ..." ("" = none)
+token = ""
+# Other LGSTray instances shown here too, e.g. ["http://living-room-pc:12321"]
+# (append "#token" to the URL when that instance requires one)
+peers = []
 
 [GHub]
 # Read battery levels from Logitech G HUB (if it is running)
@@ -37,3 +70,35 @@ pollPeriod = 600
 # Devices whose name contains one of these strings are never polled,
 # e.g. ["G403", "G502"]
 disabledDevices = []
+
+[OtherDevices]
+# Any Bluetooth device that reports its battery to Windows (headphones, earbuds…)
+bluetooth = true
+# Xbox and PlayStation controllers
+gamepads = true
+# Wireless mice, keyboards and headsets of other brands
+razer = true
+corsair = true
+steelseries = true
+
+[MQTT]
+# Publish the levels to an MQTT broker (Home Assistant discovery included)
+enabled = false
+host = ""
+port = 1883
+username = ""
+password = ""
+baseTopic = "lgstray"
+discovery = true
+discoveryPrefix = "homeassistant"
+
+[Webhooks]
+# URLs that receive a JSON POST on every alert (Discord / Slack webhooks get a message)
+urls = []
+# Also send every level change
+allChanges = false
+
+[Updates]
+# Look for a new version on GitHub once a day
+check = true
+skipped = ""

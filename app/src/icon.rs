@@ -29,6 +29,8 @@ struct Layers {
     mouse: Vec<u8>,
     keyboard: Vec<u8>,
     headset: Vec<u8>,
+    gamepad: Vec<u8>,
+    earbuds: Vec<u8>,
     missing: Vec<u8>,
     charging: Vec<u8>,
 }
@@ -51,6 +53,8 @@ fn layers() -> &'static Layers {
         mouse: decode_alpha(include_bytes!("../assets/mouse.png")),
         keyboard: decode_alpha(include_bytes!("../assets/keyboard.png")),
         headset: decode_alpha(include_bytes!("../assets/headset.png")),
+        gamepad: decode_alpha(include_bytes!("../assets/gamepad.png")),
+        earbuds: decode_alpha(include_bytes!("../assets/earbuds.png")),
         missing: decode_alpha(include_bytes!("../assets/missing.png")),
         charging: decode_alpha(include_bytes!("../assets/charging.png")),
     })
@@ -83,6 +87,8 @@ pub fn render(spec: &IconSpec, size: usize) -> Vec<u8> {
     let device = match spec.kind {
         DeviceKind::Keyboard => &l.keyboard,
         DeviceKind::Headset => &l.headset,
+        DeviceKind::Gamepad => &l.gamepad,
+        DeviceKind::Earbuds => &l.earbuds,
         DeviceKind::Mouse | DeviceKind::Other => &l.mouse,
     };
     let overlay = match spec.percent {

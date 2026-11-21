@@ -220,7 +220,7 @@ impl App {
                 numeric: numeric && device.is_some(),
                 size,
                 tip: match device {
-                    Some(d) => i18n::tooltip(d),
+                    Some(d) => i18n::tooltip(&d.name, d, None),
                     None => placeholder_tip(&devices),
                 },
             };
