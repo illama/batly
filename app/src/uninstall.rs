@@ -55,16 +55,8 @@ pub fn run() {
     // portable copy can never take other files with it.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let script = format!(
-                "/d /c ping -n 3 127.0.0.1 >nul & del /f /q \"{}\" & rmdir \"{}\"",
-                exe.display(),
-                dir.display()
-            );
-            let _ = Command::new("cmd.exe")
-                .raw_arg(script)
-                .current_dir(std::env::temp_dir())
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
+            let script = format!("/d /c ping -n 3 127.0.0.1 >nul & del /f /q \"{}\" & rmdir \"{}\"", exe.display(), dir.display());
+            let _ = Command::new("cmd.exe").raw_arg(script).current_dir(std::env::temp_dir()).creation_flags(CREATE_NO_WINDOW).spawn();
         }
     }
 }

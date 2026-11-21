@@ -201,10 +201,16 @@ mod tests {
         let v: Value = serde_json::from_str(&body(Format::Slack, &msg)).unwrap();
         assert_eq!(v["text"], "*Batterie faible*\nSouris : 12 % restants");
         let v: Value = serde_json::from_str(&body(Format::Generic, &msg)).unwrap();
-        assert_eq!((v["event"].as_str(), v["device"]["id"].as_str(), v["percent"].as_f64()), (Some("low_battery"), Some("abc"), Some(12.0)));
+        assert_eq!(
+            (v["event"].as_str(), v["device"]["id"].as_str(), v["percent"].as_f64()),
+            (Some("low_battery"), Some("abc"), Some(12.0))
+        );
         assert_eq!(v["hours_left"], 3.5);
         let v: Value = serde_json::from_str(&body(Format::Generic, &Message::Change(device(55.4)))).unwrap();
-        assert_eq!((v["event"].as_str(), v["device"]["battery_percent"].as_i64(), v["percent"].as_f64()), (Some("change"), Some(55), Some(55.0)));
+        assert_eq!(
+            (v["event"].as_str(), v["device"]["battery_percent"].as_i64(), v["percent"].as_f64()),
+            (Some("change"), Some(55), Some(55.0))
+        );
     }
 
     #[test]
@@ -222,11 +228,8 @@ mod tests {
                     req.extend_from_slice(&buf[..n]);
                     let text = String::from_utf8_lossy(&req).to_string();
                     if let Some(i) = text.find("\r\n\r\n") {
-                        let len: usize = text
-                            .lines()
-                            .find_map(|l| l.strip_prefix("Content-Length: "))
-                            .and_then(|v| v.trim().parse().ok())
-                            .unwrap_or(0);
+                        let len: usize =
+                            text.lines().find_map(|l| l.strip_prefix("Content-Length: ")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
                         if req.len() >= i + 4 + len {
                             let _ = tx.send(text[i + 4..].to_string());
                             break;

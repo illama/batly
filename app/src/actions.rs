@@ -12,9 +12,7 @@ use crate::{http, log, report, update};
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDNO, IDYES, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_YESNOCANCEL,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDNO, IDYES, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_YESNOCANCEL};
 
 type Poster = Arc<dyn Fn(Notice) + Send + Sync>;
 
@@ -69,7 +67,15 @@ fn ask(title: &str, text: &str, buttons: u32) -> i32 {
 
 pub fn update_action(cfg_path: PathBuf, known: Arc<Mutex<Option<update::Release>>>) -> Action {
     Action {
-        label: tr(["Check for updates", "Rechercher les mises à jour", "Nach Updates suchen", "Buscar actualizaciones", "Cerca aggiornamenti", "Procurar atualizações"]).into(),
+        label: tr([
+            "Check for updates",
+            "Rechercher les mises à jour",
+            "Nach Updates suchen",
+            "Buscar actualizaciones",
+            "Cerca aggiornamenti",
+            "Procurar atualizações",
+        ])
+        .into(),
         run: Box::new(move |_| {
             let known = known.clone();
             let cfg_path = cfg_path.clone();
@@ -123,7 +129,15 @@ pub fn update_action(cfg_path: PathBuf, known: Arc<Mutex<Option<update::Release>
 
 pub fn report_action(hub: Arc<Hub>, cfg_path: PathBuf) -> Action {
     Action {
-        label: tr(["Report a problem…", "Signaler un problème…", "Problem melden…", "Informar de un problema…", "Segnala un problema…", "Relatar um problema…"]).into(),
+        label: tr([
+            "Report a problem…",
+            "Signaler un problème…",
+            "Problem melden…",
+            "Informar de un problema…",
+            "Segnala un problema…",
+            "Relatar um problema…",
+        ])
+        .into(),
         run: Box::new(move |_| {
             let devices: Vec<String> = hub.snapshot().iter().map(http::json).collect();
             let devices_json = format!("[{}]", devices.join(","));

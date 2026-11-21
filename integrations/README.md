@@ -37,3 +37,10 @@ mise à jour en direct). Paramètres :
 
 Depuis un autre ordinateur, si `[HTTPServer] token` est défini : `?token=…` ou en-tête
 `Authorization: Bearer …`. Les requêtes de la machine locale n'en ont jamais besoin.
+
+Pages web : seules les pages servies depuis cet ordinateur (`http://localhost:…`,
+`http://127.0.0.1:…`) reçoivent l'en-tête CORS et peuvent lire l'API depuis le navigateur ; un
+site quelconque ne le peut pas. Sans jeton, l'en-tête `Host` doit désigner cet ordinateur
+(`localhost`, une adresse IP, ou son nom, éventuellement suivi d'un domaine local comme
+`pc-salon.local`) : cela bloque le *DNS rebinding*. Pour joindre l'API par un autre nom
+(alias DNS), définissez un jeton.

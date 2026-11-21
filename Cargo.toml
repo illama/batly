@@ -9,6 +9,11 @@ license = "GPL-3.0-or-later"
 authors = ["illama", "Batly contributors"]
 repository = "https://github.com/illama/batly"
 
+[workspace.lints.clippy]
+# Style only: the explicit types and chunks read better here.
+type_complexity = "allow"
+chunks_exact_to_as_chunks = "allow"
+
 [profile.release]
 opt-level = "s"
 lto = "fat"

@@ -219,7 +219,7 @@ Sous Windows (toolchain MSVC) : `cargo build --release -p batly`, puis
 
 Une release se fait en poussant un tag `v<version>` : le workflow
 [`release.yml`](.github/workflows/release.yml) compile, signe (si SignPath est configuré, voir
-[SIGNING.md](SIGNING.md)), publie un brouillon de release et prépare les paquets.
+[SIGNING.md](SIGNING.md)), publie directement la release (préversion pour un tag `v…-…`) et prépare les paquets.
 
 ## Organisation du code
 

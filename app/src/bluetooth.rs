@@ -36,10 +36,7 @@ pub fn bt_address(instance_id: &str) -> Option<u64> {
         return None;
     }
     let hex12 = |s: &str| -> Option<u64> {
-        (s.len() == 12 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| u64::from_str_radix(s, 16).ok())
-            .flatten()
-            .filter(|&a| a != 0)
+        (s.len() == 12 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| u64::from_str_radix(s, 16).ok()).flatten().filter(|&a| a != 0)
     };
     let dev = segs.next()?;
     if let Some(rest) = dev.strip_prefix("DEV_") {
@@ -161,8 +158,7 @@ pub fn uuid16(is_short: bool, short: u16, data1: u32, data2: u16, data3: u16, da
     if is_short {
         return Some(short);
     }
-    (data1 <= 0xFFFF && data2 == 0 && data3 == 0x1000 && data4 == [0x80, 0, 0, 0x80, 0x5F, 0x9B, 0x34, 0xFB])
-        .then_some(data1 as u16)
+    (data1 <= 0xFFFF && data2 == 0 && data3 == 0x1000 && data4 == [0x80, 0, 0, 0x80, 0x5F, 0x9B, 0x34, 0xFB]).then_some(data1 as u16)
 }
 
 /// Battery Level characteristic value (one byte, 0..=100).
@@ -271,25 +267,23 @@ mod imp {
     use windows_sys::core::GUID;
     use windows_sys::Win32::Devices::Bluetooth::{
         BluetoothFindDeviceClose, BluetoothFindFirstDevice, BluetoothFindNextDevice, BluetoothGATTGetCharacteristicValue,
-        BluetoothGATTGetCharacteristics, BluetoothGATTGetServices, BluetoothGATTRegisterEvent,
-        BluetoothGATTUnregisterEvent, CharacteristicValueChangedEvent, BLUETOOTH_DEVICE_INFO,
-        BLUETOOTH_DEVICE_SEARCH_PARAMS, BLUETOOTH_GATT_FLAG_FORCE_READ_FROM_DEVICE, BLUETOOTH_GATT_FLAG_NONE,
-        BLUETOOTH_GATT_VALUE_CHANGED_EVENT, BLUETOOTH_GATT_VALUE_CHANGED_EVENT_REGISTRATION,
+        BluetoothGATTGetCharacteristics, BluetoothGATTGetServices, BluetoothGATTRegisterEvent, BluetoothGATTUnregisterEvent,
+        CharacteristicValueChangedEvent, BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS, BLUETOOTH_GATT_FLAG_FORCE_READ_FROM_DEVICE,
+        BLUETOOTH_GATT_FLAG_NONE, BLUETOOTH_GATT_VALUE_CHANGED_EVENT, BLUETOOTH_GATT_VALUE_CHANGED_EVENT_REGISTRATION,
         BTH_LE_GATT_CHARACTERISTIC, BTH_LE_GATT_CHARACTERISTIC_VALUE, BTH_LE_GATT_EVENT_TYPE, BTH_LE_GATT_SERVICE,
     };
     use windows_sys::Win32::Devices::DeviceQuery::{
         DevFreeObjectProperties, DevGetObjectProperties, DevObjectTypeDeviceContainer, DevQueryFlagNone,
     };
     use windows_sys::Win32::Devices::Properties::{
-        DEVPKEY_DeviceContainer_IsConnected, DEVPKEY_Device_ContainerId, DEVPKEY_Device_FriendlyName, DEVPKEY_NAME,
-        DEVPROPCOMPKEY, DEVPROPERTY, DEVPROP_STORE_SYSTEM, DEVPROP_TYPE_BOOLEAN,
+        DEVPKEY_DeviceContainer_IsConnected, DEVPKEY_Device_ContainerId, DEVPKEY_Device_FriendlyName, DEVPKEY_NAME, DEVPROPCOMPKEY,
+        DEVPROPERTY, DEVPROP_STORE_SYSTEM, DEVPROP_TYPE_BOOLEAN,
     };
     use windows_sys::Win32::Foundation::{DEVPROPKEY, GENERIC_READ, GENERIC_WRITE};
 
     const POLL: Duration = Duration::from_secs(60);
     const BLUETOOTH_KEY: GUID = GUID::from_u128(0x2bd67d8b_8beb_48d5_87e0_6cda3428040a);
-    const KEY_BATTERY: DEVPROPKEY =
-        DEVPROPKEY { fmtid: GUID::from_u128(0x104ea319_6ee2_4701_bd47_8ddbf425bbe5), pid: 2 };
+    const KEY_BATTERY: DEVPROPKEY = DEVPROPKEY { fmtid: GUID::from_u128(0x104ea319_6ee2_4701_bd47_8ddbf425bbe5), pid: 2 };
     const KEY_COD: DEVPROPKEY = DEVPROPKEY { fmtid: BLUETOOTH_KEY, pid: 10 };
     const KEY_MANUFACTURER: DEVPROPKEY = DEVPROPKEY { fmtid: BLUETOOTH_KEY, pid: 4 };
     const KEY_MODEL: DEVPROPKEY = DEVPROPKEY { fmtid: BLUETOOTH_KEY, pid: 5 };
@@ -453,10 +447,7 @@ mod imp {
                     }
                     node.gatt_level = g.level.or(self.nodes.get(&address).and_then(|n| n.gatt_level));
                 }
-                if !self.appearance.contains_key(&address) {
-                    let appearance = read_appearance(address);
-                    self.appearance.insert(address, appearance);
-                }
+                self.appearance.entry(address).or_insert_with(|| read_appearance(address));
                 node.appearance = self.appearance.get(&address).copied().flatten();
             }
 
@@ -509,7 +500,8 @@ mod imp {
         let mut props: *mut DEVPROPERTY = null_mut();
         // SAFETY: valid key / id; the returned array is freed below.
         unsafe {
-            let hr = DevGetObjectProperties(DevObjectTypeDeviceContainer, id.as_ptr(), DevQueryFlagNone as u32, 1, &key, &mut count, &mut props);
+            let hr =
+                DevGetObjectProperties(DevObjectTypeDeviceContainer, id.as_ptr(), DevQueryFlagNone as u32, 1, &key, &mut count, &mut props);
             if hr < 0 || props.is_null() {
                 return None;
             }
@@ -539,7 +531,15 @@ mod imp {
             for service in services.iter().take(n as usize) {
                 let mut chars: [BTH_LE_GATT_CHARACTERISTIC; 16] = zeroed();
                 let mut m = 0u16;
-                if BluetoothGATTGetCharacteristics(handle.0, service, chars.len() as u16, chars.as_mut_ptr(), &mut m, BLUETOOTH_GATT_FLAG_NONE) < 0 {
+                if BluetoothGATTGetCharacteristics(
+                    handle.0,
+                    service,
+                    chars.len() as u16,
+                    chars.as_mut_ptr(),
+                    &mut m,
+                    BLUETOOTH_GATT_FLAG_NONE,
+                ) < 0
+                {
                     continue;
                 }
                 for c in chars.iter().take(m as usize) {
@@ -692,7 +692,9 @@ mod tests {
         );
         assert_eq!(bt_address(r"bthle\dev_a0e9db123456\7&2a5d3d5e&0&a0e9db123456"), Some(a));
         assert_eq!(
-            bt_address(r"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_DEV_VID&02046D_PID&B023_REV&0004_A0E9DB123456\8&36F5B0A6&0&000F"),
+            bt_address(
+                r"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_DEV_VID&02046D_PID&B023_REV&0004_A0E9DB123456\8&36F5B0A6&0&000F"
+            ),
             Some(a)
         );
         assert_eq!(bt_address(r"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_A0E9DB123456\8&1&0&000F"), Some(a));
@@ -707,7 +709,10 @@ mod tests {
     #[test]
     fn vendors() {
         assert_eq!(bt_vendor(r"BTHENUM\{0000111E-0000-1000-8000-00805F9B34FB}_VID&0001005D_PID&223B\7&1"), Some((1, 0x005D, Some(0x223B))));
-        assert_eq!(bt_vendor(r"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_DEV_VID&02046D_PID&B023_REV&0004_A0E9DB123456\8"), Some((2, 0x046D, Some(0xB023))));
+        assert_eq!(
+            bt_vendor(r"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_DEV_VID&02046D_PID&B023_REV&0004_A0E9DB123456\8"),
+            Some((2, 0x046D, Some(0xB023)))
+        );
         assert_eq!(bt_vendor(r"BTHLE\DEV_A0E9DB123456\7&1"), None);
         assert!(handled_elsewhere(Some((2, 0x046D)), DeviceKind::Mouse, false));
         assert!(handled_elsewhere(Some((1, 0x01DA)), DeviceKind::Headset, false));

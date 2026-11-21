@@ -38,8 +38,8 @@ dist/packages/
 └── chocolatey/batly.nuspec + tools/chocolateyinstall.ps1, chocolateyuninstall.ps1
 ```
 
-> Publiez d'abord la release GitHub (elle est créée en brouillon) : les trois gestionnaires
-> téléchargent les fichiers depuis ses URL publiques.
+> Attendez que la release GitHub soit publiée (le workflow la publie directement) : les trois
+> gestionnaires téléchargent les fichiers depuis ses URL publiques.
 
 ## winget
 

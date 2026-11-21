@@ -15,18 +15,16 @@ use std::ptr::{null, null_mut};
 use std::time::Instant;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW,
-    InvalidateRect, MonitorFromPoint, SelectObject, DT_LEFT, DT_RIGHT, DT_VCENTER, DT_CENTER, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW, InvalidateRect,
+    MonitorFromPoint, SelectObject, DT_CENTER, DT_LEFT, DT_RIGHT, DT_VCENTER, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IsWindow, LoadCursorW, PostMessageW, RegisterClassW,
-    SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SW_SHOW, WM_ACTIVATE,
-    WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IsWindow, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
+    SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SW_SHOW, WM_ACTIVATE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 pub const CMD_REFRESH: usize = 9001;
@@ -151,9 +149,7 @@ fn open(owner: HWND, content: Content, anchor: Option<POINT>) {
         if hwnd.is_null() {
             return;
         }
-        STATE.with(|s| {
-            *s.borrow_mut() = Some(State { hwnd, owner, content, hot: None, targets: Vec::new() })
-        });
+        STATE.with(|s| *s.borrow_mut() = Some(State { hwnd, owner, content, hot: None, targets: Vec::new() }));
         ui::modern_frame(hwnd, ui::palette().border);
         reposition(hwnd, anchor);
         ShowWindow(hwnd, SW_SHOW);
@@ -273,7 +269,14 @@ fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i3
 
     // Header.
     ui::text(dc, &title, p.fg, &c.title, rect(px(18), px(14), w - px(18), px(40)), DT_LEFT | DT_VCENTER);
-    ui::text(dc, &small, p.sub, &format!("Batly {}", crate::http::VERSION), rect(px(18), px(14), w - px(18), px(40)), DT_RIGHT | DT_VCENTER);
+    ui::text(
+        dc,
+        &small,
+        p.sub,
+        &format!("Batly {}", crate::http::VERSION),
+        rect(px(18), px(14), w - px(18), px(40)),
+        DT_RIGHT | DT_VCENTER,
+    );
 
     // Device rows.
     let mut y = px(52);
@@ -305,7 +308,14 @@ fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i3
 
         let text_left = px(64);
         let right_w = px(86);
-        ui::text(dc, &name_font, if row.online { p.fg } else { p.sub }, &row.name, rect(text_left, y + px(9), w - px(16) - right_w, y + px(29)), DT_LEFT | DT_VCENTER);
+        ui::text(
+            dc,
+            &name_font,
+            if row.online { p.fg } else { p.sub },
+            &row.name,
+            rect(text_left, y + px(9), w - px(16) - right_w, y + px(29)),
+            DT_LEFT | DT_VCENTER,
+        );
         ui::text(dc, &small, p.sub, &row.detail, rect(text_left, y + px(30), w - px(16) - right_w, y + px(48)), DT_LEFT | DT_VCENTER);
 
         let (value, color) = match (row.has_battery, row.percent) {
@@ -322,10 +332,21 @@ fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i3
             }
         };
         let has_note = !row.note.is_empty();
-        let value_box = if has_note { rect(w - px(16) - right_w, y + px(6), w - px(20), y + px(34)) } else { rect(w - px(16) - right_w, y, w - px(20), y + px(58)) };
+        let value_box = if has_note {
+            rect(w - px(16) - right_w, y + px(6), w - px(20), y + px(34))
+        } else {
+            rect(w - px(16) - right_w, y, w - px(20), y + px(58))
+        };
         ui::text(dc, &big, color, &value, value_box, DT_RIGHT | DT_VCENTER);
         if has_note {
-            ui::text(dc, &small, p.sub, &row.note, rect(w - px(16) - right_w - px(40), y + px(34), w - px(20), y + px(52)), DT_RIGHT | DT_VCENTER);
+            ui::text(
+                dc,
+                &small,
+                p.sub,
+                &row.note,
+                rect(w - px(16) - right_w - px(40), y + px(34), w - px(20), y + px(52)),
+                DT_RIGHT | DT_VCENTER,
+            );
         }
         y += px(62);
     }
@@ -397,7 +418,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 (st.hot != hot).then(|| st.hot = hot)
             });
             if changed.is_some() {
-                let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+                let mut tme =
+                    TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
                 TrackMouseEvent(&mut tme);
                 InvalidateRect(hwnd, null(), 0);
             }

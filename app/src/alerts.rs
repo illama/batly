@@ -99,7 +99,13 @@ impl Engine {
 
             // Charge limit (battery care).
             let limit = cfg.alerts.charge_limit as f32;
-            if limit > 0.0 && limit < 100.0 && b.status == Status::Charging && b.percent >= limit && !st.limit && !snoozed(NoticeKind::ChargeLimit) {
+            if limit > 0.0
+                && limit < 100.0
+                && b.status == Status::Charging
+                && b.percent >= limit
+                && !st.limit
+                && !snoozed(NoticeKind::ChargeLimit)
+            {
                 st.limit = true;
                 out.push(notice(NoticeKind::ChargeLimit, d, &name, Some(b.percent), None));
             }
@@ -139,16 +145,13 @@ impl Engine {
         self.held.push(n);
     }
 
+    #[cfg(test)]
     pub fn has_held(&self) -> bool {
         !self.held.is_empty()
     }
 
     pub fn take_held(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.held)
-    }
-
-    pub fn forget(&mut self, id: &str) {
-        self.devices.remove(id);
     }
 }
 
@@ -159,7 +162,15 @@ fn notice(kind: NoticeKind, d: &Device, name: &str, percent: Option<f32>, hours_
         NoticeKind::RunningOut => {
             let left = i18n::duration(hours_left.unwrap_or(0.0));
             (
-                tr(["Charge it soon", "Pensez à la recharger", "Bald aufladen", "Cárgalo pronto", "Ricaricalo presto", "Carregue em breve"]).into(),
+                tr([
+                    "Charge it soon",
+                    "Pensez à la recharger",
+                    "Bald aufladen",
+                    "Cárgalo pronto",
+                    "Ricaricalo presto",
+                    "Carregue em breve",
+                ])
+                .into(),
                 tr([
                     format!("{name}: {p}, about {left} left at the usual pace."),
                     format!("{name} : {p}, environ {left} au rythme habituel."),
@@ -173,7 +184,15 @@ fn notice(kind: NoticeKind, d: &Device, name: &str, percent: Option<f32>, hours_
             )
         }
         NoticeKind::ChargeLimit => (
-            tr(["You can unplug it", "Vous pouvez la débrancher", "Sie können es abstecken", "Ya puedes desconectarlo", "Puoi scollegarlo", "Pode desconectar"]).into(),
+            tr([
+                "You can unplug it",
+                "Vous pouvez la débrancher",
+                "Sie können es abstecken",
+                "Ya puedes desconectarlo",
+                "Puoi scollegarlo",
+                "Pode desconectar",
+            ])
+            .into(),
             tr([
                 format!("{name} is at {p}. Stopping here preserves the battery."),
                 format!("{name} est à {p}. S'arrêter là préserve la batterie."),
@@ -199,7 +218,15 @@ fn notice(kind: NoticeKind, d: &Device, name: &str, percent: Option<f32>, hours_
             .clone(),
         ),
         NoticeKind::Offline => (
-            tr(["Device not seen", "Appareil introuvable", "Gerät nicht gefunden", "Dispositivo no visto", "Dispositivo non visto", "Dispositivo não encontrado"]).into(),
+            tr([
+                "Device not seen",
+                "Appareil introuvable",
+                "Gerät nicht gefunden",
+                "Dispositivo no visto",
+                "Dispositivo non visto",
+                "Dispositivo não encontrado",
+            ])
+            .into(),
             tr([
                 format!("{name} has been offline for a while. Is its battery empty?"),
                 format!("{name} est hors ligne depuis un moment. Batterie vide ?"),

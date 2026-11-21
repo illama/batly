@@ -3,12 +3,11 @@
 
 use crate::win::{self, wide};
 use std::mem::{size_of, zeroed};
-use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode,
-    SetDIBitsToDevice, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS,
-    DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT, PS_SOLID, TRANSPARENT,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode, SetDIBitsToDevice,
+    SetTextColor, BITMAPINFO, BITMAPINFOHEADER, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT,
+    PS_SOLID, TRANSPARENT,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 
@@ -39,7 +38,6 @@ pub struct Palette {
     pub accent: COLORREF,
     pub warn_bg: COLORREF,
     pub warn_fg: COLORREF,
-    pub bg_rgb: [u8; 3],
 }
 
 pub fn palette() -> Palette {
@@ -55,7 +53,6 @@ pub fn palette() -> Palette {
             accent: rgb(0x00, 0x5F, 0xB8),
             warn_bg: rgb(0xFF, 0xF4, 0xCE),
             warn_fg: rgb(0x5C, 0x40, 0x00),
-            bg_rgb: [0xF3, 0xF3, 0xF3],
         }
     } else {
         Palette {
@@ -69,7 +66,6 @@ pub fn palette() -> Palette {
             accent: rgb(0x60, 0xCD, 0xFF),
             warn_bg: rgb(0x43, 0x35, 0x19),
             warn_fg: rgb(0xFC, 0xE1, 0x00),
-            bg_rgb: [0x20, 0x20, 0x20],
         }
     }
 }
@@ -204,8 +200,6 @@ pub fn inside(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
-pub const EMPTY: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-
 /// Windows 11 rounded corners and a themed border (ignored on Windows 10).
 pub fn modern_frame(hwnd: HWND, border: COLORREF) {
     use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
@@ -220,16 +214,4 @@ pub fn modern_frame(hwnd: HWND, border: COLORREF) {
         DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&border as *const u32).cast(), 4);
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const u32).cast(), 4);
     }
-}
-
-/// Dark title bar for normal windows when apps use the dark theme.
-pub fn themed_title_bar(hwnd: HWND) {
-    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
-    let dark: u32 = (!apps_light()) as u32;
-    // SAFETY: attribute value valid for its size.
-    unsafe { DwmSetWindowAttribute(hwnd, 20, (&dark as *const u32).cast(), 4) };
-}
-
-pub fn null_hwnd() -> HWND {
-    null_mut()
 }

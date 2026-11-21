@@ -36,13 +36,7 @@ pub fn post_json(url: &str, json: &str, timeout: Duration) -> io::Result<Reply> 
 }
 
 /// Performs a request; redirects are followed (https only on Windows).
-pub fn request(
-    method: &str,
-    url: &str,
-    headers: &[(&str, &str)],
-    body: Option<&[u8]>,
-    timeout: Duration,
-) -> io::Result<Reply> {
+pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
     let parsed = Url::parse(url).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad URL"))?;
     if !parsed.https {
         return plain_http(method, &parsed, headers, body, timeout);
@@ -69,12 +63,9 @@ pub struct Url {
 impl Url {
     pub fn parse(url: &str) -> Option<Self> {
         let url = url.trim();
-        let (https, rest) = if let Some(r) = url.strip_prefix("https://") {
-            (true, r)
-        } else if let Some(r) = url.strip_prefix("http://") {
-            (false, r)
-        } else {
-            return None;
+        let (https, rest) = match url.strip_prefix("https://") {
+            Some(r) => (true, r),
+            None => (false, url.strip_prefix("http://")?),
         };
         let rest = rest.split('#').next()?;
         let (authority, path) = match rest.find(['/', '?']) {
@@ -114,10 +105,8 @@ pub fn split_token(url: &str) -> (&str, Option<&str>) {
 }
 
 fn plain_http(method: &str, url: &Url, headers: &[(&str, &str)], body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
-    let addr = (url.host.as_str(), url.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "host not found"))?;
+    let addr =
+        (url.host.as_str(), url.port).to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "host not found"))?;
     let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
@@ -209,37 +198,18 @@ mod winhttp {
         }
     }
 
-    pub fn request(
-        method: &str,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: Option<&[u8]>,
-        timeout: Duration,
-    ) -> io::Result<Reply> {
+    pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
         let parsed = super::Url::parse(url).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad URL"))?;
         let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
         // SAFETY: every pointer passed below points to live, NUL-terminated
         // buffers; handles are closed by `Handle`'s destructor.
         unsafe {
-            let session = check(WinHttpOpen(
-                wide(USER_AGENT).as_ptr(),
-                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                null(),
-                null(),
-                0,
-            ))?;
+            let session = check(WinHttpOpen(wide(USER_AGENT).as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0))?;
             WinHttpSetTimeouts(session.0, ms, ms, ms, ms);
             let connect = check(WinHttpConnect(session.0, wide(&parsed.host).as_ptr(), parsed.port, 0))?;
             let flags = if parsed.https { WINHTTP_FLAG_SECURE } else { 0 };
-            let req = check(WinHttpOpenRequest(
-                connect.0,
-                wide(method).as_ptr(),
-                wide(&parsed.path).as_ptr(),
-                null(),
-                null(),
-                null(),
-                flags,
-            ))?;
+            let req =
+                check(WinHttpOpenRequest(connect.0, wide(method).as_ptr(), wide(&parsed.path).as_ptr(), null(), null(), null(), flags))?;
             let mut head = String::new();
             for (k, v) in headers {
                 head.push_str(&format!("{k}: {v}\r\n"));

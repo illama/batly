@@ -19,7 +19,7 @@ impl DeviceKind {
     pub fn from_hidpp(code: u8) -> Self {
         match code {
             0 | 2 => Self::Keyboard,
-            3 | 4 | 5 => Self::Mouse,
+            3..=5 => Self::Mouse,
             8 => Self::Headset,
             _ => Self::Other,
         }
@@ -178,11 +178,7 @@ pub enum Event {
 impl Event {
     pub fn id(&self) -> &str {
         match self {
-            Event::Init { id, .. }
-            | Event::Update { id, .. }
-            | Event::Offline { id }
-            | Event::Info { id, .. }
-            | Event::Remove { id } => id,
+            Event::Init { id, .. } | Event::Update { id, .. } | Event::Offline { id } | Event::Info { id, .. } | Event::Remove { id } => id,
         }
     }
 }
@@ -236,11 +232,7 @@ impl Hub {
     /// Look a device up by id first, then by name (HTTP API semantics).
     pub fn find(&self, key: &str) -> Option<Device> {
         let devices = self.devices.lock().unwrap();
-        devices
-            .iter()
-            .find(|d| d.id == key)
-            .or_else(|| devices.iter().find(|d| d.name == key))
-            .cloned()
+        devices.iter().find(|d| d.id == key).or_else(|| devices.iter().find(|d| d.name == key)).cloned()
     }
 
     pub fn publish(&self, event: Event) {
@@ -396,7 +388,8 @@ mod tests {
 
     #[test]
     fn kind_names() {
-        for k in [DeviceKind::Keyboard, DeviceKind::Mouse, DeviceKind::Headset, DeviceKind::Gamepad, DeviceKind::Earbuds, DeviceKind::Other] {
+        for k in [DeviceKind::Keyboard, DeviceKind::Mouse, DeviceKind::Headset, DeviceKind::Gamepad, DeviceKind::Earbuds, DeviceKind::Other]
+        {
             assert_eq!(DeviceKind::parse(k.as_str()), Some(k));
         }
         assert_eq!(DeviceKind::parse("auto"), None);

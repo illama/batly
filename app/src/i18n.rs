@@ -84,6 +84,10 @@ pub fn tr<T: Copy>(t: [T; 6]) -> T {
 macro_rules! strings {
     ($($name:ident => $en:expr, $fr:expr, $de:expr, $es:expr, $it:expr, $pt:expr;)*) => {
         $(pub fn $name() -> &'static str { tr([$en, $fr, $de, $es, $it, $pt]) })*
+
+        /// Every entry of the table, for the tests.
+        #[cfg(test)]
+        const ALL_STRINGS: &[(&str, [&str; 6])] = &[$((stringify!($name), [$en, $fr, $de, $es, $it, $pt])),*];
     };
 }
 
@@ -94,7 +98,6 @@ strings! {
     low_battery_alerts => "Low battery notifications", "Notifications de batterie faible", "Benachrichtigung bei niedrigem Akku", "Avisos de batería baja", "Notifiche di batteria scarica", "Avisos de bateria fraca";
     autostart => "Start with Windows", "Lancer au démarrage de Windows", "Mit Windows starten", "Iniciar con Windows", "Avvia con Windows", "Iniciar com o Windows";
     refresh => "Refresh now", "Actualiser maintenant", "Jetzt aktualisieren", "Actualizar ahora", "Aggiorna ora", "Atualizar agora";
-    open_settings => "Open settings file", "Ouvrir le fichier de réglages", "Einstellungsdatei öffnen", "Abrir el archivo de ajustes", "Apri il file delle impostazioni", "Abrir o arquivo de configurações";
     open_web => "Open web page", "Ouvrir la page web", "Webseite öffnen", "Abrir la página web", "Apri la pagina web", "Abrir a página web";
     quit => "Quit", "Quitter", "Beenden", "Salir", "Esci", "Sair";
     charging => "charging", "en charge", "lädt", "cargando", "in carica", "carregando";
@@ -152,7 +155,11 @@ pub fn duration(hours: f64) -> String {
     } else if d > 0 {
         format!("{d}\u{a0}{day} {h}\u{a0}h")
     } else if h > 0 {
-        if m >= 5 { format!("{h}\u{a0}h\u{a0}{m:02}") } else { format!("{h}\u{a0}h") }
+        if m >= 5 {
+            format!("{h}\u{a0}h\u{a0}{m:02}")
+        } else {
+            format!("{h}\u{a0}h")
+        }
     } else {
         format!("{}\u{a0}min", m.max(1))
     }
@@ -241,6 +248,16 @@ pub fn tooltip(name: &str, d: &Device, estimate: Option<f64>) -> String {
 mod tests {
     use super::*;
     use crate::model::{Battery, DeviceKind, Source};
+
+    #[test]
+    fn translations_are_filled() {
+        for (name, texts) in ALL_STRINGS {
+            for (lang, text) in ["en", "fr", "de", "es", "it", "pt"].iter().zip(texts) {
+                assert!(!text.trim().is_empty(), "{name}: {lang} is empty");
+                assert_eq!(text.trim(), *text, "{name}: {lang} has surrounding spaces");
+            }
+        }
+    }
 
     #[test]
     fn descriptions() {
