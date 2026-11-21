@@ -149,6 +149,7 @@ const ID_LED_PREVIEW: u16 = 120;
 const ID_LED_SAVE: u16 = 121;
 const ID_LED_RELEASE: u16 = 122;
 const ID_LED_DIAG: u16 = 123;
+const ID_LED_RESTORE: u16 = 124;
 
 /// Client area in pixels at 96 DPI.
 const CLIENT: (i32, i32) = (640, 702);
@@ -260,6 +261,10 @@ text! {
     s_onb_zone => "Only the first two zones can be saved in a profile.", "Seules les deux premières zones peuvent être enregistrées dans un profil.", "Nur die ersten beiden Zonen können in einem Profil gespeichert werden.", "Solo las dos primeras zonas pueden guardarse en un perfil.", "Solo le prime due zone possono essere salvate in un profilo.", "Só as duas primeiras zonas podem ser guardadas num perfil.";
     s_err_backup => "The memory could not be backed up: nothing was written.", "Impossible de sauvegarder la mémoire : rien n'a été écrit.", "Der Speicher konnte nicht gesichert werden: Es wurde nichts geschrieben.", "No se pudo hacer una copia de la memoria: no se escribió nada.", "Impossibile salvare la memoria: non è stato scritto nulla.", "Não foi possível guardar a memória: nada foi gravado.";
     s_err_verify => "The memory did not read back as written: its previous content was restored.", "La mémoire relue ne correspond pas à l'écriture : son contenu précédent a été restauré.", "Der Speicher entsprach nach dem Schreiben nicht den Daten: Der vorherige Inhalt wurde wiederhergestellt.", "La memoria no coincidía con lo escrito: se restauró su contenido anterior.", "La memoria riletta non corrisponde alla scrittura: il contenuto precedente è stato ripristinato.", "A memória relida não corresponde à gravação: o conteúdo anterior foi restaurado.";
+    s_led_restore => "Restore…", "Restaurer…", "Wiederherstellen…", "Restaurar…", "Ripristina…", "Restaurar…";
+    s_led_restore_confirm => "Put back the lighting “{name}” had before Batly first changed it?\n\nOnly the lighting is restored, from the oldest backup; the other settings stored in the device stay as they are.", "Remettre l'éclairage qu'avait « {name} » avant la première modification par Batly ?\n\nSeul l'éclairage est restauré, depuis la plus ancienne sauvegarde ; les autres réglages enregistrés dans l'appareil restent tels quels.", "Die Beleuchtung wiederherstellen, die „{name}“ vor der ersten Änderung durch Batly hatte?\n\nNur die Beleuchtung wird aus der ältesten Sicherung wiederhergestellt; die übrigen im Gerät gespeicherten Einstellungen bleiben unverändert.", "¿Volver a la iluminación que tenía «{name}» antes de que Batly la cambiara por primera vez?\n\nSolo se restaura la iluminación, desde la copia más antigua; los demás ajustes guardados en el dispositivo no cambian.", "Ripristinare l'illuminazione che “{name}” aveva prima della prima modifica di Batly?\n\nViene ripristinata solo l'illuminazione, dal backup più vecchio; le altre impostazioni memorizzate nel dispositivo restano invariate.", "Repor a iluminação que “{name}” tinha antes da primeira alteração do Batly?\n\nSó a iluminação é restaurada, a partir da cópia mais antiga; as outras configurações guardadas no dispositivo mantêm-se.";
+    s_led_restored => "Original lighting restored.", "Éclairage d'origine restauré.", "Ursprüngliche Beleuchtung wiederhergestellt.", "Iluminación original restaurada.", "Illuminazione originale ripristinata.", "Iluminação original restaurada.";
+    s_err_no_backup => "No backup of this device's memory was found.", "Aucune sauvegarde de la mémoire de cet appareil n'a été trouvée.", "Es wurde keine Sicherung des Gerätespeichers gefunden.", "No se encontró ninguna copia de la memoria de este dispositivo.", "Nessun backup della memoria di questo dispositivo trovato.", "Não foi encontrada nenhuma cópia da memória deste dispositivo.";
     s_diag_done => "Diagnostic opened in a text file.", "Diagnostic ouvert dans un fichier texte.", "Diagnose in einer Textdatei geöffnet.", "Diagnóstico abierto en un archivo de texto.", "Diagnostica aperta in un file di testo.", "Diagnóstico aberto num ficheiro de texto.";
 }
 
@@ -314,6 +319,7 @@ fn action_error(e: ActionError) -> &'static str {
         ActionError::Onboard(status) => onboard_reason(status).unwrap_or(s_err_failed()),
         ActionError::Backup => s_err_backup(),
         ActionError::Verify => s_err_verify(),
+        ActionError::NoBackup => s_err_no_backup(),
     }
 }
 
@@ -413,6 +419,7 @@ struct Controls {
     led_save: HWND,
     led_release: HWND,
     led_diag: HWND,
+    led_restore: HWND,
     status: HWND,
 }
 
@@ -655,10 +662,11 @@ unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
     let led_color = make("BUTTON", "#000000", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_COLOR, [508, 558, 108, 28]);
     make("STATIC", s_led_speed(), label, 0, 0, [28, 594, 180, 24]);
     let led_speed = make("msctls_trackbar32", "", track, 0, ID_LED_SPEED, [212, 592, 288, 28]);
-    let led_preview = make("BUTTON", s_led_preview(), BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_PREVIEW, [28, 628, 120, 28]);
-    let led_save = make("BUTTON", s_led_save(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_SAVE, [156, 628, 220, 28]);
-    let led_release = make("BUTTON", s_led_release(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_RELEASE, [384, 628, 116, 28]);
-    let led_diag = make("BUTTON", s_led_diag(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_DIAG, [508, 628, 108, 28]);
+    let led_preview = make("BUTTON", s_led_preview(), BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_PREVIEW, [28, 628, 92, 28]);
+    let led_save = make("BUTTON", s_led_save(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_SAVE, [126, 628, 186, 28]);
+    let led_restore = make("BUTTON", s_led_restore(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_RESTORE, [318, 628, 96, 28]);
+    let led_release = make("BUTTON", s_led_release(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_RELEASE, [420, 628, 100, 28]);
+    let led_diag = make("BUTTON", s_led_diag(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_DIAG, [526, 628, 90, 28]);
     let status = make("STATIC", "", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, [12, 674, 616, 20]);
 
     SetWindowTheme(list, wide("Explorer").as_ptr(), null());
@@ -707,6 +715,7 @@ unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
         led_save,
         led_release,
         led_diag,
+        led_restore,
         status,
     };
     (c, layout)
@@ -1057,6 +1066,8 @@ impl Ui {
             let can_save =
                 light.is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. })) && (zone as usize) < lighting::PROFILE_ZONES;
             EnableWindow(self.c.led_save, (has && can_save) as i32);
+            let writable = light.is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. }));
+            EnableWindow(self.c.led_restore, (usable && writable) as i32);
             EnableWindow(self.c.led_release, (usable && self.led_preview.is_some() && self.led_preview == self.device) as i32);
             EnableWindow(self.c.led_diag, (usable && self.settings.is_some()) as i32);
         }
@@ -1128,7 +1139,7 @@ impl Ui {
         }
         match setting {
             Setting::Led { save: false, .. } => self.led_preview = Some(device.clone()),
-            Setting::LedRelease | Setting::Led { save: true, .. } => self.led_preview = None,
+            Setting::LedRelease | Setting::LedRestore | Setting::Led { save: true, .. } => self.led_preview = None,
             _ => {}
         }
         self.seq += 1;
@@ -1235,7 +1246,7 @@ impl Ui {
                 current.backlight.as_ref().is_some_and(|b| b.mode == mode && (mode != BacklightMode::Manual || b.level == level))
             }
             Setting::SmartShift(m) => current.smart_shift == Some(m),
-            Setting::Led { .. } | Setting::LedRelease => false,
+            Setting::Led { .. } | Setting::LedRelease | Setting::LedRestore => false,
         };
         if unchanged {
             return;
@@ -1261,7 +1272,7 @@ impl Ui {
             Some(Ok(s)) => {
                 self.settings = Some(s);
                 if let Some(setting) = led {
-                    if matches!(setting, Setting::Led { save: true, .. }) {
+                    if matches!(setting, Setting::Led { save: true, .. } | Setting::LedRestore) {
                         self.led = None; // show what the device now holds
                     }
                     self.set_text(
@@ -1269,6 +1280,7 @@ impl Ui {
                         match setting {
                             Setting::Led { save: true, .. } => s_led_saved(),
                             Setting::LedRelease => s_led_released(),
+                            Setting::LedRestore => s_led_restored(),
                             _ => s_led_previewed(),
                         },
                     );
@@ -1479,6 +1491,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 (ID_LED_DIAG, BN_CLICKED) => {
                     with_ui(|ui| ui.diagnose());
+                }
+                (ID_LED_RESTORE, BN_CLICKED) => {
+                    if let Some(Some((_, _, name))) = with_ui(|ui| ui.led_save_target()) {
+                        let text = s_led_restore_confirm().replace("{name}", &name);
+                        let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_led_restore()).as_ptr(), MB_YESNO | MB_ICONWARNING);
+                        if answer == IDYES {
+                            with_ui(|ui| ui.send_led(Setting::LedRestore));
+                        }
+                    }
                 }
                 (ID_LED_SAVE, BN_CLICKED) => {
                     // The confirmation runs a modal loop: not under borrow.

@@ -37,6 +37,11 @@ pub const PROFILE_LIGHTING_ENTRY: usize = 11;
 pub const PROFILE_LIGHTING_ENTRIES: usize = 4;
 /// Zones that can be saved in a profile.
 pub const PROFILE_ZONES: usize = 2;
+/// Profile format of the G502 X family (libratbag: PROFILE_TYPE_G502X).
+pub const FORMAT_G502X: u8 = 5;
+/// G502 X format: index of a custom animation stored on the device, played
+/// instead of the lighting entries when not 0 (libratbag clears it).
+const ANIMATION_INDEX: usize = PROFILE_LIGHTING_OFFSET + PROFILE_LIGHTING_ENTRY * PROFILE_LIGHTING_ENTRIES;
 /// Smallest sector holding the lighting entries and the CRC.
 const MIN_SECTOR: usize = PROFILE_LIGHTING_OFFSET + PROFILE_LIGHTING_ENTRY * PROFILE_LIGHTING_ENTRIES + 2;
 /// Largest sector we accept (sizes seen are 255 to 1024 bytes).
@@ -317,14 +322,31 @@ pub fn check_profile(sector: &[u8], size: usize) -> Result<(), ProfileError> {
     Ok(())
 }
 
-/// Effect stored for `zone` in a checked profile sector.
-pub fn profile_effect(sector: &[u8], zone: usize) -> Option<LedEffect> {
-    if zone >= PROFILE_ZONES {
+/// Effect stored in lighting entry `slot` of a checked profile sector.
+pub fn profile_effect(sector: &[u8], slot: usize) -> Option<LedEffect> {
+    if slot >= PROFILE_LIGHTING_ENTRIES {
         return None;
     }
-    let at = PROFILE_LIGHTING_OFFSET + zone * PROFILE_LIGHTING_ENTRY;
+    let at = PROFILE_LIGHTING_OFFSET + slot * PROFILE_LIGHTING_ENTRY;
     let e = sector.get(at..at + PROFILE_LIGHTING_ENTRY)?;
     LedEffect::parse(e[0] as u16, &e[1..])
+}
+
+/// Whether the G502 X format plays a custom animation instead of the
+/// lighting entries.
+fn plays_animation(sector: &[u8], format: u8) -> bool {
+    format == FORMAT_G502X && sector.len() > ANIMATION_INDEX + 2 && sector[ANIMATION_INDEX] != 0
+}
+
+/// Effect the device shows for `zone` (of `zones`), as far as known: a
+/// single-zone G502 X uses the second entry; a custom animation is not an
+/// effect we can describe.
+pub fn profile_current(sector: &[u8], zone: usize, zones: usize, format: u8) -> Option<LedEffect> {
+    if zone >= PROFILE_ZONES || plays_animation(sector, format) {
+        return None;
+    }
+    let slot = if zones == 1 && format == FORMAT_G502X { 1 } else { zone };
+    profile_effect(sector, slot)
 }
 
 impl LedEffect {
@@ -350,8 +372,10 @@ pub fn profile_writes(zone: usize, zones: usize, effect: &LedEffect, id: u16) ->
 }
 
 /// The sector with `entries` written (slot, entry) and the CRC updated.
-/// The sector must pass [`check_profile`]; slots are 0..4.
-pub fn patch_profile(sector: &[u8], entries: &[(usize, [u8; PROFILE_LIGHTING_ENTRY])]) -> Result<Vec<u8>, ProfileError> {
+/// The sector must pass [`check_profile`]; slots are 0..4. On the G502 X
+/// format the custom animation is switched off, or it would keep playing
+/// over the entries (as libratbag does).
+pub fn patch_profile(sector: &[u8], entries: &[(usize, [u8; PROFILE_LIGHTING_ENTRY])], format: u8) -> Result<Vec<u8>, ProfileError> {
     check_profile(sector, sector.len())?;
     if entries.iter().any(|(slot, _)| *slot >= PROFILE_LIGHTING_ENTRIES) {
         return Err(ProfileError::Zone);
@@ -361,10 +385,30 @@ pub fn patch_profile(sector: &[u8], entries: &[(usize, [u8; PROFILE_LIGHTING_ENT
         let at = PROFILE_LIGHTING_OFFSET + slot * PROFILE_LIGHTING_ENTRY;
         out[at..at + PROFILE_LIGHTING_ENTRY].copy_from_slice(entry);
     }
+    if plays_animation(&out, format) {
+        out[ANIMATION_INDEX] = 0;
+    }
+    Ok(with_crc(out))
+}
+
+fn with_crc(mut out: Vec<u8>) -> Vec<u8> {
     let n = out.len();
     let crc = crc16(&out[..n - 2]).to_be_bytes();
     out[n - 2..].copy_from_slice(&crc);
-    Ok(out)
+    out
+}
+
+/// The current sector with the lighting part (entries and what follows
+/// them up to the CRC: the G502 X animation index) taken from `backup`.
+/// Both must pass [`check_profile`] and have the same size; the rest of
+/// the current sector (DPI, buttons…) is kept.
+pub fn restore_lighting(current: &[u8], backup: &[u8]) -> Result<Vec<u8>, ProfileError> {
+    check_profile(current, current.len())?;
+    check_profile(backup, current.len())?;
+    let mut out = current.to_vec();
+    let n = out.len();
+    out[PROFILE_LIGHTING_OFFSET..n - 2].copy_from_slice(&backup[PROFILE_LIGHTING_OFFSET..n - 2]);
+    Ok(with_crc(out))
 }
 
 /// Hex dump, 16 bytes per line, for the diagnostic.
@@ -483,13 +527,13 @@ pub(crate) mod tests {
         assert_eq!((logo.kind, logo.color, logo.period_ms, logo.intensity), (EffectKind::Breathe, 0x00FF00, 3000, 80));
 
         let cycle = LedEffect { kind: EffectKind::Cycle, period_ms: 8000, intensity: 50, ..LedEffect::default() };
-        let patched = patch_profile(&s, &[(1, cycle.profile_entry(ID_CYCLE))]).unwrap();
+        let patched = patch_profile(&s, &[(1, cycle.profile_entry(ID_CYCLE))], 3).unwrap();
         assert_eq!(check_profile(&patched, 255), Ok(()));
         assert_eq!(profile_effect(&patched, 1).unwrap().kind, EffectKind::Cycle);
         // Only the entry and the CRC changed.
         let diff: Vec<usize> = (0..255).filter(|&i| s[i] != patched[i]).collect();
         assert!(diff.iter().all(|&i| (219..230).contains(&i) || i >= 253), "{diff:?}");
-        assert_eq!(patch_profile(&s, &[(4, cycle.profile_entry(ID_CYCLE))]), Err(ProfileError::Zone));
+        assert_eq!(patch_profile(&s, &[(4, cycle.profile_entry(ID_CYCLE))], 3), Err(ProfileError::Zone));
     }
 
     /// Lighting entries of the G502 X PLUS profile sent by a user: effect
@@ -515,14 +559,30 @@ pub(crate) mod tests {
         let red = LedEffect { kind: EffectKind::Static, color: 0xFF2000, ..LedEffect::default() };
         let writes = profile_writes(0, 1, &red, ID_STATIC);
         assert_eq!(writes.iter().map(|w| w.0).collect::<Vec<_>>(), [0, 1, 2, 3]);
-        let out = patch_profile(&s, &writes).unwrap();
+        // The factory profile plays custom animation 3: no known effect.
+        assert_eq!(profile_current(&s, 0, 1, FORMAT_G502X), None);
+        let out = patch_profile(&s, &writes, FORMAT_G502X).unwrap();
         assert_eq!(check_profile(&out, 255), Ok(()));
         assert_eq!(out[208..219], [0x01, 0xFF, 0x20, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(out[219..230], out[208..219]);
         assert_eq!(out[230..241], [0x01, 0x7F, 0x10, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(out[241..252], out[230..241]);
-        // Everything else, the extra byte included, is untouched.
-        assert!((0..208).chain(252..253).all(|i| out[i] == s[i]));
+        // The custom animation is switched off so the entries show.
+        assert_eq!(out[252], 0);
+        assert_eq!(profile_current(&out, 0, 1, FORMAT_G502X).unwrap().color, 0xFF2000);
+        // Everything before the lighting is untouched.
+        assert!((0..208).all(|i| out[i] == s[i]));
+        // Other formats keep that byte.
+        assert_eq!(patch_profile(&s, &writes, 3).unwrap()[252], 3);
+        // Restoring brings back the factory lighting and animation only.
+        let mut later = out.clone();
+        later[3] = 0x40; // DPI changed since
+        let later = with_crc(later);
+        let restored = restore_lighting(&later, &s).unwrap();
+        assert_eq!(restored[208..253], s[208..253]);
+        assert_eq!(restored[3], 0x40);
+        assert_eq!(check_profile(&restored, 255), Ok(()));
+        assert_eq!(restore_lighting(&later, &s[..254]), Err(ProfileError::Size));
         // Two zones: only the zone and its power-saving twin.
         assert_eq!(profile_writes(1, 2, &red, ID_STATIC).iter().map(|w| w.0).collect::<Vec<_>>(), [1, 3]);
         let breathe = LedEffect { kind: EffectKind::Breathe, intensity: 80, ..red };
@@ -535,7 +595,7 @@ pub(crate) mod tests {
         let mut bad_crc = s.clone();
         bad_crc[100] ^= 1;
         assert_eq!(check_profile(&bad_crc, 255), Err(ProfileError::Crc));
-        assert_eq!(patch_profile(&bad_crc, &[(0, [0; 11])]), Err(ProfileError::Crc));
+        assert_eq!(patch_profile(&bad_crc, &[(0, [0; 11])], 3), Err(ProfileError::Crc));
         // Valid CRC but an unknown byte where an effect id should be.
         let mut odd = s.clone();
         odd[219] = 0x42;
