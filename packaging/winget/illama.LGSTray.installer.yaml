@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# Template: filled in by packaging/update-manifests.sh (do not submit as is).
+PackageIdentifier: illama.LGSTray
+PackageVersion: {{VERSION}}
+MinimumOSVersion: 10.0.14393.0
+InstallerType: exe
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /S
+  SilentWithProgress: /S
+UpgradeBehavior: install
+ReleaseDate: {{RELEASE_DATE}}
+AppsAndFeaturesEntries:
+  - DisplayName: LGSTray
+    Publisher: LGSTray contributors
+    ProductCode: LGSTray
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/illama/illama_logitechbatteries/releases/download/v{{VERSION}}/LGSTray-Setup-{{VERSION}}.exe
+    InstallerSha256: {{SETUP_SHA256}}
+ManifestType: installer
+ManifestVersion: 1.6.0
