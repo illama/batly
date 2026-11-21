@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy (Windows)
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --all-targets -- -D warnings
+      - name: Clippy (portable code)
+        run: cargo clippy -p batly --all-targets -- -D warnings
+      - name: Tests (portable code)
+        run: cargo test -p batly
+
   test:
     runs-on: windows-latest
     steps:

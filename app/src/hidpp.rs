@@ -2020,7 +2020,7 @@ mod tests {
                 }
                 (8, 3) => {
                     self.dpi = u16::from_be_bytes([req[5], req[6]]);
-                    self.reply(req, &req[4..7].to_vec());
+                    self.reply(req, &req[4..7]);
                 }
                 (9, 0) => self.reply(req, &[0b1000_1011]),
                 (9, 1) => self.reply(req, &[self.rate]),

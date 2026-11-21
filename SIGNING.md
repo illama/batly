@@ -29,7 +29,7 @@ Une signature Authenticode :
 4. signature de l'installateur par SignPath ;
 5. zip portable (avec l'exécutable signé), `SHA256SUMS.txt`, contrôle
    `Get-AuthenticodeSignature` des deux fichiers ;
-6. release GitHub en **brouillon** (notes : `.github/RELEASE_NOTES_<tag>.md` si présent) ;
+6. release GitHub **publiée directement**, en préversion pour un tag `v…-…` (notes : `.github/RELEASE_NOTES_<tag>.md` si présent) ;
 7. manifestes winget / Scoop / Chocolatey en artefact.
 
 Sans les secrets, les étapes 2, 4 et le contrôle de signature sont sautées : la release est

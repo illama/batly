@@ -561,8 +561,8 @@ mod tests {
         let (b, url_b) = instance(0);
         local(&a, "a1", 50.0);
         local(&b, "b1", 60.0);
-        let _pa = start(&[url_b.clone()], &a);
-        let _pb = start(&[url_a.clone()], &b);
+        let _pa = start(std::slice::from_ref(&url_b), &a);
+        let _pb = start(std::slice::from_ref(&url_a), &b);
         let label_b = url_b.trim_start_matches("http://").to_string();
         let remote_b = format!("peer:{label_b}:b1");
         wait_for("b1 on a", || a.hub.find(&remote_b).is_some_and(|d| d.battery.is_some()));
