@@ -17,7 +17,9 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Devices_Bluetooth",
     "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_DeviceQuery",
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Devices_Properties",
     "Win32_Globalization",

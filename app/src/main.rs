@@ -8,8 +8,10 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod alerts;
+mod bluetooth;
 mod config;
 mod fetch;
+mod gamepad;
 mod ghub;
 mod hidpp;
 mod history;
@@ -24,11 +26,15 @@ mod notice;
 mod peers;
 mod report;
 mod sha256;
+mod tracker;
 mod update;
+mod vendors;
 mod webhooks;
 
 #[cfg(windows)]
 mod actions;
+#[cfg(windows)]
+mod hidio;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
@@ -287,13 +293,35 @@ fn main() {
         notice_sinks.push(Box::new(move |n| webhooks.send(n)));
     }
 
+    // Other brands and standard devices.
+    let mut refresh: Vec<Box<dyn Fn()>> = Vec::new();
+    let mut rescan: Vec<Box<dyn Fn()>> = Vec::new();
+    if cfg.other.bluetooth {
+        let b = std::rc::Rc::new(bluetooth::Bluetooth::start(&cfg.other, hub.clone()));
+        let (b1, b2) = (b.clone(), b);
+        refresh.push(Box::new(move || b1.refresh()));
+        rescan.push(Box::new(move || b2.rescan()));
+    }
+    if cfg.other.gamepads {
+        let g = std::rc::Rc::new(gamepad::Gamepads::start(&cfg.other, hub.clone()));
+        let (g1, g2) = (g.clone(), g);
+        refresh.push(Box::new(move || g1.refresh()));
+        rescan.push(Box::new(move || g2.rescan()));
+    }
+    if cfg.other.razer || cfg.other.corsair || cfg.other.steelseries {
+        let v = std::rc::Rc::new(vendors::Vendors::start(&cfg.other, hub.clone()));
+        let (v1, v2) = (v.clone(), v);
+        refresh.push(Box::new(move || v1.refresh()));
+        rescan.push(Box::new(move || v2.rescan()));
+    }
+
     let services = tray::Services {
         native: cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone())),
         ghub: cfg.ghub.enabled.then(|| ghub::GHub::start(hub.clone())),
         web_url,
         history,
-        refresh: Vec::new(),
-        rescan: Vec::new(),
+        refresh,
+        rescan,
         notice_sinks,
         actions,
         shared_cfg,
