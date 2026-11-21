@@ -91,53 +91,98 @@ fn device_layer(kind: DeviceKind) -> &'static [u8] {
     layer.as_slice()
 }
 
-/// The device glyph alone (no battery), cropped to its ink, scaled to fit
-/// `w`×`h` and centred. Returns the coverage (0..=1) of each pixel, rows top
-/// to bottom. Used under the number in numeric display mode.
+/// The device pictogram drawn under the number in numeric display mode.
+///
+/// The 512 px artwork turns to mush at 6-12 px, so these are drawn from
+/// simple rounded shapes (signed distance fields): bold "cartoon"
+/// silhouettes with carved-out details, crisp at any size. The glyph is
+/// scaled to fit `w`×`h` and centred; returns the coverage (0..=1) of each
+/// pixel, rows top to bottom.
 pub fn glyph_coverage(kind: DeviceKind, w: usize, h: usize) -> Vec<f32> {
     let mut out = vec![0f32; w * h];
     if w == 0 || h == 0 {
         return out;
     }
-    let layer = device_layer(kind);
-    let (mut x0, mut y0, mut x1, mut y1) = (SRC, SRC, 0, 0);
-    for y in 0..SRC {
-        for x in 0..SRC {
-            if layer[y * SRC + x] > 0 {
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x + 1);
-                y1 = y1.max(y + 1);
-            }
-        }
-    }
-    if x1 <= x0 || y1 <= y0 {
-        return out;
-    }
-    let (bw, bh) = ((x1 - x0) as f32, (y1 - y0) as f32);
-    // Source pixels per destination pixel.
-    let step = (bw / w as f32).max(bh / h as f32);
-    let (dw, dh) = (bw / step, bh / step);
-    let (ox, oy) = ((w as f32 - dw) / 2.0, (h as f32 - dh) / 2.0);
-    // Box filter: average the source footprint of every destination pixel.
-    for dy in 0..h {
-        for dx in 0..w {
-            let sx0 = (dx as f32 - ox) * step + x0 as f32;
-            let sy0 = (dy as f32 - oy) * step + y0 as f32;
-            let (mut sum, mut n) = (0f32, 0u32);
-            let (ys, ye) = (sy0.floor().max(0.0) as usize, ((sy0 + step).ceil().max(0.0) as usize).min(SRC));
-            let (xs, xe) = (sx0.floor().max(0.0) as usize, ((sx0 + step).ceil().max(0.0) as usize).min(SRC));
-            for sy in ys..ye {
-                for sx in xs..xe {
-                    sum += layer[sy * SRC + sx] as f32 / 255.0;
-                    n += 1;
-                }
-            }
-            let full = (step.ceil() as u32).pow(2).max(1);
-            out[dy * w + dx] = (sum / n.max(full) as f32).clamp(0.0, 1.0);
+    let (gw, gh, sdf): (f32, f32, fn(f32, f32) -> f32) = match kind {
+        DeviceKind::Keyboard => (1.6, 1.0, sdf::keyboard),
+        DeviceKind::Headset => (1.1, 1.0, sdf::headset),
+        DeviceKind::Gamepad => (1.6, 1.0, sdf::gamepad),
+        DeviceKind::Earbuds => (1.3, 1.0, sdf::earbuds),
+        DeviceKind::Mouse | DeviceKind::Other => (0.72, 1.0, sdf::mouse),
+    };
+    let s = (w as f32 / gw).min(h as f32 / gh);
+    let (ox, oy) = ((w as f32 - gw * s) / 2.0, (h as f32 - gh * s) / 2.0);
+    for py in 0..h {
+        for px in 0..w {
+            let (u, v) = ((px as f32 + 0.5 - ox) / s, (py as f32 + 0.5 - oy) / s);
+            // Distance in pixels → analytic antialiasing.
+            out[py * w + px] = (0.5 - sdf(u, v) * s).clamp(0.0, 1.0);
         }
     }
     out
+}
+
+/// Signed distance functions of the pictograms, in glyph units (height 1,
+/// y down); negative inside.
+mod sdf {
+    fn rbox(x: f32, y: f32, cx: f32, cy: f32, hx: f32, hy: f32, r: f32) -> f32 {
+        let qx = (x - cx).abs() - hx + r;
+        let qy = (y - cy).abs() - hy + r;
+        qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+    }
+
+    fn circle(x: f32, y: f32, cx: f32, cy: f32, r: f32) -> f32 {
+        (x - cx).hypot(y - cy) - r
+    }
+
+    fn capsule(x: f32, y: f32, a: (f32, f32), b: (f32, f32), r: f32) -> f32 {
+        let (pax, pay, bax, bay) = (x - a.0, y - a.1, b.0 - a.0, b.1 - a.1);
+        let t = ((pax * bax + pay * bay) / (bax * bax + bay * bay)).clamp(0.0, 1.0);
+        (pax - bax * t).hypot(pay - bay * t) - r
+    }
+
+    /// `a` minus `b`.
+    fn cut(a: f32, b: f32) -> f32 {
+        a.max(-b)
+    }
+
+    pub fn mouse(x: f32, y: f32) -> f32 {
+        let mut d = rbox(x, y, 0.36, 0.5, 0.36, 0.5, 0.34);
+        d = cut(d, rbox(x, y, 0.36, 0.43, 0.5, 0.045, 0.0));
+        cut(d, capsule(x, y, (0.36, 0.14), (0.36, 0.25), 0.075))
+    }
+
+    pub fn keyboard(x: f32, y: f32) -> f32 {
+        let mut d = rbox(x, y, 0.8, 0.5, 0.8, 0.5, 0.2);
+        for ky in [0.28, 0.53] {
+            for i in 0..3 {
+                d = cut(d, rbox(x, y, 0.36 + i as f32 * 0.44, ky, 0.12, 0.08, 0.04));
+            }
+        }
+        cut(d, rbox(x, y, 0.8, 0.77, 0.42, 0.07, 0.04))
+    }
+
+    pub fn headset(x: f32, y: f32) -> f32 {
+        let band = ((circle(x, y, 0.55, 0.58, 0.44)).abs() - 0.08).max(y - 0.58);
+        band.min(rbox(x, y, 0.15, 0.73, 0.15, 0.27, 0.12)).min(rbox(x, y, 0.95, 0.73, 0.15, 0.27, 0.12))
+    }
+
+    pub fn gamepad(x: f32, y: f32) -> f32 {
+        let mut d = rbox(x, y, 0.8, 0.4, 0.62, 0.3, 0.28).min(circle(x, y, 0.36, 0.72, 0.28)).min(circle(x, y, 1.24, 0.72, 0.28));
+        d = cut(d, rbox(x, y, 0.42, 0.42, 0.18, 0.055, 0.02));
+        d = cut(d, rbox(x, y, 0.42, 0.42, 0.055, 0.18, 0.02));
+        d = cut(d, circle(x, y, 1.12, 0.32, 0.075));
+        cut(d, circle(x, y, 1.26, 0.5, 0.075))
+    }
+
+    pub fn earbuds(x: f32, y: f32) -> f32 {
+        let mut d = f32::MAX;
+        for (cx, side) in [(0.27, -1.0), (1.03, 1.0)] {
+            let stem = cx + side * 0.12;
+            d = d.min(circle(x, y, cx, 0.28, 0.27)).min(capsule(x, y, (stem, 0.35), (stem, 0.88), 0.11));
+        }
+        d
+    }
 }
 
 /// Renders a `size`×`size` icon, rows top to bottom, straight alpha RGBA.
