@@ -24,7 +24,7 @@
 
 use crate::lighting::{
     self, LedApi, LedEffect, LedZone, Lighting, OnboardDescription, OnboardStatus, ZoneEffect, FEAT_COLOR_LED_EFFECTS,
-    FEAT_ONBOARD_PROFILES, FEAT_RGB_EFFECTS,
+    FEAT_ONBOARD_PROFILES, FEAT_PROFILE_MANAGEMENT, FEAT_RGB_EFFECTS,
 };
 use crate::log;
 use crate::model::{Battery, DeviceInfo, DeviceKind, Event, Source, Status};
@@ -123,6 +123,8 @@ pub struct Settings {
     /// Where onboard memory sectors are saved before being rewritten;
     /// `None` = never write onboard memory.
     pub backup_dir: Option<PathBuf>,
+    /// Lighting Batly keeps re-applying (devices without writable memory).
+    pub lighting_file: Option<PathBuf>,
 }
 
 // ------------------------------------------------------------ public API
@@ -370,6 +372,14 @@ pub enum Setting {
     /// Puts back the lighting the active profile had before Batly first
     /// wrote it (oldest backup).
     LedRestore,
+    /// Batly keeps this lighting: applied now, then again at every
+    /// connection and wake-up (devices without writable memory).
+    LedKeep {
+        zone: u8,
+        effect: LedEffect,
+    },
+    /// Stops keeping the lighting; the device shows its own again.
+    LedForget,
 }
 
 pub type SettingsReply = Sender<Result<DeviceSettings, ActionError>>;
@@ -701,6 +711,12 @@ struct Slot {
     online: bool,
     /// Re-read the static details (reconnection).
     reread: bool,
+    /// Kept lighting applied since the device last (re)connected.
+    keep_active: bool,
+    /// Kept lighting put to sleep after the device went idle.
+    keep_sleeping: bool,
+    /// 0x8071 onUserActivity: `true` = active again, `false` = idle.
+    led_event: Option<bool>,
 }
 
 /// What a receiver's pairing registers say about one slot.
@@ -759,6 +775,10 @@ pub struct Session<T: Transport> {
     receiver_details: Option<ReceiverDetails>,
     /// Pairing registers, read on demand and dropped when they may change.
     paired: Option<Vec<PairingRecord>>,
+    /// Software id of the last HID++ 2.0 request (1..=15, rotating): a
+    /// late answer to an earlier request cannot be taken for the answer to
+    /// the current one (all root lookups share feature 0, function 0).
+    sw_id: u8,
 }
 
 impl<T: Transport> Session<T> {
@@ -779,6 +799,7 @@ impl<T: Transport> Session<T> {
             pairing: None,
             receiver_details: None,
             paired: None,
+            sw_id: SW_ID,
         }
     }
 
@@ -799,7 +820,15 @@ impl<T: Transport> Session<T> {
     /// Runs until the endpoint disappears or a `Stop` command is received.
     pub fn run(mut self) {
         let result = self.event_loop();
-        log!("[{}] session ended: {:?}", self.tag, result.err());
+        log!("[{}] session ended: {:?}", self.tag, result.as_ref().err());
+        // Stopped (Batly exits): give kept LEDs back, or nothing would put
+        // them to sleep any more.
+        if result.is_ok() {
+            let kept: Vec<u8> = self.devices.iter().filter(|(_, s)| s.keep_active && s.online).map(|(&i, _)| i).collect();
+            for idx in kept {
+                let _ = self.release_leds(idx);
+            }
+        }
         for slot in self.devices.values() {
             if let Some(info) = &slot.info {
                 (self.sink)(Event::Offline { id: info.id.clone() });
@@ -850,6 +879,8 @@ impl<T: Transport> Session<T> {
                     for slot in self.devices.values_mut() {
                         slot.due = Some(now);
                         slot.fails = 0;
+                        // After a PC sleep the LEDs may have been reset.
+                        slot.keep_active = false;
                     }
                 }
                 Ok(command) => self.pending.push_back(command),
@@ -987,8 +1018,15 @@ impl<T: Transport> Session<T> {
 
     /// HID++ 2.0 feature call; returns the parameters of the answer.
     fn call(&mut self, idx: u8, feature: u8, function: u8, params: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let reply = self.transact(idx, feature, (function << 4) | SW_ID, params, REQUEST_TIMEOUT)?;
+        let sw = self.next_sw();
+        let reply = self.transact(idx, feature, (function << 4) | sw, params, REQUEST_TIMEOUT)?;
         Ok(reply.map(|r| r[4..].to_vec()))
+    }
+
+    /// Next software id (0 is reserved for device notifications).
+    fn next_sw(&mut self) -> u8 {
+        self.sw_id = self.sw_id % 15 + 1;
+        self.sw_id
     }
 
     /// HID++ 1.0 register access on the receiver.
@@ -1133,6 +1171,8 @@ impl<T: Transport> Session<T> {
             let slot = self.devices.entry(idx).or_default();
             slot.fails = 0;
             slot.online = link_up;
+            slot.keep_active = false;
+            slot.keep_sleeping = false;
             if link_up {
                 slot.due = Some(Instant::now() + self.cfg.settle);
                 slot.reread = slot.info.is_some();
@@ -1160,8 +1200,19 @@ impl<T: Transport> Session<T> {
             }
         }
 
-        // Battery broadcast event (function 0, software id 0).
+        // 0x8071 onUserActivity (function 1, software id 0): handled by
+        // the kept lighting on the next service.
         let key = if self.direct { self.devices.keys().next().copied() } else { Some(idx) };
+        if let Some(slot) = key.and_then(|k| self.devices.get_mut(&k)) {
+            let rgb = slot.info.as_ref().and_then(|i| i.features.get(&FEAT_RGB_EFFECTS).copied());
+            if rgb == Some(r[2]) && r[3] == 0x10 {
+                slot.led_event = Some(r[4] != 0);
+                slot.due = Some(Instant::now());
+                return;
+            }
+        }
+
+        // Battery broadcast event (function 0, software id 0).
         let Some(slot) = key.and_then(|k| self.devices.get_mut(&k)) else { return };
         let Some(info) = &slot.info else { return };
         let Some(feature) = info.battery else { return };
@@ -1231,6 +1282,7 @@ impl<T: Transport> Session<T> {
             slot.fails = 0;
             slot.online = true;
             slot.due = Some(Instant::now() + self.cfg.poll);
+            self.keep_step(idx)?;
         } else {
             // Exponential back-off, capped: the device is most likely
             // asleep and will announce itself when it wakes up.
@@ -1828,7 +1880,16 @@ impl<T: Transport> Session<T> {
         let reply = match setting {
             Setting::Led { zone, effect, save: false } => return self.preview_led(idx, zone, effect),
             Setting::Led { zone, effect, save: true } => return self.save_led(idx, zone, effect),
-            Setting::LedRelease => return self.release_leds(idx).map(Ok),
+            Setting::LedRelease => {
+                self.release_leds(idx)?;
+                // A kept lighting goes on after a preview.
+                if let Some((zone, effect)) = self.kept_for(idx) {
+                    return self.apply_kept(idx, zone, effect);
+                }
+                return Ok(Ok(()));
+            }
+            Setting::LedKeep { zone, effect } => return self.keep_led(idx, zone, effect),
+            Setting::LedForget => return self.forget_led(idx),
             Setting::LedRestore => return self.restore_leds(idx),
             Setting::Dpi(dpi) => match self.feature(idx, FEAT_ADJUSTABLE_DPI)? {
                 Some(f) => {
@@ -1901,13 +1962,14 @@ impl<T: Transport> Session<T> {
             return Ok(None);
         }
         let (onboard, profile) = self.onboard_profile(idx)?;
+        let kept = self.kept_for(idx);
         if let Some((_, desc, sector)) = &profile {
             let count = zones.len();
             for z in zones.iter_mut() {
                 z.current = lighting::profile_current(sector, z.index as usize, count, desc.profile_format);
             }
         }
-        Ok(Some(Lighting { api, zones, onboard }))
+        Ok(Some(Lighting { api, zones, onboard, kept }))
     }
 
     /// Reads 16-byte chunks of an onboard memory sector (0x8100 memoryRead;
@@ -1940,11 +2002,13 @@ impl<T: Transport> Session<T> {
         for chunk in bytes.chunks(16) {
             let mut data = [0u8; 16];
             data[..chunk.len()].copy_from_slice(chunk);
-            if self.transact_ex(idx, f, (7 << 4) | SW_ID, &data, FLASH_TIMEOUT, true, None)?.is_none() {
+            let sw = self.next_sw();
+            if self.transact_ex(idx, f, (7 << 4) | sw, &data, FLASH_TIMEOUT, true, None)?.is_none() {
                 return Ok(false);
             }
         }
-        Ok(self.transact(idx, f, (8 << 4) | SW_ID, &[], FLASH_TIMEOUT)?.is_some())
+        let sw = self.next_sw();
+        Ok(self.transact(idx, f, (8 << 4) | sw, &[], FLASH_TIMEOUT)?.is_some())
     }
 
     /// Whether the lighting can be saved on the device and, when it can,
@@ -2000,7 +2064,11 @@ impl<T: Transport> Session<T> {
                 self.call(idx, f, 3, &p)?
             }
             LedApi::Rgb => {
-                if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
+                // Firmware power management off (it comes back with the
+                // release), as Solaar does.
+                if let Some(pm) = self.feature(idx, FEAT_PROFILE_MANAGEMENT)? {
+                    self.call(idx, pm, 6, &[0x05])?;
+                } else if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
                     self.call(idx, onb, 1, &[2])?;
                 }
                 self.call(idx, f, 5, &[0x01, 0x03, 0x04])?;
@@ -2021,11 +2089,100 @@ impl<T: Transport> Session<T> {
             }
             Some((f, LedApi::Rgb)) => {
                 self.call(idx, f, 5, &[0x01, 0x00, 0x00])?;
-                if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
+                if let Some(pm) = self.feature(idx, FEAT_PROFILE_MANAGEMENT)? {
+                    self.call(idx, pm, 6, &[0x03])?;
+                } else if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
                     self.call(idx, onb, 1, &[1])?;
                 }
             }
             None => {}
+        }
+        if let Some(slot) = self.devices.get_mut(&idx) {
+            slot.keep_active = false;
+            slot.keep_sleeping = false;
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------- lighting kept by Batly
+
+    fn kept_for(&self, idx: u8) -> Option<(u8, LedEffect)> {
+        let path = self.cfg.lighting_file.as_ref()?;
+        lighting::load_kept(path).get(&self.device_id(idx)).copied()
+    }
+
+    fn keep_led(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
+        let Some(path) = self.cfg.lighting_file.clone() else { return Ok(Err(ActionError::NotSupported)) };
+        if self.zone_wire(idx, zone, &effect)?.is_none() {
+            return Ok(Err(ActionError::NotSupported));
+        }
+        let mut kept = lighting::load_kept(&path);
+        kept.insert(self.device_id(idx), (zone, effect));
+        if let Err(e) = lighting::save_kept(&path, &kept) {
+            log!("[{}] cannot save {}: {}", self.tag, path.display(), e);
+            return Ok(Err(ActionError::Backup));
+        }
+        self.apply_kept(idx, zone, effect)
+    }
+
+    fn forget_led(&mut self, idx: u8) -> io::Result<Result<(), ActionError>> {
+        if let Some(path) = self.cfg.lighting_file.clone() {
+            let mut kept = lighting::load_kept(&path);
+            if kept.remove(&self.device_id(idx)).is_some() {
+                if let Err(e) = lighting::save_kept(&path, &kept) {
+                    log!("[{}] cannot save {}: {}", self.tag, path.display(), e);
+                    return Ok(Err(ActionError::Backup));
+                }
+            }
+        }
+        self.release_leds(idx)?;
+        Ok(Ok(()))
+    }
+
+    fn apply_kept(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
+        let result = self.preview_led(idx, zone, effect)?;
+        if let Some(slot) = self.devices.get_mut(&idx) {
+            slot.keep_active = result.is_ok();
+            slot.keep_sleeping = false;
+        }
+        Ok(result)
+    }
+
+    /// Kept lighting after a successful contact with the device: applied
+    /// once per connection; idle → the firmware fades the LEDs out (as
+    /// G HUB and Solaar do); active again → woken and re-applied.
+    fn keep_step(&mut self, idx: u8) -> io::Result<()> {
+        let Some((zone, effect)) = self.kept_for(idx) else {
+            if let Some(slot) = self.devices.get_mut(&idx) {
+                slot.led_event = None;
+            }
+            return Ok(());
+        };
+        let Some(slot) = self.devices.get_mut(&idx) else { return Ok(()) };
+        let (active, sleeping, event) = (slot.keep_active, slot.keep_sleeping, slot.led_event.take());
+        match event {
+            Some(false) if active && !sleeping => {
+                if let Some((f, LedApi::Rgb)) = self.led_feature(idx)? {
+                    log!("[{}] device {}: idle, LEDs to sleep", self.tag, idx);
+                    self.call(idx, f, 5, &[0x01, 0x03, 0x02])?; // firmware watches for activity
+                    self.call(idx, f, 8, &[0x01, 0x03, 0x00])?; // fade out
+                    if let Some(slot) = self.devices.get_mut(&idx) {
+                        slot.keep_sleeping = true;
+                    }
+                }
+            }
+            Some(true) if sleeping => {
+                if let Some((f, LedApi::Rgb)) = self.led_feature(idx)? {
+                    log!("[{}] device {}: active again, LEDs back", self.tag, idx);
+                    self.call(idx, f, 8, &[0x01, 0x01, 0x00])?;
+                }
+                let _ = self.apply_kept(idx, zone, effect)?;
+            }
+            _ if !active => {
+                log!("[{}] device {}: applying the kept lighting", self.tag, idx);
+                let _ = self.apply_kept(idx, zone, effect)?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -2146,7 +2303,7 @@ impl<T: Transport> Session<T> {
         if let Some(info) = self.devices.get(&idx).and_then(|s| s.info.as_ref()) {
             let _ = writeln!(s, "Batly {} – {} ({:?}), id {}", env!("CARGO_PKG_VERSION"), info.name, info.kind, info.id);
         }
-        for feature in [FEAT_COLOR_LED_EFFECTS, FEAT_RGB_EFFECTS, 0x8080, 0x8081, FEAT_ONBOARD_PROFILES, 0x8090] {
+        for feature in [FEAT_COLOR_LED_EFFECTS, FEAT_RGB_EFFECTS, 0x8080, 0x8081, FEAT_ONBOARD_PROFILES, FEAT_PROFILE_MANAGEMENT, 0x8090] {
             let index = self.feature(idx, feature)?;
             let _ = writeln!(s, "feature {feature:04X}: {}", index.map_or("absent".into(), |i| format!("index {i}")));
         }
@@ -2189,8 +2346,14 @@ impl<T: Transport> Session<T> {
                 }
             }
         }
+        if let Some(pm) = self.feature(idx, FEAT_PROFILE_MANAGEMENT)? {
+            // Function 0 (information) only: the others are not documented.
+            let info = self.call(idx, pm, 0, &[])?;
+            let _ = writeln!(s, "profile management info: {}", info.as_deref().map_or("-".into(), log::hex));
+        }
         let (status, _) = self.onboard_profile(idx)?;
         let _ = writeln!(s, "save on device: {status:?}");
+        let _ = writeln!(s, "kept by Batly: {:?}", self.kept_for(idx));
         Ok(s)
     }
 }
@@ -2346,6 +2509,14 @@ mod tests {
         zero_serial: bool,
         /// Onboard profile format announced (5 = G502 X).
         profile_format: u8,
+        /// Root lookup of this feature answers late: with the next request.
+        late_feature: Option<u16>,
+        /// 0x8071 RGB Effects (one zone) instead of relying on 0x8070.
+        rgb: bool,
+        rgb_sw: Vec<Vec<u8>>,
+        rgb_set: Vec<Vec<u8>>,
+        rgb_power: Vec<Vec<u8>>,
+        late: Option<Vec<u8>>,
         reloads: u32,
     }
 
@@ -2378,6 +2549,12 @@ mod tests {
                 corrupt_next: false,
                 zero_serial: false,
                 profile_format: 3,
+                late_feature: None,
+                rgb: false,
+                rgb_sw: Vec::new(),
+                rgb_set: Vec::new(),
+                rgb_power: Vec::new(),
+                late: None,
                 reloads: 0,
             }
         }
@@ -2419,9 +2596,13 @@ mod tests {
                         0x2111 => 11,
                         0x8070 => 12,
                         0x8100 => 13,
+                        0x8071 if self.rgb => 14,
                         _ => 0,
                     };
                     self.reply(req, &[index, 0, 0]);
+                    if self.late_feature == Some(u16::from_be_bytes([req[4], req[5]])) {
+                        self.late = self.out.pop_back();
+                    }
                 }
                 (0, 1) => self.reply(req, &[4, 2, req[6]]),
                 (2, 0) => self.reply(req, &[NAME.len() as u8]),
@@ -2492,6 +2673,27 @@ mod tests {
                 }
                 (12, 8) => {
                     self.led_host = req[4];
+                    self.reply(req, &[]);
+                }
+                // 0x8071: one zone, effects off / static / breathe / cycle.
+                (14, 0) => match (req[4], req[5]) {
+                    (0xFF, 0xFF) => self.reply(req, &[0xFF, 0, 1, 0, 0x22, 0, 4]),
+                    (zone, 0xFF) => self.reply(req, &[zone, zone, 0, 1, 4]),
+                    (zone, i) => {
+                        let id = [0x00, 0x01, 0x0A, 0x15][i as usize % 4];
+                        self.reply(req, &[zone, i, 0, id, 0, 0, 0, 0]);
+                    }
+                },
+                (14, 1) => {
+                    self.rgb_set.push(req[4..17].to_vec());
+                    self.reply(req, &[]);
+                }
+                (14, 5) => {
+                    self.rgb_sw.push(req[4..7].to_vec());
+                    self.reply(req, &[]);
+                }
+                (14, 8) => {
+                    self.rgb_power.push(req[4..7].to_vec());
                     self.reply(req, &[]);
                 }
                 // 0x8100: memory 1, format 3, 5 profiles, 16 buttons,
@@ -2653,6 +2855,9 @@ mod tests {
 
         fn write(&mut self, req: &[u8]) -> io::Result<()> {
             self.writes += 1;
+            if let Some(late) = self.late.take() {
+                self.out.push_back(late);
+            }
             assert_eq!(req.len(), if req[0] == REPORT_SHORT { SHORT_LEN } else { LONG_LEN });
             if !self.receiver {
                 assert_eq!(req[0], REPORT_LONG, "long-only endpoint must not get short reports");
@@ -2697,6 +2902,7 @@ mod tests {
             disabled: vec![],
             settle: Duration::from_millis(20),
             backup_dir: None,
+            lighting_file: None,
         }
     }
 
@@ -2770,7 +2976,7 @@ mod tests {
         let (_cmd_tx, cmd_rx) = mpsc::channel();
         let mut s = Session::new(Fake::new(true), settings(), cmd_rx, move |e| tx.send(e).unwrap(), "t".into());
         let info = Info::new("X".into(), "Mouse".into(), DeviceKind::Mouse, Some(BatteryFeature::Unified(7)));
-        s.devices.insert(1, Slot { info: Some(info), due: None, fails: 3, online: false, reread: false });
+        s.devices.insert(1, Slot { info: Some(info), due: None, fails: 3, online: false, ..Slot::default() });
         let mut event = vec![0u8; LONG_LEN];
         event[..7].copy_from_slice(&[0x11, 0x01, 0x07, 0x00, 42, 4, 1]);
         s.on_unsolicited(&event);
@@ -3055,7 +3261,8 @@ mod tests {
     }
 
     fn led_session(fake: Fake, backup: Option<PathBuf>) -> (Session<Fake>, String) {
-        let (mut s, _events) = ready(fake, 0xC52B);
+        let (mut s, events) = ready(fake, 0xC52B);
+        std::mem::forget(events); // keep the event channel open
         s.cfg.backup_dir = backup;
         (s, "DEADBEEF-0102030405".to_string())
     }
@@ -3074,6 +3281,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("batly-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn late_answer_is_not_taken_for_the_next_one() {
+        let (mut s, _events) = ready(Fake::new(true), 0xC52B);
+        s.transport.late_feature = Some(0x8070);
+        // The 0x8070 lookup times out; its answer (index 12) arrives while
+        // 0x8100 is looked up and must not be taken as index 13's answer.
+        assert_eq!(s.feature_index(1, 0x8070).unwrap(), None);
+        assert_eq!(s.feature_index(1, 0x8100).unwrap(), Some(13));
     }
 
     #[test]
@@ -3198,6 +3415,62 @@ mod tests {
         command(&mut s, &id, Some(Setting::LedRestore)).unwrap();
         assert_eq!(s.transport.flash[&1], factory);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lighting_kept_by_batly() {
+        let dir = temp_dir("kept");
+        let mut fake = Fake::new(true);
+        fake.rgb = true;
+        let (mut s, id) = led_session(fake, None);
+        s.cfg.lighting_file = Some(dir.join("lighting.json"));
+        let orange = LedEffect { color: 0xFF8000, ..LedEffect::default() };
+
+        // Kept: stored, applied right away (claim, then static effect).
+        command(&mut s, &id, Some(Setting::LedKeep { zone: 0, effect: orange })).unwrap();
+        assert_eq!(crate::lighting::load_kept(&dir.join("lighting.json"))[&id], (0, orange));
+        assert_eq!(s.transport.rgb_sw.last().unwrap(), &[1, 3, 4]);
+        assert_eq!(s.transport.rgb_set.last().unwrap()[..5], [0, 1, 0xFF, 0x80, 0x00]);
+        assert_eq!(s.transport.rgb_set.last().unwrap()[12], 1);
+        let st = command(&mut s, &id, None).unwrap();
+        assert_eq!(st.lighting.unwrap().kept, Some((0, orange)));
+        let applied = s.transport.rgb_set.len();
+
+        // Idle: the firmware fades the LEDs out.
+        s.on_unsolicited(&[0x11, 0x01, 14, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(s.devices[&1].led_event, Some(false));
+        s.service(1).unwrap();
+        assert_eq!(s.transport.rgb_sw.last().unwrap(), &[1, 3, 2]);
+        assert_eq!(s.transport.rgb_power.last().unwrap(), &[1, 3, 0]);
+        assert!(s.devices[&1].keep_sleeping);
+        // A burst of idle events changes nothing more.
+        s.on_unsolicited(&[0x11, 0x01, 14, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        s.service(1).unwrap();
+        assert_eq!(s.transport.rgb_power.len(), 1);
+
+        // Active again: woken and re-applied.
+        s.on_unsolicited(&[0x11, 0x01, 14, 0x10, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        s.service(1).unwrap();
+        assert_eq!(s.transport.rgb_power.last().unwrap(), &[1, 1, 0]);
+        assert_eq!(s.transport.rgb_set.len(), applied + 1);
+        assert!(!s.devices[&1].keep_sleeping && s.devices[&1].keep_active);
+
+        // Reconnection: applied again on the next contact.
+        s.on_unsolicited(&[0x10, 0x01, 0x41, 0x04, 0x42, 0x88, 0x40]);
+        s.on_unsolicited(&[0x10, 0x01, 0x41, 0x04, 0x02, 0x88, 0x40]);
+        s.service(1).unwrap();
+        assert_eq!(s.transport.rgb_set.len(), applied + 2);
+        // Nothing new while nothing happens.
+        s.service(1).unwrap();
+        assert_eq!(s.transport.rgb_set.len(), applied + 2);
+
+        // Forget: removed and the LEDs given back.
+        command(&mut s, &id, Some(Setting::LedForget)).unwrap();
+        assert!(crate::lighting::load_kept(&dir.join("lighting.json")).is_empty());
+        assert_eq!(s.transport.rgb_sw.last().unwrap(), &[1, 0, 0]);
+        s.service(1).unwrap();
+        assert_eq!(s.transport.rgb_set.len(), applied + 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
