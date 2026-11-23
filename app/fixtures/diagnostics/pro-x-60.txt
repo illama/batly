@@ -1,0 +1,12 @@
+Batly 5.1.0-beta.3 – PRO X 60 (Keyboard), id <serial>
+feature 8070: absent
+feature 8071: index 8
+feature 8080: absent
+feature 8081: absent
+feature 8100: absent
+feature 8090: index 9
+zone 0 location 1 effects [0:00 1:01 2:0A 3:15 4:16 5:17]
+rgb info: FF 00 01 00 22 00 04 04 00 00 00 00 00 00 00 00
+nvconfig 0002: 00 00 02 02 00 00 00 00 00 00 00 00 00 00 00 00
+nvconfig 0020: 00 00 20 01 1E 00 00 00 00 00 00 00 00 00 00 00
+save on device: Absent

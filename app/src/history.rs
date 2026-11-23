@@ -271,7 +271,7 @@ pub fn compute(samples: &[Sample], now: u64) -> Stats {
         return st;
     }
     let (discharge, charge, sessions) = segments(samples);
-    let last = *samples.last().unwrap();
+    let Some(&last) = samples.last() else { return st };
 
     // Cycles: every rise of the level adds up.
     st.cycles = samples.windows(2).map(|w| (w[1].percent - w[0].percent).max(0.0) as f64).sum::<f64>() / 100.0;

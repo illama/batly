@@ -14,6 +14,7 @@ workspace = true
 png = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+minisign-verify = "0.3"
 toml = { version = "1.2", default-features = false, features = ["std", "parse", "serde"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 

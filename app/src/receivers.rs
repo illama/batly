@@ -24,21 +24,28 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, GetSysColorBrush, COLOR_BTNFACE, HFONT};
+use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, InvalidateRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
+use windows_sys::Win32::UI::Controls::SetScrollInfo;
 use windows_sys::Win32::UI::Controls::{
     InitCommonControlsEx, SetWindowTheme, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, LVCOLUMNW,
     LVITEMW, LVN_ITEMCHANGED, NMHDR, NMLISTVIEW,
 };
-use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, IsChild, IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, LoadIconW,
     MessageBoxW, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW,
     SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK, IDC_ARROW, IDYES, MB_ICONWARNING, MB_YESNO, MSG,
     NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WH_GETMESSAGE, WM_APP,
     WNDCLASSW,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, GetScrollInfo, MINMAXINFO, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK,
+    SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL, SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXVSCROLL, WM_GETMINMAXINFO, WM_MOUSEWHEEL,
+    WM_SIZE, WM_VSCROLL, WS_THICKFRAME,
 };
 
 const CLASS: &str = "BatlyReceivers";
@@ -151,8 +158,13 @@ const ID_LED_RELEASE: u16 = 122;
 const ID_LED_DIAG: u16 = 123;
 const ID_LED_RESTORE: u16 = 124;
 
-/// Client area in pixels at 96 DPI.
+/// Content in pixels at 96 DPI. The window is never taller than the
+/// work area of its screen: the content then scrolls (scroll bar, wheel).
 const CLIENT: (i32, i32) = (640, 702);
+/// Smallest height the window can be resized to, at 96 DPI.
+const MIN_HEIGHT: i32 = 320;
+/// Window style: resizable in height, with a vertical scroll bar.
+const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_VSCROLL;
 /// List view columns: width at 96 DPI.
 const COLUMNS: [i32; 5] = [196, 56, 128, 130, 88];
 /// SmartShift speed range shown on the slider (Solaar uses the same).
@@ -435,6 +447,8 @@ struct Ui {
     big_font: HFONT,
     /// Every control with its rectangle at 96 DPI.
     layout: Vec<(HWND, [i32; 4])>,
+    /// Scroll position of the content, in physical pixels.
+    scroll: i32,
     c: Controls,
     receivers: Vec<ReceiverInfo>,
     /// Selected receiver id.
@@ -479,6 +493,28 @@ fn scale(v: i32, dpi: u32) -> i32 {
     (v as i64 * dpi as i64 / 96) as i32
 }
 
+/// Window width, and height showing all the content, at `dpi`.
+fn window_size(dpi: u32) -> (i32, i32) {
+    let mut r = RECT { left: 0, top: 0, right: scale(CLIENT.0, dpi), bottom: scale(CLIENT.1, dpi) };
+    // SAFETY: valid RECT; plain metrics query.
+    unsafe {
+        AdjustWindowRectExForDpi(&mut r, STYLE, 0, WS_EX_CONTROLPARENT, dpi);
+        r.right += GetSystemMetricsForDpi(SM_CXVSCROLL, dpi);
+    }
+    (r.right - r.left, r.bottom - r.top)
+}
+
+/// Work area (screen without the taskbar) of the window's monitor.
+fn work_area(hwnd: HWND) -> Option<RECT> {
+    // SAFETY: valid MONITORINFO with its size set.
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = zeroed();
+        info.cbSize = size_of::<MONITORINFO>() as u32;
+        (GetMonitorInfoW(monitor, &mut info) != 0).then_some(info.rcWork)
+    }
+}
+
 /// Opens the window, or brings it to the front if it is already open.
 /// Must be called on the UI thread (the one running the message loop).
 pub fn open(native: &Native) {
@@ -514,7 +550,7 @@ pub fn open(native: &Native) {
         // Fails harmlessly when the class is already registered.
         RegisterClassW(&class);
 
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        let style = STYLE;
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             class_name.as_ptr(),
@@ -542,6 +578,7 @@ pub fn open(native: &Native) {
             font,
             big_font,
             layout,
+            scroll: 0,
             c,
             receivers: Vec::new(),
             receiver: None,
@@ -570,6 +607,7 @@ pub fn open(native: &Native) {
         ui.request_list();
         UI.with(|cell| *cell.borrow_mut() = Some(ui));
 
+        crate::theme::apply(hwnd);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         with_ui(|ui| SetFocus(ui.c.list));
@@ -753,8 +791,8 @@ impl Ui {
         }
         // SAFETY: child windows of our window; RECT pointers are valid.
         unsafe {
-            for &(h, [x, y, w, hgt]) in &self.layout {
-                SetWindowPos(h, null_mut(), scale(x, dpi), scale(y, dpi), scale(w, dpi), scale(hgt, dpi), SWP_NOZORDER | SWP_NOACTIVATE);
+            self.place();
+            for &(h, _) in &self.layout {
                 let font = if h == self.c.pair_code { self.big_font } else { self.font };
                 SendMessageW(h, WM_SETFONT, font as WPARAM, 1);
             }
@@ -766,20 +804,106 @@ impl Ui {
                     SetWindowPos(self.hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
                 }
                 None => {
-                    let mut r = RECT { left: 0, top: 0, right: scale(CLIENT.0, dpi), bottom: scale(CLIENT.1, dpi) };
-                    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-                    AdjustWindowRectExForDpi(&mut r, style, 0, WS_EX_CONTROLPARENT, dpi);
-                    SetWindowPos(
-                        self.hwnd,
-                        null_mut(),
-                        0,
-                        0,
-                        r.right - r.left,
-                        r.bottom - r.top,
-                        SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE,
-                    );
+                    let (w, full) = window_size(dpi);
+                    let h = full.min(work_area(self.hwnd).map_or(full, |r| r.bottom - r.top));
+                    SetWindowPos(self.hwnd, null_mut(), 0, 0, w, h, SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
                 }
             }
+        }
+        self.update_scroll();
+    }
+
+    /// Moves every control to its place, shifted by the scroll position.
+    fn place(&self) {
+        let dpi = self.dpi;
+        // SAFETY: child windows of our window.
+        unsafe {
+            for &(h, [x, y, w, hgt]) in &self.layout {
+                SetWindowPos(
+                    h,
+                    null_mut(),
+                    scale(x, dpi),
+                    scale(y, dpi) - self.scroll,
+                    scale(w, dpi),
+                    scale(hgt, dpi),
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+
+    /// Scroll range after a resize; keeps the position within it.
+    fn update_scroll(&mut self) {
+        let mut client: RECT = unsafe { zeroed() };
+        // SAFETY: our window, valid RECT.
+        unsafe { GetClientRect(self.hwnd, &mut client) };
+        let page = client.bottom - client.top;
+        let content = scale(CLIENT.1, self.dpi);
+        let pos = self.scroll.clamp(0, (content - page).max(0));
+        let moved = pos != self.scroll;
+        self.scroll = pos;
+        let info = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            // Always shown (greyed when everything fits): the width stays put.
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL,
+            nMin: 0,
+            nMax: content - 1,
+            nPage: page.max(0) as u32,
+            nPos: pos,
+            nTrackPos: 0,
+        };
+        // SAFETY: valid SCROLLINFO.
+        unsafe { SetScrollInfo(self.hwnd, SB_VERT, &info, 1) };
+        if moved {
+            self.place();
+            // SAFETY: plain call.
+            unsafe { InvalidateRect(self.hwnd, null(), 1) };
+        }
+    }
+
+    /// Scrolls the content to `pos` (physical pixels).
+    fn scroll_to(&mut self, pos: i32) {
+        let before = self.scroll;
+        self.scroll = pos;
+        self.update_scroll();
+        if self.scroll != before {
+            self.place();
+            // SAFETY: plain call.
+            unsafe { InvalidateRect(self.hwnd, null(), 1) };
+        }
+    }
+
+    fn on_vscroll(&mut self, request: i32) {
+        let mut info = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..unsafe { zeroed() } };
+        // SAFETY: valid SCROLLINFO.
+        unsafe { GetScrollInfo(self.hwnd, SB_VERT, &mut info) };
+        let line = scale(40, self.dpi);
+        let page = info.nPage as i32;
+        let pos = match request {
+            SB_LINEUP => self.scroll - line,
+            SB_LINEDOWN => self.scroll + line,
+            SB_PAGEUP => self.scroll - page,
+            SB_PAGEDOWN => self.scroll + page,
+            SB_THUMBTRACK | SB_THUMBPOSITION => info.nTrackPos,
+            SB_TOP => 0,
+            SB_BOTTOM => i32::MAX / 2,
+            _ => return,
+        };
+        self.scroll_to(pos);
+    }
+
+    /// Brings a control that got the keyboard focus into view.
+    fn reveal(&mut self, focus: HWND) {
+        let Some(&(_, [_, y, _, h])) = self.layout.iter().find(|(c, _)| *c == focus) else { return };
+        let mut client: RECT = unsafe { zeroed() };
+        // SAFETY: our window, valid RECT.
+        unsafe { GetClientRect(self.hwnd, &mut client) };
+        let (top, bottom) = (scale(y, self.dpi), scale(y + h, self.dpi));
+        let margin = scale(8, self.dpi);
+        if top - margin < self.scroll {
+            self.scroll_to(top - margin);
+        } else if bottom + margin > self.scroll + client.bottom {
+            self.scroll_to(bottom + margin - client.bottom);
         }
     }
 
@@ -1261,7 +1385,12 @@ impl Ui {
                 current.backlight.as_ref().is_some_and(|b| b.mode == mode && (mode != BacklightMode::Manual || b.level == level))
             }
             Setting::SmartShift(m) => current.smart_shift == Some(m),
-            Setting::Led { .. } | Setting::LedRelease | Setting::LedRestore | Setting::LedKeep { .. } | Setting::LedForget => false,
+            Setting::Led { .. }
+            | Setting::LedRelease
+            | Setting::LedRestore
+            | Setting::LedKeep { .. }
+            | Setting::LedForget
+            | Setting::Host(_) => false,
         };
         if unchanged {
             return;
@@ -1448,6 +1577,8 @@ unsafe extern "system" fn dialog_keys(code: i32, wparam: WPARAM, lparam: LPARAM)
             msg.message = WM_NULL;
             msg.wParam = 0;
             msg.lParam = 0;
+            // Tab may have moved the focus to a control out of view.
+            with_ui(|ui| ui.reveal(GetFocus()));
         }
     }
     CallNextHookEx(null_mut(), code, wparam, lparam)
@@ -1468,6 +1599,10 @@ unsafe fn repost(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESUL
 /// WM_NOTIFY / WM_DPICHANGED `lparam` pointers are valid for the call and
 /// WM_APP_* payloads come from `post` with the matching type.
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Theme: background, labels, group boxes, light/dark switch.
+    if let Some(r) = crate::theme::on_message(hwnd, msg, wparam, lparam) {
+        return r;
+    }
     let busy = || UI.with(|cell| cell.try_borrow_mut().is_err());
     match msg {
         WM_COMMAND => {
@@ -1571,6 +1706,30 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     with_ui(|ui| ui.on_select());
                 }
             }
+            0
+        }
+        WM_VSCROLL => {
+            with_ui(|ui| ui.on_vscroll((wparam & 0xFFFF) as i32));
+            0
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+            with_ui(|ui| ui.scroll_to(ui.scroll - delta * scale(48, ui.dpi) / 120));
+            0
+        }
+        WM_SIZE => {
+            with_ui(Ui::update_scroll);
+            0
+        }
+        WM_GETMINMAXINFO => {
+            // Fixed width; from MIN_HEIGHT to the full content.
+            let dpi = GetDpiForWindow(hwnd).max(96);
+            let (w, full) = window_size(dpi);
+            let mmi = &mut *(lparam as *mut MINMAXINFO);
+            mmi.ptMinTrackSize.x = w;
+            mmi.ptMaxTrackSize.x = w;
+            mmi.ptMinTrackSize.y = scale(MIN_HEIGHT, dpi).min(full);
+            mmi.ptMaxTrackSize.y = full;
             0
         }
         WM_HSCROLL => {

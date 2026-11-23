@@ -35,6 +35,33 @@ Une signature Authenticode :
 Sans les secrets, les étapes 2, 4 et le contrôle de signature sont sautées : la release est
 produite non signée, comme aujourd'hui.
 
+## Signature des mises à jour (minisign) — toujours active
+
+Indépendamment d'Authenticode, la liste `SHA256SUMS.txt` de chaque version est signée avec
+[minisign](https://jedisct1.github.io/minisign/) (`SHA256SUMS.txt.minisig`). Batly embarque la
+clé publique (`packaging/batly-minisign.pub`, constante `PUBLIC_KEY` de `app/src/update.rs`) et
+**refuse d'installer** une mise à jour dont la liste n'est pas signée par cette clé. Prendre la
+main sur le compte GitHub ou remplacer les fichiers d'une release ne suffit donc plus à
+pousser un exécutable aux utilisateurs.
+
+- La clé secrète n'est **jamais** dans le dépôt : elle est dans le secret GitHub
+  `MINISIGN_SECRET_KEY` (contenu complet du fichier `.key`, sans mot de passe) et chez le
+  mainteneur. Sans ce secret, le workflow de release **échoue** au lieu de publier une version
+  que la mise à jour automatique refuserait.
+- Vérifier une version à la main :
+  ```sh
+  minisign -Vm SHA256SUMS.txt -p packaging/batly-minisign.pub
+  sha256sum --check SHA256SUMS.txt
+  ```
+- Chaque fichier publié a aussi une **attestation de provenance** GitHub (il sort bien du
+  workflow de ce dépôt, à ce commit) :
+  ```sh
+  gh attestation verify Batly-Setup-<version>.exe --repo illama/batly
+  ```
+- Changer de clé : générer une nouvelle paire (`minisign -G -W`), publier d'abord une version
+  signée par l'**ancienne** clé qui embarque la nouvelle clé publique, puis seulement remplacer
+  le secret.
+
 ## SignPath Foundation (gratuit pour l'open source)
 
 [SignPath Foundation](https://signpath.org) fournit gratuitement un certificat de signature

@@ -516,6 +516,60 @@ fn array(items: &[String]) -> String {
 
 /// Settings live next to the executable when a file is already there
 /// (portable mode), otherwise in `%APPDATA%\Batly`.
+/// Choices of the welcome window (first launch), read from and written
+/// to the settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Welcome {
+    pub logitech: bool,
+    pub ghub: bool,
+    pub bluetooth: bool,
+    pub gamepads: bool,
+    /// Razer, Corsair and SteelSeries.
+    pub other_brands: bool,
+    pub single_icon: bool,
+    /// Low battery and "recharge soon" alerts.
+    pub low_alerts: bool,
+    /// Tell when a charging device reaches 80 %.
+    pub charge_limit: bool,
+}
+
+impl Welcome {
+    pub fn from_config(cfg: &Config) -> Self {
+        Self {
+            logitech: cfg.native.enabled,
+            ghub: cfg.ghub.enabled,
+            bluetooth: cfg.other.bluetooth,
+            gamepads: cfg.other.gamepads,
+            other_brands: cfg.other.razer || cfg.other.corsair || cfg.other.steelseries,
+            single_icon: cfg.ui.single_icon,
+            low_alerts: cfg.ui.low_battery_threshold > 0 || cfg.alerts.predictive,
+            charge_limit: cfg.alerts.charge_limit > 0,
+        }
+    }
+
+    pub fn apply(&self, cfg: &mut Config) {
+        cfg.native.enabled = self.logitech;
+        cfg.ghub.enabled = self.ghub;
+        cfg.other.bluetooth = self.bluetooth;
+        cfg.other.gamepads = self.gamepads;
+        cfg.other.razer = self.other_brands;
+        cfg.other.corsair = self.other_brands;
+        cfg.other.steelseries = self.other_brands;
+        cfg.ui.single_icon = self.single_icon;
+        let defaults = Config::default();
+        if self.low_alerts {
+            if cfg.ui.low_battery_threshold == 0 {
+                cfg.ui.low_battery_threshold = defaults.ui.low_battery_threshold;
+            }
+            cfg.alerts.predictive = true;
+        } else {
+            cfg.ui.low_battery_threshold = 0;
+            cfg.alerts.predictive = false;
+        }
+        cfg.alerts.charge_limit = if self.charge_limit { 80 } else { 0 };
+    }
+}
+
 pub fn locate(exe_dir: &Path, appdata: Option<PathBuf>) -> PathBuf {
     let portable = exe_dir.join(FILE_NAME);
     match appdata {
@@ -601,5 +655,24 @@ mod tests {
         assert_eq!(locate(path.parent().unwrap(), Some(dir.clone())), path);
         assert_eq!(locate(&dir, Some(dir.clone())), dir.join("Batly").join(FILE_NAME));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn welcome_choices() {
+        let mut cfg = Config::default();
+        let w = Welcome::from_config(&cfg);
+        assert!(w.logitech && w.low_alerts && !w.charge_limit && !w.single_icon);
+        // Applying what was read changes nothing.
+        w.apply(&mut cfg);
+        assert_eq!(cfg, Config::default());
+
+        let quiet = Welcome { ghub: false, other_brands: false, low_alerts: false, charge_limit: true, single_icon: true, ..w };
+        quiet.apply(&mut cfg);
+        assert_eq!((cfg.ui.low_battery_threshold, cfg.alerts.predictive, cfg.alerts.charge_limit), (0, false, 80));
+        assert!(cfg.ui.single_icon && !cfg.ghub.enabled && !cfg.other.razer && !cfg.other.corsair && !cfg.other.steelseries);
+        assert_eq!(Welcome::from_config(&cfg), quiet);
+        // Alerts back on: the default threshold comes back.
+        Welcome { low_alerts: true, ..quiet }.apply(&mut cfg);
+        assert_eq!((cfg.ui.low_battery_threshold, cfg.alerts.predictive), (Config::default().ui.low_battery_threshold, true));
     }
 }

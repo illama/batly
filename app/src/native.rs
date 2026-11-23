@@ -352,11 +352,9 @@ impl Transport for WinTransport {
         if signalled >= count {
             return Err(io::Error::last_os_error());
         }
-        let channel = [&mut self.short, &mut self.long]
-            .into_iter()
-            .flatten()
-            .find(|c| c.event.0 == handles[signalled])
-            .expect("signalled handle belongs to a channel");
+        let Some(channel) = [&mut self.short, &mut self.long].into_iter().flatten().find(|c| c.event.0 == handles[signalled]) else {
+            return Err(io::Error::other("signalled handle of no channel"));
+        };
         Ok(match channel.finish()? {
             Some(report) => Incoming::Report(report),
             None => Incoming::Timeout,
@@ -554,6 +552,21 @@ impl Native {
         let (reply, rx) = mpsc::channel();
         let _ = self.requests.send(Request::ToDevice(device_id.into(), Command::Diagnose { device: device_id.into(), reply }));
         rx
+    }
+
+    /// Blocking setter for the HTTP API (`POST /api/device/{id}/settings`):
+    /// waits for the device's answer, at most `timeout`.
+    pub fn controller(&self, timeout: Duration) -> crate::http::Control {
+        let requests = self.requests.clone();
+        Box::new(move |device_id: &str, setting: Setting| {
+            let (reply, rx) = mpsc::channel();
+            let command = Command::SetSetting { device: device_id.into(), setting, reply };
+            let _ = requests.send(Request::ToDevice(device_id.into(), command));
+            match rx.recv_timeout(timeout) {
+                Ok(result) => result.map(drop),
+                Err(_) => Err(ActionError::Failed),
+            }
+        })
     }
 
     /// Writes one setting (explicit user action), then answers with the

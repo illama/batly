@@ -8,11 +8,18 @@
 //! * `GET /api/events`              – Server-Sent Events: `device` on every change, `: ping` every 25 s
 //! * `GET /api/history/{id}?days=N` – readings and statistics (JSON)
 //! * `GET /metrics`                 – Prometheus text format
+//! * `POST /api/device/{id}/settings` – changes a Logitech device of this
+//!   computer (JSON body, see [`parse_settings`]): DPI, report rate,
+//!   backlight, SmartShift, lighting, Easy-Switch channel
 //!
 //! `?local=1` leaves out the devices of other Batly instances: peers use
 //! it so that two instances merging each other do not loop. When a token is
 //! set, requests that do not come from this computer need `?token=` or
 //! `Authorization: Bearer`.
+//!
+//! Changes (`POST`) always need the token, sent as `Authorization: Bearer`:
+//! without a token set, the API stays read-only. This also keeps a website
+//! from changing a device through a form posted to localhost.
 //!
 //! Web pages: only pages served from this computer (`localhost`, loopback
 //! addresses) get the CORS header, so an ordinary website opened in the
@@ -25,8 +32,10 @@
 //! listen on every interface.
 
 use crate::config;
+use crate::hidpp::{ActionError, BacklightMode, Setting, WheelMode};
 use crate::history::{self, History, Sample, Stats};
 use crate::i18n::{self, tr};
+use crate::lighting::{EffectKind, LedEffect};
 use crate::log;
 use crate::model::{Device, DeviceKind, Hub, Source, Status};
 use serde_json::{json, Value};
@@ -48,6 +57,12 @@ const PING: Duration = Duration::from_secs(25);
 /// Display name of a device (its alias), from its id and reported name.
 pub type DisplayName = Box<dyn Fn(&str, &str) -> String + Send + Sync>;
 
+/// Applies a setting to a Logitech device of this computer (blocking).
+pub type Control = Box<dyn Fn(&str, Setting) -> Result<(), ActionError> + Send + Sync>;
+
+/// Largest request body read (`POST`).
+const MAX_BODY: usize = 8192;
+
 /// Everything the server (and the integrations built on its JSON) needs.
 pub struct Context {
     pub hub: Arc<Hub>,
@@ -58,11 +73,20 @@ pub struct Context {
     pub instance: String,
     /// Computer name, announced to peers.
     pub host: String,
+    /// Set once the Logitech support has started (`POST` requests).
+    pub control: std::sync::OnceLock<Control>,
 }
 
 impl Context {
     pub fn new(hub: Arc<Hub>, history: Arc<History>) -> Self {
-        Self { hub, history, display_name: Box::new(|_, name| name.to_string()), instance: new_instance_id(), host: hostname() }
+        Self {
+            hub,
+            history,
+            display_name: Box::new(|_, name| name.to_string()),
+            instance: new_instance_id(),
+            host: hostname(),
+            control: Default::default(),
+        }
     }
 
     pub fn with_names(mut self, f: impl Fn(&str, &str) -> String + Send + Sync + 'static) -> Self {
@@ -188,8 +212,9 @@ fn handle(stream: TcpStream, ctx: &Context, token: &str, me: &str, streams: &Arc
     let mut reader = BufReader::with_capacity(2048, &stream);
     let mut request_line = String::new();
     reader.by_ref().take(4096).read_line(&mut request_line)?;
-    // Read (and drain) the headers; only Authorization, Host and Origin matter.
-    let (mut auth, mut host, mut origin) = (None, None, None);
+    // Read (and drain) the headers; only Authorization, Host, Origin and
+    // Content-Length matter.
+    let (mut auth, mut host, mut origin, mut length) = (None, None, None, 0usize);
     let mut line = String::new();
     for _ in 0..100 {
         line.clear();
@@ -204,6 +229,8 @@ fn handle(stream: TcpStream, ctx: &Context, token: &str, me: &str, streams: &Arc
                 host = value;
             } else if name.eq_ignore_ascii_case("origin") {
                 origin = value;
+            } else if name.eq_ignore_ascii_case("content-length") {
+                length = value.and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
             }
         }
     }
@@ -212,7 +239,23 @@ fn handle(stream: TcpStream, ctx: &Context, token: &str, me: &str, streams: &Arc
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     let loopback = stream.peer_addr().is_ok_and(|a| is_loopback(a.ip()));
     let host_ok = host_allowed(host.as_deref(), me);
-    let req = Request { method, target, authorized: authorized(token, loopback, host_ok, target, auth.as_deref()) };
+    let mut body = String::new();
+    if method == "POST" {
+        if length > MAX_BODY {
+            let mut out = &stream;
+            return out.write_all(&Response::new(413, "text/plain", "Request too large.".into()).to_bytes(false, None));
+        }
+        let mut raw = vec![0; length];
+        reader.read_exact(&mut raw)?;
+        body = String::from_utf8_lossy(&raw).into_owned();
+    }
+    let req = Request {
+        method,
+        target,
+        authorized: authorized(token, loopback, host_ok, target, auth.as_deref()),
+        body: &body,
+        can_write: can_write(token, auth.as_deref()),
+    };
     let cors = origin.as_deref().filter(|o| origin_allowed(o));
     let mut out = &stream;
     if method == "GET" && req.authorized && split_target(target).0 == "/api/events" {
@@ -242,6 +285,12 @@ pub fn authorized(token: &str, loopback: bool, host_ok: bool, target: &str, auth
         return true;
     }
     (token.is_empty() || loopback) && host_ok
+}
+
+/// Changes need the token, as a bearer only: a link or a form cannot
+/// carry it, and without a token set the API is read-only.
+pub fn can_write(token: &str, authorization: Option<&str>) -> bool {
+    !token.is_empty() && token_given(token, "", authorization)
 }
 
 fn token_given(token: &str, target: &str, authorization: Option<&str>) -> bool {
@@ -294,7 +343,10 @@ pub fn origin_allowed(origin: &str) -> bool {
 
 fn cors_headers(origin: Option<&str>) -> String {
     match origin {
-        Some(o) => format!("Access-Control-Allow-Origin: {o}\r\nAccess-Control-Allow-Headers: Authorization\r\nVary: Origin\r\n"),
+        Some(o) => format!(
+            "Access-Control-Allow-Origin: {o}\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\n\
+             Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nVary: Origin\r\n"
+        ),
         None => "Vary: Origin\r\n".into(),
     }
 }
@@ -312,6 +364,10 @@ pub struct Request<'a> {
     pub method: &'a str,
     pub target: &'a str,
     pub authorized: bool,
+    /// Body of a `POST`.
+    pub body: &'a str,
+    /// The bearer token was given (see [`can_write`]).
+    pub can_write: bool,
 }
 
 pub struct Response {
@@ -329,9 +385,15 @@ impl Response {
         let reason = match self.status {
             200 => "OK",
             204 => "No Content",
+            400 => "Bad Request",
             401 => "Unauthorized",
+            403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
+            409 => "Conflict",
+            413 => "Content Too Large",
+            422 => "Unprocessable Content",
+            502 => "Bad Gateway",
             503 => "Service Unavailable",
             _ => "Error",
         };
@@ -378,6 +440,7 @@ pub fn respond(req: &Request, ctx: &Context) -> Response {
     match req.method {
         "GET" | "HEAD" => {}
         "OPTIONS" => return Response::new(204, "text/plain", String::new()),
+        "POST" => return post(req, ctx),
         _ => return Response::new(405, "text/plain", "Method not allowed.".into()),
     }
     if !req.authorized {
@@ -420,6 +483,171 @@ pub fn respond(req: &Request, ctx: &Context) -> Response {
             Response::new(404, "text/plain", "Not found.".into())
         }
     }
+}
+
+fn json_error(status: u16, message: &str) -> Response {
+    Response::new(status, "application/json", json!({ "ok": false, "error": message }).to_string())
+}
+
+/// `POST /api/device/{id}/settings`.
+fn post(req: &Request, ctx: &Context) -> Response {
+    if !req.can_write {
+        return json_error(
+            403,
+            "Changes need the API token as \"Authorization: Bearer <token>\"; set a token in Settings > Network to allow them.",
+        );
+    }
+    let (path, _) = split_target(req.target);
+    let Some(key) = path.strip_prefix("/api/device/").and_then(|rest| rest.strip_suffix("/settings")) else {
+        return json_error(404, "Not found: POST /api/device/{id}/settings");
+    };
+    let key = percent_decode(key);
+    let Some(device) = ctx.hub.find(&key) else { return json_error(404, &format!("{key} not found.")) };
+    if device.source != Source::Native {
+        return json_error(409, "Only the Logitech devices of this computer can be changed.");
+    }
+    let settings = match parse_settings(req.body) {
+        Ok(s) => s,
+        Err(e) => return json_error(400, &e),
+    };
+    let Some(control) = ctx.control.get() else { return json_error(503, "The Logitech support is turned off.") };
+    let mut applied = 0;
+    for setting in settings {
+        if let Err(e) = control(&device.id, setting) {
+            let (status, message) = action_error(e);
+            return Response::new(status, "application/json", json!({ "ok": false, "error": message, "applied": applied }).to_string());
+        }
+        applied += 1;
+    }
+    Response::new(200, "application/json", json!({ "ok": true, "applied": applied }).to_string())
+}
+
+fn action_error(e: ActionError) -> (u16, &'static str) {
+    match e {
+        ActionError::NotSupported => (422, "Not supported by this device."),
+        ActionError::Offline => (409, "The device is not connected."),
+        ActionError::Busy => (409, "A pairing is in progress."),
+        ActionError::Failed => (502, "The device did not accept the change."),
+        ActionError::Onboard(_) => (422, "The lighting cannot be saved in this device's memory (use \"keep\")."),
+        ActionError::Backup => (500, "The onboard memory could not be backed up: nothing was written."),
+        ActionError::Verify => (502, "The onboard memory did not read back as written: the previous content was put back."),
+        ActionError::NoBackup => (409, "No backup to restore from."),
+    }
+}
+
+/// Reads the body of `POST /api/device/{id}/settings`: a JSON object with
+/// any of these fields, applied in this order:
+///
+/// ```json
+/// { "dpi": 1600,
+///   "report_rate": 1000,
+///   "backlight": "off" | "on" | "auto" | 0..n,
+///   "smart_shift": "free" | "ratchet" | 1..254,
+///   "lighting": { "action": "preview" | "save" | "keep" | "release" | "restore" | "forget",
+///                 "zone": 0, "effect": "off" | "static" | "breathe" | "cycle",
+///                 "color": "#RRGGBB", "period_ms": 4000, "intensity": 100 },
+///   "host": 1..3 }
+/// ```
+///
+/// `report_rate` is in Hz (125 to 1000); a number as `backlight` sets that
+/// level; `host` (the Easy-Switch channel) comes last since the device
+/// then leaves this computer.
+pub fn parse_settings(body: &str) -> Result<Vec<Setting>, String> {
+    const KNOWN: [&str; 6] = ["dpi", "report_rate", "backlight", "smart_shift", "lighting", "host"];
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let Some(obj) = v.as_object() else { return Err("Expected a JSON object.".into()) };
+    if let Some(unknown) = obj.keys().find(|k| !KNOWN.contains(&k.as_str())) {
+        return Err(format!("Unknown field \"{unknown}\" (known: {}).", KNOWN.join(", ")));
+    }
+    let mut out = Vec::new();
+    if let Some(dpi) = whole(obj, "dpi", "", 50, 64_000)? {
+        out.push(Setting::Dpi(dpi as u16));
+    }
+    if let Some(hz) = whole(obj, "report_rate", "", 125, 1000)? {
+        if 1000 % hz != 0 || !(1..=8).contains(&(1000 / hz)) {
+            return Err("\"report_rate\" must be 125, 250, 500 or 1000 (Hz), or 1000 divided by 1 to 8.".into());
+        }
+        out.push(Setting::ReportRate((1000 / hz) as u8));
+    }
+    if let Some(b) = obj.get("backlight") {
+        let (mode, level) = match (b.as_str(), b.as_u64()) {
+            (Some("off"), _) => (BacklightMode::Off, 0),
+            (Some("on"), _) => (BacklightMode::On, 0),
+            (Some("auto"), _) => (BacklightMode::Auto, 0),
+            (_, Some(level)) if level <= 255 => (BacklightMode::Manual, level as u8),
+            _ => return Err("\"backlight\" must be \"off\", \"on\", \"auto\" or a level.".into()),
+        };
+        out.push(Setting::Backlight { mode, level });
+    }
+    if let Some(w) = obj.get("smart_shift") {
+        out.push(Setting::SmartShift(match (w.as_str(), w.as_u64()) {
+            (Some("free"), _) => WheelMode::FreeSpin,
+            (Some("ratchet"), _) => WheelMode::Ratchet,
+            (_, Some(n)) if (1..=254).contains(&n) => WheelMode::Smart(n as u8),
+            _ => return Err("\"smart_shift\" must be \"free\", \"ratchet\" or a speed from 1 to 254.".into()),
+        }));
+    }
+    if let Some(l) = obj.get("lighting") {
+        out.push(parse_lighting(l)?);
+    }
+    if let Some(host) = whole(obj, "host", "", 1, 3)? {
+        out.push(Setting::Host(host as u8));
+    }
+    if out.is_empty() {
+        return Err("Nothing to change.".into());
+    }
+    Ok(out)
+}
+
+/// Optional whole number field `name` within `min..=max`.
+fn whole(obj: &serde_json::Map<String, Value>, name: &str, prefix: &str, min: u64, max: u64) -> Result<Option<u64>, String> {
+    match obj.get(name) {
+        None => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (min..=max).contains(n))
+            .map(Some)
+            .ok_or_else(|| format!("\"{prefix}{name}\" must be a whole number from {min} to {max}.")),
+    }
+}
+
+fn parse_lighting(l: &Value) -> Result<Setting, String> {
+    let Some(obj) = l.as_object() else { return Err("\"lighting\" must be an object.".into()) };
+    let text = |name: &str| obj.get(name).and_then(Value::as_str);
+    let action = text("action").unwrap_or("preview");
+    match action {
+        "release" => return Ok(Setting::LedRelease),
+        "restore" => return Ok(Setting::LedRestore),
+        "forget" => return Ok(Setting::LedForget),
+        "preview" | "save" | "keep" => {}
+        _ => return Err("\"lighting.action\" must be preview, save, keep, release, restore or forget.".into()),
+    }
+    let kind = match text("effect").unwrap_or("static") {
+        "off" => EffectKind::Off,
+        "static" => EffectKind::Static,
+        "breathe" => EffectKind::Breathe,
+        "cycle" => EffectKind::Cycle,
+        _ => return Err("\"lighting.effect\" must be off, static, breathe or cycle.".into()),
+    };
+    let mut effect = LedEffect { kind, ..LedEffect::default() };
+    if let Some(c) = text("color") {
+        let hex = c.trim().trim_start_matches('#');
+        effect.color = match u32::from_str_radix(hex, 16) {
+            Ok(rgb) if hex.len() == 6 => rgb,
+            _ => return Err("\"lighting.color\" must look like \"#FF8800\".".into()),
+        };
+    }
+    if let Some(ms) = whole(obj, "period_ms", "lighting.", 1000, 20_000)? {
+        effect.period_ms = ms as u16;
+    }
+    if let Some(i) = whole(obj, "intensity", "lighting.", 1, 100)? {
+        effect.intensity = i as u8;
+    }
+    let zone = whole(obj, "zone", "lighting.", 0, 15)?.unwrap_or(0) as u8;
+    Ok(match action {
+        "keep" => Setting::LedKeep { zone, effect },
+        mode => Setting::Led { zone, effect, save: mode == "save" },
+    })
 }
 
 fn found(ctx: &Context, key: &str, f: impl FnOnce(Device) -> Response) -> Response {
@@ -1082,7 +1310,7 @@ mod tests {
     }
 
     fn get(ctx: &Context, target: &str) -> Response {
-        respond(&Request { method: "GET", target, authorized: true }, ctx)
+        respond(&Request { method: "GET", target, authorized: true, body: "", can_write: false }, ctx)
     }
 
     #[test]
@@ -1107,8 +1335,11 @@ mod tests {
         assert_eq!(get(&ctx, "/device/G%20%3CPro%3E%20%26%20Co").status, 200);
         assert_eq!(get(&ctx, "/device/nope").status, 404);
         assert_eq!(get(&ctx, "/nothing").status, 404);
-        assert_eq!(respond(&Request { method: "POST", target: "/", authorized: true }, &ctx).status, 405);
-        assert_eq!(respond(&Request { method: "OPTIONS", target: "/api/devices", authorized: false }, &ctx).status, 204);
+        assert_eq!(respond(&Request { method: "PUT", target: "/", authorized: true, body: "", can_write: false }, &ctx).status, 405);
+        assert_eq!(
+            respond(&Request { method: "OPTIONS", target: "/api/devices", authorized: false, body: "", can_write: false }, &ctx).status,
+            204
+        );
 
         let r = get(&ctx, "/api/devices/");
         let v: Value = serde_json::from_str(&r.body).unwrap();
@@ -1153,6 +1384,106 @@ mod tests {
         let ev = get(&ctx, "/api/events?local=1").body;
         assert!(ev.contains("event: hello") && ev.contains("ABC123") && !ev.contains("peer:pc:X") && ev.contains("event: synced"));
         assert!(get(&ctx, "/").body.contains("Ma souris"));
+    }
+
+    fn post_t(ctx: &Context, target: &str, body: &str, can_write: bool) -> Response {
+        respond(&Request { method: "POST", target, authorized: true, body, can_write }, ctx)
+    }
+
+    #[test]
+    fn settings_body() {
+        let s = parse_settings(r##"{"host": 2, "dpi": 1600, "report_rate": 500, "backlight": 3, "smart_shift": "free"}"##).unwrap();
+        assert_eq!(
+            s,
+            vec![
+                Setting::Dpi(1600),
+                Setting::ReportRate(2),
+                Setting::Backlight { mode: BacklightMode::Manual, level: 3 },
+                Setting::SmartShift(WheelMode::FreeSpin),
+                // Easy-Switch always last.
+                Setting::Host(2),
+            ]
+        );
+        assert_eq!(parse_settings(r#"{"backlight": "auto", "smart_shift": 20}"#).unwrap()[1], Setting::SmartShift(WheelMode::Smart(20)));
+        let red = LedEffect { kind: EffectKind::Breathe, color: 0xFF0000, period_ms: 3000, intensity: 50 };
+        assert_eq!(
+            parse_settings(
+                r##"{"lighting": {"action": "save", "effect": "breathe", "color": "#ff0000", "period_ms": 3000, "intensity": 50}}"##
+            ),
+            Ok(vec![Setting::Led { zone: 0, effect: red, save: true }])
+        );
+        assert_eq!(
+            parse_settings(r##"{"lighting": {"color": "00FF00"}}"##),
+            Ok(vec![Setting::Led { zone: 0, effect: LedEffect { color: 0x00FF00, ..LedEffect::default() }, save: false }])
+        );
+        assert!(matches!(parse_settings(r#"{"lighting": {"action": "keep", "zone": 1}}"#).unwrap()[0], Setting::LedKeep { zone: 1, .. }));
+        assert_eq!(parse_settings(r#"{"lighting": {"action": "release"}}"#), Ok(vec![Setting::LedRelease]));
+        for bad in [
+            "",
+            "[]",
+            "{}",
+            r#"{"dpi": "1600"}"#,
+            r#"{"dpi": 10}"#,
+            r#"{"report_rate": 300}"#,
+            r#"{"backlight": "max"}"#,
+            r#"{"smart_shift": 0}"#,
+            r#"{"host": 4}"#,
+            r#"{"lighting": {"effect": "rainbow"}}"#,
+            r##"{"lighting": {"color": "#F00"}}"##,
+            r#"{"lighting": {"action": "flash"}}"#,
+            r#"{"lighting": {"period_ms": 50}}"#,
+            r#"{"delete": true}"#,
+        ] {
+            assert!(parse_settings(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn changes_need_the_bearer_token() {
+        let ctx = ctx_of(hub());
+        let target = "/api/device/ABC123/settings";
+        // No token: read-only, whatever the address.
+        let r = post_t(&ctx, target, r#"{"dpi": 800}"#, false);
+        assert_eq!(r.status, 403);
+        assert!(r.body.contains("Bearer"));
+        // Token given but the Logitech support is off.
+        assert_eq!(post_t(&ctx, target, r#"{"dpi": 800}"#, true).status, 503);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let _ = ctx.control.set(Box::new(move |id, setting| {
+            log.lock().unwrap().push((id.to_string(), setting));
+            match setting {
+                Setting::Host(_) => Err(ActionError::NotSupported),
+                _ => Ok(()),
+            }
+        }));
+        let r = post_t(&ctx, "/api/device/G%20%3CPro%3E%20%26%20Co/settings", r#"{"dpi": 800, "report_rate": 1000}"#, true);
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(serde_json::from_str::<Value>(&r.body).unwrap()["applied"], 2);
+        assert_eq!(seen.lock().unwrap()[..], [("ABC123".to_string(), Setting::Dpi(800)), ("ABC123".to_string(), Setting::ReportRate(1))]);
+
+        let r = post_t(&ctx, target, r#"{"dpi": 900, "host": 2}"#, true);
+        assert_eq!(r.status, 422);
+        assert_eq!(serde_json::from_str::<Value>(&r.body).unwrap()["applied"], 1);
+        assert_eq!(post_t(&ctx, target, "{oops", true).status, 400);
+        assert_eq!(post_t(&ctx, "/api/device/nope/settings", r#"{"dpi": 800}"#, true).status, 404);
+        assert_eq!(post_t(&ctx, "/api/device/ABC123", r#"{"dpi": 800}"#, true).status, 404);
+
+        // Devices of another computer or another brand cannot be changed.
+        ctx.hub.publish(Event::Init {
+            id: "R1".into(),
+            name: "Far".into(),
+            kind: DeviceKind::Mouse,
+            source: Source::Remote,
+            has_battery: true,
+        });
+        assert_eq!(post_t(&ctx, "/api/device/R1/settings", r#"{"dpi": 800}"#, true).status, 409);
+
+        assert!(can_write("s3cret", Some("Bearer s3cret")));
+        assert!(!can_write("s3cret", Some("Bearer nope")));
+        assert!(!can_write("", Some("Bearer ")));
+        assert!(!can_write("s3cret", None));
     }
 
     fn authorized_t(token: &str, loopback: bool, target: &str, authorization: Option<&str>) -> bool {
@@ -1211,7 +1542,10 @@ mod tests {
         assert!(is_loopback("::ffff:127.0.0.1".parse().unwrap()) && is_loopback("::1".parse().unwrap()));
         assert!(!is_loopback("192.168.1.2".parse().unwrap()));
         let ctx = ctx_of(hub());
-        assert_eq!(respond(&Request { method: "GET", target: "/api/devices", authorized: false }, &ctx).status, 401);
+        assert_eq!(
+            respond(&Request { method: "GET", target: "/api/devices", authorized: false, body: "", can_write: false }, &ctx).status,
+            401
+        );
     }
 
     #[test]

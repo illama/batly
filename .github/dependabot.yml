@@ -1,0 +1,23 @@
+# Weekly update pull requests for the Rust crates and the GitHub Actions;
+# CI (fmt, clippy, tests on Windows) checks each of them.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      windows:
+        patterns: ["windows-*"]
+      serde:
+        patterns: ["serde*", "toml*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
