@@ -159,6 +159,8 @@ struct App {
     alerts: Engine,
     /// Last alert shown, for "remind me later".
     last_notice: Option<Notice>,
+    /// Device whose chart is unfolded in the panel, and its range in days.
+    chart: Option<(String, u32)>,
     hotkey_registered: bool,
     /// Statistics cache: device id → (history sample count, minute, stats).
     stats_cache: HashMap<String, (usize, u64, Stats)>,
@@ -556,7 +558,12 @@ impl App {
         if self.services.web_url.is_some() {
             buttons.push((panel::CMD_WEB, tr(["Web page", "Page web", "Webseite", "Página web", "Pagina web", "Página web"]).to_string()));
         }
+        let chart = self.chart.as_ref().and_then(|(id, days)| {
+            let row = devices.iter().position(|d| d.id == *id)?;
+            Some(self.chart_of(&devices[row], row, *days))
+        });
         panel::Content {
+            chart,
             title: tr(["Batteries", "Batteries", "Akkus", "Baterías", "Batterie", "Baterias"]).into(),
             empty: i18n::no_device().into(),
             rows,
@@ -568,7 +575,63 @@ impl App {
         }
     }
 
+    /// Chart of `d` (row `row` of the panel) over `days` days.
+    fn chart_of(&self, d: &Device, row: usize, days: u32) -> panel::Chart {
+        let now = history::now();
+        let points: Vec<(u64, f32)> = if d.has_battery {
+            self.services.history.samples(&d.id, now.saturating_sub(days as u64 * 86_400)).iter().map(|s| (s.t, s.percent)).collect()
+        } else {
+            Vec::new()
+        };
+        let summary = if points.is_empty() {
+            tr([
+                "No history for this device yet.",
+                "Pas encore d'historique pour cet appareil.",
+                "Noch kein Verlauf für dieses Gerät.",
+                "Aún no hay historial para este dispositivo.",
+                "Ancora nessuna cronologia per questo dispositivo.",
+                "Ainda não há histórico para este dispositivo.",
+            ])
+            .to_string()
+        } else {
+            chart_summary(&self.services.history.stats(&d.id))
+        };
+        panel::Chart {
+            row,
+            days,
+            points,
+            now,
+            summary,
+            labels: [
+                tr(["7 days", "7 jours", "7 Tage", "7 días", "7 giorni", "7 dias"]).into(),
+                tr(["30 days", "30 jours", "30 Tage", "30 días", "30 giorni", "30 dias"]).into(),
+                tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]).into(),
+            ],
+        }
+    }
+
+    /// Unfolds the chart of the n-th row, or folds it when already open.
+    fn toggle_chart(&mut self, n: usize) {
+        let devices = self.ordered(self.hub.snapshot());
+        let Some(d) = devices.get(n) else { return };
+        self.chart = match self.chart.take() {
+            Some((id, _)) if id == d.id => None,
+            Some((_, days)) => Some((d.id.clone(), days)),
+            None => Some((d.id.clone(), 7)),
+        };
+        panel::update(self.panel_content(&devices));
+    }
+
+    fn set_chart_days(&mut self, days: u32) {
+        if let Some((_, d)) = self.chart.as_mut() {
+            *d = days;
+        }
+        let devices = self.ordered(self.hub.snapshot());
+        panel::update(self.panel_content(&devices));
+    }
+
     fn open_panel(&mut self, anchor: Option<POINT>) {
+        self.chart = None;
         let devices = self.ordered(self.hub.snapshot());
         let content = self.panel_content(&devices);
         let anchor = anchor.or_else(|| self.icons.first().and_then(|i| icon_center(self.hwnd, i.uid)));
@@ -766,7 +829,10 @@ impl App {
             }
             ID_SNOOZE | panel::CMD_SNOOZE => self.snooze(),
             ID_QUIT => return true,
-            n if (panel::CMD_DEVICE..panel::CMD_DEVICE + 1000).contains(&n) => self.open_settings(),
+            n if (panel::CMD_DEVICE..panel::CMD_DEVICE + 1000).contains(&n) => self.toggle_chart(n - panel::CMD_DEVICE),
+            panel::CMD_DAYS_7 => self.set_chart_days(7),
+            panel::CMD_DAYS_30 => self.set_chart_days(30),
+            panel::CMD_DEVICE_SETTINGS => self.open_settings(),
             n if (ID_ACTION_BASE..ID_DEVICE_BASE).contains(&n) => {
                 if let Some(action) = self.services.actions.get(n - ID_ACTION_BASE) {
                     (action.run)(self.hwnd);
@@ -823,6 +889,61 @@ fn later_label() -> String {
         "Lembrar mais tarde",
     ])
     .into()
+}
+
+/// "One charge ≈ 2 d 8 h · 12 cycles · health 94 %", from what is known.
+fn chart_summary(st: &Stats) -> String {
+    let mut parts = Vec::new();
+    if let Some(h) = st.full_runtime_hours {
+        let d = i18n::duration(h);
+        parts.push(
+            tr([
+                format!("one charge ≈ {d}"),
+                format!("une charge ≈ {d}"),
+                format!("eine Ladung ≈ {d}"),
+                format!("una carga ≈ {d}"),
+                format!("una carica ≈ {d}"),
+                format!("uma carga ≈ {d}"),
+            ]
+            .each_ref())
+            .clone(),
+        );
+    }
+    if st.cycles >= 1.0 {
+        let n = st.cycles.round() as u64;
+        parts.push(
+            tr([
+                format!("{n} cycles"),
+                format!("{n} cycles"),
+                format!("{n} Zyklen"),
+                format!("{n} ciclos"),
+                format!("{n} cicli"),
+                format!("{n} ciclos"),
+            ]
+            .each_ref())
+            .clone(),
+        );
+    }
+    if let Some(health) = st.health_percent {
+        let v = health.round() as i64;
+        parts.push(
+            tr([
+                format!("health {v} %"),
+                format!("santé {v} %"),
+                format!("Zustand {v} %"),
+                format!("salud {v} %"),
+                format!("salute {v} %"),
+                format!("saúde {v} %"),
+            ]
+            .each_ref())
+            .clone(),
+        );
+    }
+    let mut text = parts.join(" · ");
+    if let Some(first) = text.get(..1) {
+        text = first.to_uppercase() + &text[1..];
+    }
+    text
 }
 
 fn ago_text(hours: f64) -> String {
@@ -1262,6 +1383,7 @@ pub fn run(hwnd: HWND, hub: Arc<Hub>, cfg: Config, cfg_path: PathBuf, services: 
         light_taskbar: taskbar_is_light(),
         alerts: Engine::new(),
         last_notice: None,
+        chart: None,
         hotkey_registered: false,
         stats_cache: HashMap::new(),
     };

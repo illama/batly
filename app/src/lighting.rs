@@ -45,7 +45,7 @@ pub const PROFILE_ZONES: usize = 2;
 pub const FORMAT_G502X: u8 = 5;
 /// G502 X format: index of a custom animation stored on the device, played
 /// instead of the lighting entries when not 0 (libratbag clears it).
-const ANIMATION_INDEX: usize = PROFILE_LIGHTING_OFFSET + PROFILE_LIGHTING_ENTRY * PROFILE_LIGHTING_ENTRIES;
+pub const ANIMATION_INDEX: usize = PROFILE_LIGHTING_OFFSET + PROFILE_LIGHTING_ENTRY * PROFILE_LIGHTING_ENTRIES;
 /// Smallest sector holding the lighting entries and the CRC.
 const MIN_SECTOR: usize = PROFILE_LIGHTING_OFFSET + PROFILE_LIGHTING_ENTRY * PROFILE_LIGHTING_ENTRIES + 2;
 /// Largest sector we accept (sizes seen are 255 to 1024 bytes).

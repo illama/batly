@@ -32,6 +32,11 @@ pub const CMD_SETTINGS: usize = 9002;
 pub const CMD_WEB: usize = 9003;
 pub const CMD_SNOOZE: usize = 9004;
 pub const CMD_RECEIVERS: usize = 9005;
+/// Range of the open chart: 7 or 30 days.
+pub const CMD_DAYS_7: usize = 9006;
+pub const CMD_DAYS_30: usize = 9007;
+/// Opens the settings (from the chart, since a click on a row opens it).
+pub const CMD_DEVICE_SETTINGS: usize = 9008;
 /// `CMD_DEVICE + n`: click on the n-th row.
 pub const CMD_DEVICE: usize = 9100;
 
@@ -61,7 +66,27 @@ pub struct Content {
     pub alert: Option<(String, String)>,
     /// (command, label) buttons in the footer.
     pub buttons: Vec<(usize, String)>,
+    /// Battery chart unfolded under one row.
+    pub chart: Option<Chart>,
 }
+
+/// Level over the last days of the device of row `row`.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Chart {
+    pub row: usize,
+    /// 7 or 30.
+    pub days: u32,
+    /// (unix time, percent), oldest first.
+    pub points: Vec<(u64, f32)>,
+    pub now: u64,
+    /// One line under the chart (statistics, or "no history yet").
+    pub summary: String,
+    /// Labels: "7 days", "30 days", "Settings".
+    pub labels: [String; 3],
+}
+
+/// Logical height of an unfolded chart.
+const CHART_H: i32 = 168;
 
 struct State {
     hwnd: HWND,
@@ -161,6 +186,9 @@ fn open(owner: HWND, content: Content, anchor: Option<POINT>) {
 fn layout_height(c: &Content, alert_lines: i32) -> i32 {
     let rows = c.rows.len().max(1) as i32;
     let mut h = 52 + rows * 62 + 8;
+    if c.chart.is_some() {
+        h += CHART_H + 4;
+    }
     if c.alert.is_some() {
         h += 16 + 20 * alert_lines + 24;
     }
@@ -349,6 +377,10 @@ fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i3
             );
         }
         y += px(62);
+        if let Some(chart) = c.chart.as_ref().filter(|ch| ch.row == n) {
+            draw_chart(dc, s, p, w, y, chart, hot, &mut targets);
+            y += px(CHART_H + 4);
+        }
     }
     y += px(8);
 
@@ -382,6 +414,85 @@ fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i3
         x += bw + px(4);
     }
     targets
+}
+
+/// The unfolded chart: level over 7 or 30 days, the range buttons, a
+/// summary line. Gaps of more than 3 hours (device off, PC asleep) break
+/// the line.
+#[allow(clippy::too_many_arguments)]
+fn draw_chart(
+    dc: windows_sys::Win32::Graphics::Gdi::HDC,
+    s: Scale,
+    p: &Palette,
+    w: i32,
+    y: i32,
+    chart: &Chart,
+    hot: Option<usize>,
+    targets: &mut Vec<(usize, RECT)>,
+) {
+    use windows_sys::Win32::Graphics::Gdi::{CreatePen, LineTo, MoveToEx, PS_SOLID};
+    let px = |v: i32| s.px(v);
+    let small = Font::new(s, 12, 400);
+    let button = Font::new(s, 12, 600);
+    let box_r = rect(px(8), y, w - px(8), y + px(CHART_H));
+    ui::round_rect(dc, box_r, px(6), p.card, Some(p.border));
+
+    // Range buttons and the settings link, top right / top left.
+    let mut x = w - px(16);
+    for (cmd, label, days) in [(CMD_DAYS_30, &chart.labels[1], 30), (CMD_DAYS_7, &chart.labels[0], 7)] {
+        let bw = px(16 + 7 * label.chars().count() as i32);
+        let b = rect(x - bw, y + px(8), x, y + px(30));
+        if chart.days == days {
+            ui::round_rect(dc, b, px(4), p.hover, Some(p.border));
+        } else if hot == Some(cmd) {
+            ui::round_rect(dc, b, px(4), p.hover, None);
+        }
+        ui::text(dc, &button, if chart.days == days { p.fg } else { p.accent }, label, b, DT_CENTER | DT_VCENTER);
+        targets.push((cmd, b));
+        x -= bw + px(4);
+    }
+    let settings = &chart.labels[2];
+    let sw = px(16 + 7 * settings.chars().count() as i32);
+    let b = rect(px(14), y + px(8), px(14) + sw, y + px(30));
+    if hot == Some(CMD_DEVICE_SETTINGS) {
+        ui::round_rect(dc, b, px(4), p.hover, None);
+    }
+    ui::text(dc, &small, p.accent, settings, b, DT_CENTER | DT_VCENTER);
+    targets.push((CMD_DEVICE_SETTINGS, b));
+
+    // Plot: 0 / 50 / 100 % guides, then the level.
+    let plot = rect(px(52), y + px(40), w - px(22), y + px(CHART_H - 34));
+    let (pw, ph) = ((plot.right - plot.left) as f64, (plot.bottom - plot.top) as f64);
+    for level in [0, 50, 100] {
+        let gy = plot.bottom - (ph * level as f64 / 100.0) as i32;
+        ui::fill(dc, rect(plot.left, gy, plot.right, gy + 1), p.border);
+        ui::text(dc, &small, p.sub, &format!("{level} %"), rect(px(14), gy - px(8), plot.left - px(6), gy + px(8)), DT_RIGHT | DT_VCENTER);
+    }
+    let span = chart.days as u64 * 86_400;
+    let start = chart.now.saturating_sub(span);
+    let to_x = |t: u64| plot.left + (t.saturating_sub(start) as f64 / span.max(1) as f64 * pw).clamp(0.0, pw) as i32;
+    let to_y = |v: f32| plot.bottom - (v.clamp(0.0, 100.0) as f64 / 100.0 * ph) as i32;
+    // SAFETY: pen created, selected and released here.
+    unsafe {
+        let pen = CreatePen(PS_SOLID, px(2).max(1), p.accent);
+        let old = SelectObject(dc, pen as _);
+        let mut prev: Option<u64> = None;
+        for &(t, v) in chart.points.iter().filter(|(t, _)| *t >= start) {
+            let (x, y) = (to_x(t), to_y(v));
+            if prev.is_none_or(|pt| t.saturating_sub(pt) > 3 * 3600) {
+                MoveToEx(dc, x, y, null_mut());
+                // A lone reading still shows as a dot.
+                LineTo(dc, x + 1, y);
+                MoveToEx(dc, x, y, null_mut());
+            } else {
+                LineTo(dc, x, y);
+            }
+            prev = Some(t);
+        }
+        SelectObject(dc, old);
+        DeleteObject(pen as _);
+    }
+    ui::text(dc, &small, p.sub, &chart.summary, rect(px(14), plot.bottom + px(8), w - px(16), y + px(CHART_H - 6)), DT_LEFT | DT_VCENTER);
 }
 
 fn hit(hwnd: HWND, lparam: LPARAM) -> Option<usize> {

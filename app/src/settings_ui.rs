@@ -769,6 +769,7 @@ pub fn open(owner: HWND, cfg: &Config, path: PathBuf, mut devices: Vec<KnownDevi
             })
         });
         build(hwnd);
+        crate::theme::apply(hwnd);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
     }
@@ -1267,6 +1268,10 @@ fn random_token() -> String {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Theme: background, labels, check boxes, light/dark switch.
+    if let Some(r) = crate::theme::on_message(hwnd, msg, wparam, lparam) {
+        return r;
+    }
     match msg {
         WM_COMMAND => {
             let id = wparam & 0xFFFF;
@@ -1317,12 +1322,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 show_page(page);
             }
             0
-        }
-        WM_CTLCOLORSTATIC => {
-            // Labels and check boxes on the white window background.
-            use windows_sys::Win32::Graphics::Gdi::{GetSysColor, GetSysColorBrush, SetBkColor};
-            SetBkColor(wparam as _, GetSysColor(COLOR_WINDOW));
-            GetSysColorBrush(COLOR_WINDOW) as LRESULT
         }
         WM_CLOSE => {
             DestroyWindow(hwnd);

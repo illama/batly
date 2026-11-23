@@ -10,6 +10,12 @@ name: Release
 # repository variables: SIGNPATH_PROJECT_SLUG (default "batly"),
 # SIGNPATH_POLICY_SLUG ("release-signing"), SIGNPATH_EXE_CONFIG ("exe"),
 # SIGNPATH_SETUP_CONFIG ("installer").
+#
+# SHA256SUMS.txt is always signed with minisign (secret
+# MINISIGN_SECRET_KEY, public key in packaging/batly-minisign.pub and
+# built into batly.exe): without it the release is not published, since
+# the automatic update refuses unsigned checksums. Every file also gets a
+# GitHub build provenance attestation (`gh attestation verify`).
 
 on:
   push:
@@ -56,7 +62,10 @@ jobs:
         run: cargo test -p batly
 
       - name: Build batly.exe
-        run: cargo build --release -p batly
+        env:
+          # No path of the runner in the executable.
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=batly
+        run: cargo build --release --locked -p batly
 
       # ---- 1. sign the application (before it is embedded in the installer)
       - name: Upload unsigned batly.exe
@@ -89,7 +98,8 @@ jobs:
           New-Item -ItemType Directory -Force staging | Out-Null
           Copy-Item $exe staging\batly.exe
           $env:BATLY_PAYLOAD = "$PWD\staging\batly.exe"
-          cargo build --release -p batly-setup
+          $env:RUSTFLAGS = "--remap-path-prefix=$PWD=batly"
+          cargo build --release --locked -p batly-setup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force staging\setup | Out-Null
           Copy-Item target\release\batly-setup.exe "staging\setup\Batly-Setup-$env:VERSION.exe"
@@ -162,12 +172,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
+      - name: Sign SHA256SUMS.txt (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::Secret MINISIGN_SECRET_KEY missing: Batly refuses to update to an unsigned release"
+            exit 1
+          fi
+          sudo apt-get install -y -qq minisign >/dev/null
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+          key="$RUNNER_TEMP/batly.key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          minisign -S -s "$key" -m dist/SHA256SUMS.txt -t "Batly $VERSION"
+          rm -f "$key"
+          minisign -V -p packaging/batly-minisign.pub -m dist/SHA256SUMS.txt
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/Batly-*
+            dist/SHA256SUMS.txt
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -175,7 +210,6 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -eu
-          (cd dist && sha256sum --check SHA256SUMS.txt)
           notes=".github/RELEASE_NOTES_${TAG}.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG exists: replacing its files"

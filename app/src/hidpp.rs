@@ -380,6 +380,9 @@ pub enum Setting {
     },
     /// Stops keeping the lighting; the device shows its own again.
     LedForget,
+    /// Easy-Switch: sends the device to another computer (channel
+    /// 1..=n). It leaves this one right away, so no answer is expected.
+    Host(u8),
 }
 
 pub type SettingsReply = Sender<Result<DeviceSettings, ActionError>>;
@@ -717,6 +720,30 @@ struct Slot {
     keep_sleeping: bool,
     /// 0x8071 onUserActivity: `true` = active again, `false` = idle.
     led_event: Option<bool>,
+    /// The device has pushed a battery event since it connected: it tells
+    /// changes by itself, so reading it can wait longer.
+    pushes: bool,
+    /// The device said it is idle (onUserActivity): its level hardly moves
+    /// and a read would wake its radio; it says when it is active again.
+    idle: bool,
+}
+
+/// Longest wait between two reads of a device that pushes its changes or
+/// is idle.
+const SPACED_POLL_MAX: Duration = Duration::from_secs(3600);
+
+/// Wait before the next battery read: the usual period, longer for a
+/// device that pushes its own changes (×4) and longer still while it is
+/// idle (×6), at most an hour (never shorter than `poll`).
+fn next_poll(poll: Duration, pushes: bool, idle: bool) -> Duration {
+    let factor = if idle {
+        6
+    } else if pushes {
+        4
+    } else {
+        return poll;
+    };
+    (poll * factor).min(SPACED_POLL_MAX.max(poll))
 }
 
 /// What a receiver's pairing registers say about one slot.
@@ -916,6 +943,8 @@ impl<T: Transport> Session<T> {
             Command::SetSetting { device, setting, reply } => {
                 let result = match self.settings_target(&device) {
                     Ok(idx) => match self.write_setting(idx, setting)? {
+                        // The device has left for another computer.
+                        Ok(()) if matches!(setting, Setting::Host(_)) => Ok(DeviceSettings::default()),
                         Ok(()) => self.read_settings(idx)?,
                         Err(e) => Err(e),
                     },
@@ -1173,6 +1202,8 @@ impl<T: Transport> Session<T> {
             slot.online = link_up;
             slot.keep_active = false;
             slot.keep_sleeping = false;
+            slot.pushes = false;
+            slot.idle = false;
             if link_up {
                 slot.due = Some(Instant::now() + self.cfg.settle);
                 slot.reread = slot.info.is_some();
@@ -1207,6 +1238,7 @@ impl<T: Transport> Session<T> {
             let rgb = slot.info.as_ref().and_then(|i| i.features.get(&FEAT_RGB_EFFECTS).copied());
             if rgb == Some(r[2]) && r[3] == 0x10 {
                 slot.led_event = Some(r[4] != 0);
+                slot.idle = r[4] == 0;
                 slot.due = Some(Instant::now());
                 return;
             }
@@ -1220,7 +1252,8 @@ impl<T: Transport> Session<T> {
             if let Some(battery) = feature.parse(&r[4..]) {
                 slot.fails = 0;
                 slot.online = true;
-                slot.due = Some(Instant::now() + self.cfg.poll);
+                slot.pushes = true;
+                slot.due = Some(Instant::now() + next_poll(self.cfg.poll, true, slot.idle));
                 (self.sink)(Event::Update { id: info.id.clone(), battery });
             }
         }
@@ -1281,7 +1314,7 @@ impl<T: Transport> Session<T> {
         if ok {
             slot.fails = 0;
             slot.online = true;
-            slot.due = Some(Instant::now() + self.cfg.poll);
+            slot.due = Some(Instant::now() + next_poll(self.cfg.poll, slot.pushes, slot.idle));
             self.keep_step(idx)?;
         } else {
             // Exponential back-off, capped: the device is most likely
@@ -1891,6 +1924,17 @@ impl<T: Transport> Session<T> {
             Setting::LedKeep { zone, effect } => return self.keep_led(idx, zone, effect),
             Setting::LedForget => return self.forget_led(idx),
             Setting::LedRestore => return self.restore_leds(idx),
+            Setting::Host(channel) => {
+                let Some(f) = self.feature(idx, FEAT_CHANGE_HOST)? else { return Ok(Err(ActionError::NotSupported)) };
+                let count = self.call(idx, f, 0, &[])?.map_or(0, |p| p[0]);
+                if channel == 0 || channel > count {
+                    return Ok(Err(ActionError::NotSupported));
+                }
+                // The device switches before it could answer: no reply.
+                let sw = self.next_sw();
+                self.send(idx, f, (1 << 4) | sw, &[channel - 1], false)?;
+                return Ok(Ok(()));
+            }
             Setting::Dpi(dpi) => match self.feature(idx, FEAT_ADJUSTABLE_DPI)? {
                 Some(f) => {
                     let [hi, lo] = dpi.to_be_bytes();
@@ -2479,6 +2523,8 @@ mod tests {
     /// with one mouse on index 1, or the same mouse connected directly
     /// (long reports only).
     struct Fake {
+        /// Easy-Switch channel index asked for (0x1814 setCurrentHost).
+        host_set: Option<u8>,
         receiver: bool,
         bolt: bool,
         asleep: bool,
@@ -2513,6 +2559,11 @@ mod tests {
         late_feature: Option<u16>,
         /// 0x8071 RGB Effects (one zone) instead of relying on 0x8070.
         rgb: bool,
+        /// Effect ids of the 0x8071 zone (count and order as announced).
+        rgb_effects: Vec<u8>,
+        /// 0x8070 and 0x8100 present (a keyboard without onboard memory
+        /// has neither).
+        onboard: bool,
         rgb_sw: Vec<Vec<u8>>,
         rgb_set: Vec<Vec<u8>>,
         rgb_power: Vec<Vec<u8>>,
@@ -2531,6 +2582,7 @@ mod tests {
                 pair_outcome: PairOutcome::Success,
                 out: VecDeque::new(),
                 writes: 0,
+                host_set: None,
                 idle_reads: 0,
                 battery_requests: 0,
                 register_writes: Vec::new(),
@@ -2551,6 +2603,8 @@ mod tests {
                 profile_format: 3,
                 late_feature: None,
                 rgb: false,
+                rgb_effects: vec![0x00, 0x01, 0x0A, 0x15],
+                onboard: true,
                 rgb_sw: Vec::new(),
                 rgb_set: Vec::new(),
                 rgb_power: Vec::new(),
@@ -2594,8 +2648,8 @@ mod tests {
                         0x8060 => 9,
                         0x1982 => 10,
                         0x2111 => 11,
-                        0x8070 => 12,
-                        0x8100 => 13,
+                        0x8070 if self.onboard => 12,
+                        0x8100 if self.onboard => 13,
                         0x8071 if self.rgb => 14,
                         _ => 0,
                     };
@@ -2631,6 +2685,8 @@ mod tests {
                 }
                 // Easy-Switch: channel 2 of 3.
                 (7, 0) => self.reply(req, &[3, 1, 0]),
+                // Leaves for that computer without answering.
+                (7, 1) => self.host_set = Some(req[4]),
                 // DPI list (one page): 400, 800, 900..=1600 by 100.
                 (8, 1) => self.reply(req, &[0, 0x01, 0x90, 0x03, 0x20, 0xE0, 0x64, 0x06, 0x40, 0, 0]),
                 (8, 2) => {
@@ -2678,9 +2734,9 @@ mod tests {
                 // 0x8071: one zone, effects off / static / breathe / cycle.
                 (14, 0) => match (req[4], req[5]) {
                     (0xFF, 0xFF) => self.reply(req, &[0xFF, 0, 1, 0, 0x22, 0, 4]),
-                    (zone, 0xFF) => self.reply(req, &[zone, zone, 0, 1, 4]),
+                    (zone, 0xFF) => self.reply(req, &[zone, zone, 0, 1, self.rgb_effects.len() as u8]),
                     (zone, i) => {
-                        let id = [0x00, 0x01, 0x0A, 0x15][i as usize % 4];
+                        let id = self.rgb_effects[i as usize % self.rgb_effects.len()];
                         self.reply(req, &[zone, i, 0, id, 0, 0, 0, 0]);
                     }
                 },
@@ -2971,6 +3027,18 @@ mod tests {
     }
 
     #[test]
+    fn reads_spaced_out_when_pushed_or_idle() {
+        let ten = Duration::from_secs(600);
+        assert_eq!(next_poll(ten, false, false), ten);
+        assert_eq!(next_poll(ten, true, false), ten * 4);
+        assert_eq!(next_poll(ten, true, true), Duration::from_secs(3600));
+        assert_eq!(next_poll(ten, false, true), Duration::from_secs(3600));
+        // A period already longer than an hour is never shortened.
+        let two_hours = Duration::from_secs(7200);
+        assert_eq!(next_poll(two_hours, true, false), two_hours);
+    }
+
+    #[test]
     fn broadcast_event_updates_battery() {
         let (tx, rx) = mpsc::channel();
         let (_cmd_tx, cmd_rx) = mpsc::channel();
@@ -2980,6 +3048,9 @@ mod tests {
         let mut event = vec![0u8; LONG_LEN];
         event[..7].copy_from_slice(&[0x11, 0x01, 0x07, 0x00, 42, 4, 1]);
         s.on_unsolicited(&event);
+        // It pushes its changes: the next read can wait (×4).
+        assert!(s.devices[&1].pushes);
+        assert!(s.devices[&1].due.is_some_and(|d| d > Instant::now() + Duration::from_secs(30 * 60)));
         // Answers meant for other software (sw id != 0) are not events.
         event[3] = 0x15;
         event[4] = 99;
@@ -2992,6 +3063,9 @@ mod tests {
             matches!(&events[0], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Charging)
         );
         assert!(matches!(&events[1], Event::Offline { id } if id == "X"));
+        // The link went down: the next connection reads at the usual pace
+        // until the device pushes an event again.
+        assert!(!s.devices[&1].pushes);
         // Checked again later even if "link up" never comes.
         assert!(s.devices[&1].due.is_some());
         assert!(!s.devices[&1].online);
@@ -3248,6 +3322,11 @@ mod tests {
         let st = set(&mut s, Setting::SmartShift(WheelMode::Ratchet)).unwrap();
         assert_eq!(st.smart_shift, Some(WheelMode::Ratchet));
         assert_eq!(set(&mut s, Setting::ReportRate(9)), Err(ActionError::Failed));
+        // Easy-Switch: channels 1..=3, nothing read back once it has left.
+        assert_eq!(set(&mut s, Setting::Host(4)), Err(ActionError::NotSupported));
+        assert_eq!(s.transport.host_set, None);
+        assert_eq!(set(&mut s, Setting::Host(3)), Ok(DeviceSettings::default()));
+        assert_eq!(s.transport.host_set, Some(2));
 
         // Unknown device, then offline device.
         let (reply, rx) = mpsc::channel();
@@ -3497,5 +3576,152 @@ mod tests {
         }
         assert_eq!(s.feature(idx, FEAT_SMART_SHIFT).unwrap(), None);
         assert!(!s.devices[&idx].info.as_ref().unwrap().features.contains_key(&FEAT_SMART_SHIFT));
+    }
+
+    // ------------------------------------------- replay of real devices
+    //
+    // Diagnostics sent by users (`app/fixtures/diagnostics/`, serial numbers
+    // removed) replayed through the fake device: what worked on the real
+    // hardware must keep working.
+
+    mod replay {
+        use super::*;
+        use crate::lighting::{check_profile, profile_effect, EffectKind, LedApi, OnboardDescription, ANIMATION_INDEX, FORMAT_G502X};
+
+        const G502_FACTORY: &str = include_str!("../fixtures/diagnostics/g502-x-plus-factory.txt");
+        const G502_AFTER_BETA2: &str = include_str!("../fixtures/diagnostics/g502-x-plus-after-beta2.txt");
+        const PRO_X_60: &str = include_str!("../fixtures/diagnostics/pro-x-60.txt");
+
+        fn hex(text: &str) -> Vec<u8> {
+            text.split_whitespace().map(|b| u8::from_str_radix(b, 16).unwrap()).collect()
+        }
+
+        /// Bytes after "`label`: " on its line.
+        fn line_bytes(diag: &str, label: &str) -> Vec<u8> {
+            let line = diag.lines().find_map(|l| l.strip_prefix(label)).unwrap_or_else(|| panic!("no {label}"));
+            hex(line.trim_start_matches(':'))
+        }
+
+        /// The dump of sector `n`.
+        fn sector(diag: &str, n: u16) -> Vec<u8> {
+            let head = format!("sector {n} (");
+            let mut lines = diag.lines().skip_while(|l| !l.starts_with(&head)).skip(1);
+            let mut out = Vec::new();
+            for line in lines.by_ref() {
+                let Some((_, bytes)) = line.trim().split_once(": ") else { break };
+                out.extend(hex(bytes));
+            }
+            out
+        }
+
+        /// Effect ids of zone 0: "effects [0:00 1:01 2:0A]".
+        fn effects(diag: &str) -> Vec<u8> {
+            let list = diag.lines().find_map(|l| l.split_once("effects [")).map(|(_, rest)| rest.trim_end_matches(']')).unwrap();
+            list.split_whitespace().map(|e| u8::from_str_radix(e.split_once(':').unwrap().1, 16).unwrap()).collect()
+        }
+
+        fn has(diag: &str, feature: &str) -> bool {
+            diag.lines().any(|l| l.starts_with(&format!("feature {feature}: index")))
+        }
+
+        fn g502(sector_1: Vec<u8>, diag: &str) -> Fake {
+            let mut fake = Fake::new(true);
+            fake.rgb = has(diag, "8071");
+            fake.rgb_effects = effects(diag);
+            let d = OnboardDescription::parse(&line_bytes(diag, "onboard description")).unwrap();
+            fake.profile_format = d.profile_format;
+            fake.flash.insert(1, sector_1);
+            fake
+        }
+
+        #[test]
+        fn g502_x_plus_factory_profile() {
+            let factory = sector(G502_FACTORY, 1);
+            assert_eq!(factory.len(), 255);
+            assert_eq!(check_profile(&factory, 255), Ok(()), "real CRC");
+            assert_eq!(factory[ANIMATION_INDEX], 3, "factory animation");
+            let d = OnboardDescription::parse(&line_bytes(G502_FACTORY, "onboard description")).unwrap();
+            assert_eq!((d.profile_format, d.sector_size, d.supported(), d.writable_sector(1)), (FORMAT_G502X, 255, true, true));
+
+            let dir = temp_dir("replay-g502");
+            let (mut s, id) = led_session(g502(factory.clone(), G502_FACTORY), Some(dir.clone()));
+            let st = command(&mut s, &id, None).unwrap();
+            let lighting = st.lighting.unwrap();
+            assert_eq!(lighting.api, LedApi::Rgb);
+            assert_eq!(lighting.onboard, OnboardStatus::Writable { sector: 1, size: 255 });
+            assert_eq!(lighting.zones.len(), 1);
+            let kinds = lighting.zones[0].kinds();
+            assert!(
+                [EffectKind::Off, EffectKind::Static, EffectKind::Breathe, EffectKind::Cycle].iter().all(|k| kinds.contains(k)),
+                "{kinds:?}"
+            );
+
+            // Static red, saved: what was checked on the real mouse (beta.3).
+            let red = LedEffect { color: 0xFF0000, ..LedEffect::default() };
+            command(&mut s, &id, Some(Setting::Led { zone: 0, effect: red, save: true })).unwrap();
+            let after = s.transport.flash[&1].clone();
+            assert_eq!(check_profile(&after, 255), Ok(()));
+            assert_eq!(after[ANIMATION_INDEX], 0, "the embedded animation would hide the colour");
+            // Entries 0 and 1 (the G502 X reads the second), then the two
+            // power saving ones at half brightness (a fixed colour has no
+            // intensity: the colour itself is dimmed).
+            for (entry, color) in [(0, 0xFF0000), (1, 0xFF0000), (2, 0x7F0000), (3, 0x7F0000)] {
+                let e = profile_effect(&after, entry).unwrap();
+                assert_eq!((e.kind, e.color), (EffectKind::Static, color), "entry {entry}");
+            }
+            // DPI, buttons and everything else as they were.
+            let changed: Vec<usize> = (0..255).filter(|&i| after[i] != factory[i]).collect();
+            assert!(changed.iter().all(|&i| (208..252).contains(&i) || i >= ANIMATION_INDEX), "{changed:?}");
+
+            // Restaurer: back to the factory sector, byte for byte.
+            command(&mut s, &id, Some(Setting::LedRestore)).unwrap();
+            assert_eq!(s.transport.flash[&1], factory);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn g502_x_plus_written_by_beta2_is_repaired() {
+            // beta.2 wrote the entries but left the animation on: the
+            // mouse kept playing it (white flash, then nothing).
+            let broken = sector(G502_AFTER_BETA2, 1);
+            assert_eq!(check_profile(&broken, 255), Ok(()));
+            assert_eq!(broken[ANIMATION_INDEX], 3);
+            let dir = temp_dir("replay-beta2");
+            let (mut s, id) = led_session(g502(broken, G502_AFTER_BETA2), Some(dir.clone()));
+            let cycle = LedEffect { kind: EffectKind::Cycle, period_ms: 4000, ..LedEffect::default() };
+            command(&mut s, &id, Some(Setting::Led { zone: 0, effect: cycle, save: true })).unwrap();
+            assert_eq!(s.transport.flash[&1][ANIMATION_INDEX], 0);
+            assert_eq!(profile_effect(&s.transport.flash[&1], 1).unwrap().kind, EffectKind::Cycle);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn pro_x_60_keeps_its_lighting_through_batly() {
+            assert!(has(PRO_X_60, "8071") && !has(PRO_X_60, "8100") && !has(PRO_X_60, "8070"));
+            let mut fake = Fake::new(true);
+            fake.rgb = true;
+            fake.onboard = false;
+            fake.rgb_effects = effects(PRO_X_60);
+            assert_eq!(fake.rgb_effects, [0x00, 0x01, 0x0A, 0x15, 0x16, 0x17]);
+            let dir = temp_dir("replay-prox60");
+            let (mut s, id) = led_session(fake, None);
+            s.cfg.lighting_file = Some(dir.join("lighting.json"));
+
+            let lighting = command(&mut s, &id, None).unwrap().lighting.unwrap();
+            assert_eq!((lighting.api, lighting.onboard), (LedApi::Rgb, OnboardStatus::Absent));
+            let kinds = lighting.zones[0].kinds();
+            assert!([EffectKind::Static, EffectKind::Breathe, EffectKind::Cycle].iter().all(|k| kinds.contains(k)), "{kinds:?}");
+
+            // No memory to write: refused, then kept by Batly instead.
+            let green = LedEffect { color: 0x00FF00, ..LedEffect::default() };
+            assert_eq!(
+                command(&mut s, &id, Some(Setting::Led { zone: 0, effect: green, save: true })),
+                Err(ActionError::Onboard(OnboardStatus::Absent))
+            );
+            command(&mut s, &id, Some(Setting::LedKeep { zone: 0, effect: green })).unwrap();
+            assert_eq!(s.transport.rgb_set.last().unwrap()[..5], [0, 1, 0x00, 0xFF, 0x00]);
+            assert_eq!(crate::lighting::load_kept(&dir.join("lighting.json"))[&id], (0, green));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

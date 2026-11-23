@@ -5,7 +5,9 @@
 //!   `update-check.txt` next to the settings). Pre-releases and drafts are
 //!   ignored.
 //! * [`install`] downloads the installer to `%TEMP%`, verifies it against
-//!   the release's `SHA256SUMS.txt`, starts it with `/S /update` and closes
+//!   the release's `SHA256SUMS.txt` — itself checked against its minisign
+//!   signature `SHA256SUMS.txt.minisig` and the public key built into the
+//!   executable ([`PUBLIC_KEY`]) —, starts it with `/S /update` and closes
 //!   the application; the installer waits for it to exit, replaces the
 //!   executable and starts the new version. A portable copy is never
 //!   replaced: the release page is opened instead.
@@ -20,6 +22,12 @@ pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const LATEST_URL: &str = "https://api.github.com/repos/illama/batly/releases/latest";
 const STAMP_FILE: &str = "update-check.txt";
 const SUMS_FILE: &str = "SHA256SUMS.txt";
+const SIG_FILE: &str = "SHA256SUMS.txt.minisig";
+/// Minisign public key of the releases (`packaging/batly-minisign.pub`).
+/// Taking over the GitHub account or a release is not enough to push an
+/// update: the checksums must also be signed with the matching secret
+/// key, which never leaves the maintainer and the release workflow.
+pub const PUBLIC_KEY: &str = "RWRPiTwJybMyvaeBgrRrgqkDqIjFxiMgJUeYGa2FbbPp/q2uVZWIooze";
 /// Minimum delay between two automatic checks.
 pub const INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
@@ -33,6 +41,8 @@ pub struct Release {
     pub setup_url: String,
     /// `SHA256SUMS.txt` download URL ("" if the release has none).
     pub sums_url: String,
+    /// `SHA256SUMS.txt.minisig` download URL ("" if the release has none).
+    pub sig_url: String,
     /// Release page on GitHub.
     pub page_url: String,
 }
@@ -93,10 +103,13 @@ pub fn parse_release(json: &str) -> Option<Release> {
     let version = format!("{}.{}.{}", version.0, version.1, version.2);
     let mut setup_url = String::new();
     let mut sums_url = String::new();
+    let mut sig_url = String::new();
     for asset in v["assets"].as_array().map(Vec::as_slice).unwrap_or_default() {
         let (Some(name), Some(url)) = (asset["name"].as_str(), asset["browser_download_url"].as_str()) else { continue };
         if name.eq_ignore_ascii_case(SUMS_FILE) {
             sums_url = url.into();
+        } else if name.eq_ignore_ascii_case(SIG_FILE) {
+            sig_url = url.into();
         } else if name.starts_with("Batly-Setup") && name.to_ascii_lowercase().ends_with(".exe") {
             setup_url = url.into();
         }
@@ -108,7 +121,7 @@ pub fn parse_release(json: &str) -> Option<Release> {
         Some(u) if u.starts_with("https://") => u.into(),
         _ => format!("https://github.com/{REPO}/releases/tag/{tag}"),
     };
-    Some(Release { version, notes: v["body"].as_str().unwrap_or_default().replace("\r\n", "\n"), setup_url, sums_url, page_url })
+    Some(Release { version, notes: v["body"].as_str().unwrap_or_default().replace("\r\n", "\n"), setup_url, sums_url, sig_url, page_url })
 }
 
 /// Finds the checksum of `file_name` in a `sha256sum` style listing
@@ -154,6 +167,27 @@ pub fn verify(data: &[u8], sums: &str, file_name: &str) -> Result<(), String> {
             ])
         ))
     }
+}
+
+/// Checks the minisign signature `sig` of `sums` against [`PUBLIC_KEY`].
+pub fn verify_signature(sums: &[u8], sig: &str) -> Result<(), String> {
+    verify_signature_with(PUBLIC_KEY, sums, sig)
+}
+
+fn verify_signature_with(key: &str, sums: &[u8], sig: &str) -> Result<(), String> {
+    let refused = tr([
+        "The checksums of this release are not signed by Batly's key: the installer was not run.",
+        "Les sommes de contrôle de cette version ne sont pas signées par la clé de Batly : l'installateur n'a pas été lancé.",
+        "Die Prüfsummen dieser Version sind nicht mit dem Schlüssel von Batly signiert: Das Installationsprogramm wurde nicht gestartet.",
+        "Las sumas de comprobación de esta versión no están firmadas con la clave de Batly: el instalador no se ha ejecutado.",
+        "I checksum di questa versione non sono firmati con la chiave di Batly: il programma di installazione non è stato avviato.",
+        "As somas de verificação desta versão não estão assinadas com a chave do Batly: o instalador não foi executado.",
+    ]);
+    let key = minisign_verify::PublicKey::from_base64(key).map_err(|e| format!("{refused}\n{e}"))?;
+    let sig = minisign_verify::Signature::decode(sig).map_err(|e| format!("{refused}\n{e}"))?;
+    // Legacy (non pre-hashed) signatures are refused: minisign ≥ 0.11
+    // only makes pre-hashed ones.
+    key.verify(sums, &sig, false).map_err(|e| format!("{refused}\n{e}"))
 }
 
 // ------------------------------------------------------------ locations
@@ -306,14 +340,14 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
     if !release.setup_url.starts_with("https://") || !name.starts_with("Batly-Setup") || !name.to_ascii_lowercase().ends_with(".exe") {
         return Err(format!("unexpected installer URL: {}", release.setup_url));
     }
-    if release.sums_url.is_empty() {
+    if release.sums_url.is_empty() || release.sig_url.is_empty() {
         return Err(tr([
-            "This release publishes no SHA256SUMS.txt: the installer cannot be verified. Download it from the release page.",
-            "Cette version ne publie pas de SHA256SUMS.txt : l'installateur ne peut pas être vérifié. Téléchargez-le depuis la page de la version.",
-            "Diese Version veröffentlicht keine SHA256SUMS.txt: Das Installationsprogramm kann nicht geprüft werden. Laden Sie es von der Versionsseite herunter.",
-            "Esta versión no publica SHA256SUMS.txt: no se puede verificar el instalador. Descárguelo desde la página de la versión.",
-            "Questa versione non pubblica SHA256SUMS.txt: il programma di installazione non può essere verificato. Scaricalo dalla pagina della versione.",
-            "Esta versão não publica SHA256SUMS.txt: o instalador não pode ser verificado. Transfira-o a partir da página da versão.",
+            "This release publishes no signed SHA256SUMS.txt: the installer cannot be verified. Download it from the release page.",
+            "Cette version ne publie pas de SHA256SUMS.txt signé : l'installateur ne peut pas être vérifié. Téléchargez-le depuis la page de la version.",
+            "Diese Version veröffentlicht keine signierte SHA256SUMS.txt: Das Installationsprogramm kann nicht geprüft werden. Laden Sie es von der Versionsseite herunter.",
+            "Esta versión no publica SHA256SUMS.txt firmado: no se puede verificar el instalador. Descárguelo desde la página de la versión.",
+            "Questa versione non pubblica SHA256SUMS.txt firmato: il programma di installazione non può essere verificato. Scaricalo dalla pagina della versione.",
+            "Esta versão não publica SHA256SUMS.txt assinado: o instalador não pode ser verificado. Transfira-o a partir da página da versão.",
         ])
         .into());
     }
@@ -322,7 +356,9 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
     let data = download(&release.setup_url)?;
     progress(70);
     let sums = download(&release.sums_url)?;
+    let sig = download(&release.sig_url)?;
     progress(80);
+    verify_signature(&sums, &String::from_utf8_lossy(&sig))?;
     verify(&data, &String::from_utf8_lossy(&sums), &name)?;
     progress(90);
 
@@ -388,7 +424,8 @@ mod tests {
         "assets": [
             {"name": "Batly-4.1.0-portable.zip", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/Batly-4.1.0-portable.zip"},
             {"name": "Batly-Setup-4.1.0.exe", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/Batly-Setup-4.1.0.exe"},
-            {"name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/SHA256SUMS.txt"}
+            {"name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/SHA256SUMS.txt"},
+            {"name": "SHA256SUMS.txt.minisig", "browser_download_url": "https://github.com/x/y/releases/download/v4.1.0/SHA256SUMS.txt.minisig"}
         ]
     }"###;
 
@@ -398,6 +435,7 @@ mod tests {
         assert_eq!(r.version, "4.1.0");
         assert_eq!(r.notes, "## Nouveautés\n- tout");
         assert!(r.setup_url.ends_with("/Batly-Setup-4.1.0.exe") && r.sums_url.ends_with("/SHA256SUMS.txt"));
+        assert!(r.sig_url.ends_with("/SHA256SUMS.txt.minisig"));
         assert!(r.page_url.ends_with("/tag/v4.1.0"));
         assert_eq!(file_name(&r.setup_url), "Batly-Setup-4.1.0.exe");
 
@@ -421,6 +459,31 @@ mod tests {
         assert!(verify(data, &sums, "Batly-Setup-4.1.0.exe").is_ok());
         assert!(verify(b"tampered", &sums, "Batly-Setup-4.1.0.exe").is_err());
         assert!(verify(data, &sums, "missing.exe").is_err());
+    }
+
+    /// Signed with the real release key (`minisign -S -t "Batly test fixture"`).
+    const SIGNED_SUMS: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  Batly-Setup-9.9.9.exe\n";
+    const SIGNATURE: &str = "untrusted comment: signature from minisign secret key
+RURPiTwJybMyvW65Yht35cbg0yT/OJkZLPAvCrRlY8y3mI3tYZHfTiiQq7DjSdYJGsfayiGebeeWLS2Ik6NSGHnwxHLZWN8dvQs=
+trusted comment: Batly test fixture
+StJjY3Yv9qrVRrEq/gFCnGATbNFGgfYgvo1ixrb2aWAevJm8f4BBIJHgeMjVvpL0Sy5D7fXEcocUSBOrPF0hCg==
+";
+
+    #[test]
+    fn signed_checksums() {
+        assert!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE).is_ok());
+        // One changed byte in the listing, or in the trusted comment.
+        assert!(verify_signature(SIGNED_SUMS.replace("0123", "1123").as_bytes(), SIGNATURE).is_err());
+        assert!(verify_signature(SIGNED_SUMS.as_bytes(), &SIGNATURE.replace("test fixture", "real release")).is_err());
+        assert!(verify_signature(SIGNED_SUMS.as_bytes(), "").is_err());
+        assert!(verify_signature(SIGNED_SUMS.as_bytes(), "not a signature").is_err());
+        // Signed by another key.
+        assert!(
+            verify_signature_with("RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3", SIGNED_SUMS.as_bytes(), SIGNATURE).is_err()
+        );
+        // The built-in key is the published one.
+        let published = include_str!("../../packaging/batly-minisign.pub");
+        assert_eq!(published.lines().nth(1).map(str::trim), Some(PUBLIC_KEY));
     }
 
     #[test]

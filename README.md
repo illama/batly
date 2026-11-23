@@ -56,7 +56,8 @@ installateur vérifié par SHA-256 avant d'être lancé). Windows 10 (1607) ou p
 tous les périphériques, leur niveau, leur état, **l'autonomie restante** (« ≈ 2 j 8 h
 restants ») ou le **temps de charge** (« plein dans ≈ 40 min »), le canal Easy-Switch,
 l'ordinateur d'origine pour les appareils d'un autre PC, et l'alerte en cours avec son bouton
-*Plus tard*. **Clic droit** : le menu.
+*Plus tard*. **Un clic sur un appareil** déplie sa **courbe de batterie sur 7 ou 30 jours**, avec
+l'autonomie d'une charge, les cycles et la santé. **Clic droit** : le menu.
 
 ### Les icônes
 - une icône par périphérique choisi, ou **une seule icône** qui montre le niveau le plus bas ;
@@ -140,6 +141,16 @@ dernier état connu** quand il est éteint. Ouvrir l'API au réseau (`0.0.0.0`) 
 ### Le reste
 <img src="docs/reglages.png" alt="Fenêtre de réglages" width="420" align="right">
 
+- **Premier lancement guidé** : une fenêtre de bienvenue demande quels périphériques surveiller,
+  une icône par appareil ou une seule, quelles alertes et le démarrage avec Windows ;
+- fenêtres **en thème clair ou sombre** selon Windows (barre de titre Mica et coins arrondis sous
+  Windows 11), menu de la zone de notification compris ; la fenêtre *Récepteurs et appareils*
+  s'adapte à la hauteur de l'écran et défile ;
+- **moins de réveils radio** : un appareil qui signale lui-même ses changements de batterie est
+  relu 4 fois moins souvent, et pas avant une heure quand il se dit inactif ;
+- **mises à jour signées** : la liste des sommes SHA-256 de chaque version est signée avec
+  [minisign](https://jedisct1.github.io/minisign/) et vérifiée avec la clé publique intégrée à
+  Batly ; un fichier modifié sur GitHub est refusé (voir [SIGNING.md](SIGNING.md)) ;
 - **Réglages** dans une vraie fenêtre (onglets Général, Alertes, Appareils, Sources, Réseau,
   Domotique) ; le fichier TOML reste modifiable et **s'applique dès l'enregistrement** ;
 - interface en **français, anglais, allemand, espagnol, italien et portugais** ;
@@ -214,6 +225,31 @@ santé, cycles, courbe des 7 derniers jours), en clair ou sombre.
 | `GET /api/history/{id}?days=7` | relevés et statistiques |
 | `GET /metrics` | Prometheus |
 | `GET /overlay` | overlay OBS |
+| `POST /api/device/{id ou nom}/settings` | **modifie** un périphérique Logitech de ce PC (voir ci-dessous) |
+
+**Modifier un appareil (5.2).** Les changements passent par `POST`, toujours avec le **jeton**
+en en-tête (`Authorization: Bearer <jeton>`) : sans jeton défini dans *Réglages → Réseau*,
+l'API reste en lecture seule, et un site web ne peut rien changer avec un formulaire envoyé à
+`localhost`. Le corps est un objet JSON avec les champs voulus :
+
+```sh
+curl -X POST http://localhost:12321/api/device/G502%20X%20PLUS/settings \
+     -H "Authorization: Bearer $JETON" -H "Content-Type: application/json" \
+     -d '{"dpi": 1600, "lighting": {"action": "save", "effect": "static", "color": "#FF8800"}}'
+```
+
+| Champ | Valeurs |
+|---|---|
+| `dpi` | 50 à 64000 |
+| `report_rate` | 125, 250, 500 ou 1000 (Hz) |
+| `backlight` | `"off"`, `"on"`, `"auto"` ou un niveau |
+| `smart_shift` | `"free"`, `"ratchet"` ou une vitesse de 1 à 254 |
+| `lighting` | `action` (`preview`, `save`, `keep`, `release`, `restore`, `forget`), `zone`, `effect` (`off`, `static`, `breathe`, `cycle`), `color` (`#RRGGBB`), `period_ms`, `intensity` |
+| `host` | canal Easy-Switch 1 à 3 (appliqué en dernier : l'appareil part vers l'autre PC) |
+
+Réponse : `{"ok": true, "applied": n}`, ou une erreur explicite (`403` sans jeton, `409` appareil
+déconnecté ou d'un autre PC, `422` non pris en charge…). `lighting.action: "save"` passe par les
+mêmes garde-fous que la fenêtre (sauvegarde, CRC, relecture).
 
 ```xml
 <xml><device_id>…</device_id><device_name>G Pro Wireless</device_name><device_type>Mouse</device_type>
@@ -263,6 +299,7 @@ app/src/
   alerts.rs       moteur d'alertes · notice.rs : type d'alerte
   tray.rs         icônes, menu, alertes, rechargement des réglages, boucle de messages
   panel.rs        panneau des batteries · settings_ui.rs : fenêtre de réglages · ui.rs : dessin
+  theme.rs        thème clair / sombre des fenêtres à contrôles standard · welcome.rs : premier lancement
   hotkey.rs       raccourci clavier global
   http.rs         page web, API, SSE, Prometheus, overlay
   peers.rs        autres instances Batly du réseau

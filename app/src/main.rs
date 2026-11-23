@@ -47,11 +47,15 @@ mod receivers;
 #[cfg(windows)]
 mod settings_ui;
 #[cfg(windows)]
+mod theme;
+#[cfg(windows)]
 mod tray;
 #[cfg(windows)]
 mod ui;
 #[cfg(windows)]
 mod uninstall;
+#[cfg(windows)]
+mod welcome;
 #[cfg(windows)]
 mod win;
 
@@ -232,7 +236,9 @@ fn main() {
         log!("Batly {} - settings: {}", http::VERSION, cfg_path.display());
     }
 
-    let cfg = match Config::load(&cfg_path) {
+    // No settings yet: first launch, the welcome window comes first.
+    let first_launch = !cfg_path.exists() && !has("demo");
+    let mut cfg = match Config::load(&cfg_path) {
         Ok(cfg) => cfg,
         Err(LoadError::Parse(error)) => {
             let text = i18n::settings_invalid(&cfg_path.display().to_string(), &error);
@@ -249,6 +255,10 @@ fn main() {
     };
     i18n::init(&cfg.ui.language, system_lang);
 
+    theme::init();
+    if first_launch {
+        welcome::run(&mut cfg, &cfg_path);
+    }
     let Some(hwnd) = tray::create_window() else { return };
     let hub = Arc::new(model::Hub::new());
 
@@ -324,11 +334,14 @@ fn main() {
         rescan.push(Box::new(move || v2.rescan()));
     }
 
+    let native =
+        cfg.native.enabled.then(|| native::Native::start(&cfg.native, hub.clone(), cfg_path.parent().map(std::path::Path::to_path_buf)));
+    if let Some(native) = &native {
+        // Writing the onboard memory takes a few seconds.
+        let _ = ctx.control.set(native.controller(std::time::Duration::from_secs(20)));
+    }
     let services = tray::Services {
-        native: cfg
-            .native
-            .enabled
-            .then(|| native::Native::start(&cfg.native, hub.clone(), cfg_path.parent().map(std::path::Path::to_path_buf))),
+        native,
         ghub: cfg.ghub.enabled.then(|| ghub::GHub::start(hub.clone())),
         web_url,
         history,
