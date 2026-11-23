@@ -92,13 +92,15 @@ jobs:
 
       - name: Build the installer
         shell: pwsh
+        env:
+          # No path of the runner in the installer.
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=batly
         run: |
           $exe = if ($env:SIGNPATH_ENABLED -eq 'true') { "$PWD\signed\app\batly.exe" } else { "$PWD\target\release\batly.exe" }
           if (-not (Test-Path $exe)) { throw "missing $exe" }
           New-Item -ItemType Directory -Force staging | Out-Null
           Copy-Item $exe staging\batly.exe
           $env:BATLY_PAYLOAD = "$PWD\staging\batly.exe"
-          $env:RUSTFLAGS = "--remap-path-prefix=$PWD=batly"
           cargo build --release --locked -p batly-setup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force staging\setup | Out-Null
