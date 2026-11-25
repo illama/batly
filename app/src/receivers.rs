@@ -48,6 +48,7 @@ text! {
     s_title => "Receivers and devices", "Récepteurs et appareils", "Empfänger und Geräte", "Receptores y dispositivos", "Ricevitori e dispositivi", "Receptores e dispositivos";
     s_receiver => "Receiver:", "Récepteur :", "Empfänger:", "Receptor:", "Ricevitore:", "Receptor:";
     s_searching => "Looking for receivers…", "Recherche des récepteurs…", "Empfänger werden gesucht…", "Buscando receptores…", "Ricerca dei ricevitori…", "Procurando receptores…";
+    s_ghub => "Logitech G HUB is running: Batly leaves the Logitech devices to it (batteries come from G HUB). Close G HUB to change their settings here.", "Logitech G HUB est ouvert : Batly lui laisse les périphériques Logitech (les batteries viennent de G HUB). Fermez G HUB pour régler les appareils ici.", "Logitech G HUB läuft: Batly überlässt ihm die Logitech-Geräte (die Akkustände kommen von G HUB). G HUB schließen, um sie hier einzustellen.", "Logitech G HUB está abierto: Batly le deja los dispositivos Logitech (las baterías vienen de G HUB). Cierre G HUB para ajustarlos aquí.", "Logitech G HUB è aperto: Batly gli lascia i dispositivi Logitech (le batterie arrivano da G HUB). Chiudi G HUB per regolarli qui.", "O Logitech G HUB está aberto: o Batly deixa os dispositivos Logitech com ele (as baterias vêm do G HUB). Feche o G HUB para ajustá-los aqui.";
     s_none => "No receiver or device found", "Aucun récepteur ni appareil détecté", "Kein Empfänger oder Gerät gefunden", "No se encontró ningún receptor ni dispositivo", "Nessun ricevitore o dispositivo trovato", "Nenhum receptor ou dispositivo encontrado";
     s_col_slot => "Slot", "Empl.", "Platz", "Ranura", "Slot", "Slot";
     s_col_firmware => "Firmware", "Micrologiciel", "Firmware", "Firmware", "Firmware", "Firmware";
@@ -515,6 +516,7 @@ impl Window {
             return s_searching().to_string();
         }
         match self.current() {
+            None if crate::hidpp::GHUB_RUNNING.load(std::sync::atomic::Ordering::Relaxed) => s_ghub().to_string(),
             None => s_none().to_string(),
             Some(r) if r.kind == ReceiverKind::Direct => s_direct().to_string(),
             Some(r) => {

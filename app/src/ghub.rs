@@ -76,6 +76,9 @@ type Error = Box<dyn std::error::Error>;
 fn session(hub: &Hub, shared: &Mutex<Option<TcpStream>>, known: &mut Vec<String>) -> Result<(), Error> {
     let stream = connect()?;
     stream.set_nodelay(true)?;
+    // Re-list the devices every minute even when nothing is said (a device
+    // marked offline elsewhere comes back).
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     *shared.lock().unwrap() = Some(stream.try_clone()?);
 
     let mut request = ENDPOINT.into_client_request()?;
@@ -86,16 +89,23 @@ fn session(hub: &Hub, shared: &Mutex<Option<TcpStream>>, known: &mut Vec<String>
     headers.insert("Sec-WebSocket-Protocol", HeaderValue::from_static("json"));
     let (mut ws, _) = tungstenite::client(request, stream).map_err(|e| e.to_string())?;
     log!("ghub: connected");
+    // G HUB id -> id shown (the Logitech twin's, see `model::twin_of`).
+    let mut ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     send(&mut ws, "SUBSCRIBE", "/devices/state/changed")?;
     send(&mut ws, "SUBSCRIBE", "/battery/state/changed")?;
     send(&mut ws, "GET", "/devices/list")?;
 
     loop {
-        let text = match ws.read()? {
-            Message::Text(t) => t.to_string(),
-            Message::Close(_) => return Ok(()),
-            _ => continue,
+        let text = match ws.read() {
+            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                send(&mut ws, "GET", "/devices/list")?;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+            Ok(Message::Text(t)) => t.to_string(),
+            Ok(Message::Close(_)) => return Ok(()),
+            Ok(_) => continue,
         };
         let Ok(msg) = serde_json::from_str::<Value>(&text) else { continue };
         let path = msg["path"].as_str().unwrap_or("");
@@ -104,8 +114,18 @@ fn session(hub: &Hub, shared: &Mutex<Option<TcpStream>>, known: &mut Vec<String>
 
         if path == "/devices/list" {
             for (event, id) in parse_device_list(payload) {
-                if !known.contains(&id) {
-                    known.push(id.clone());
+                // A device Batly read itself keeps the id Batly knows.
+                let event = match event {
+                    Event::Init { name, kind, source, has_battery, .. } => {
+                        let shown = crate::model::twin_of(&name).unwrap_or_else(|| id.clone());
+                        ids.insert(id.clone(), shown.clone());
+                        Event::Init { id: shown, name, kind, source, has_battery }
+                    }
+                    other => other,
+                };
+                let shown = event.id().to_string();
+                if !known.contains(&shown) {
+                    known.push(shown);
                 }
                 hub.publish(event);
                 send(&mut ws, "GET", &format!("/battery/{id}/state"))?;
@@ -114,8 +134,9 @@ fn session(hub: &Hub, shared: &Mutex<Option<TcpStream>>, known: &mut Vec<String>
             // A device appeared, disappeared or changed: re-list.
             send(&mut ws, "GET", "/devices/list")?;
         } else if is_battery_path(path) {
-            if let Some(event) = parse_battery(payload) {
-                hub.publish(event);
+            if let Some(Event::Update { id, battery }) = parse_battery(payload) {
+                let id = ids.get(&id).cloned().unwrap_or(id);
+                hub.publish(Event::Update { id, battery });
             }
         }
     }

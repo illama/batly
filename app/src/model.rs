@@ -331,8 +331,67 @@ fn apply(devices: &mut Vec<Device>, event: Event) -> bool {
     }
 }
 
+// ------------------------------------------------------------------ twins
+
+/// Logitech devices Batly read itself, by name: while G HUB runs, Batly
+/// leaves the devices to it and the G HUB source shows them under the id
+/// Batly knows (icons, names, order and history carry on). Saved in a
+/// small file so this also works when G HUB is already running at start.
+struct Twins {
+    path: Option<std::path::PathBuf>,
+    by_name: std::collections::BTreeMap<String, String>,
+}
+
+static TWINS: Mutex<Option<Twins>> = Mutex::new(None);
+
+fn twin_key(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Loads the known twins (call once at start).
+pub fn twins_load(path: Option<std::path::PathBuf>) {
+    let by_name = path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&s).ok())
+        .unwrap_or_default();
+    *TWINS.lock().unwrap() = Some(Twins { path, by_name });
+}
+
+/// Remembers that the Logitech device `name` has the id `id`.
+pub fn twin_record(name: &str, id: &str) {
+    let key = twin_key(name);
+    if key.is_empty() {
+        return;
+    }
+    let mut guard = TWINS.lock().unwrap();
+    let twins = guard.get_or_insert_with(|| Twins { path: None, by_name: Default::default() });
+    if twins.by_name.get(&key).map(String::as_str) == Some(id) {
+        return;
+    }
+    twins.by_name.insert(key, id.to_string());
+    if let Some(p) = &twins.path {
+        if let Ok(s) = serde_json::to_string_pretty(&twins.by_name) {
+            let _ = std::fs::write(p, s);
+        }
+    }
+}
+
+/// Id Batly knows for the device called `name`, if any.
+pub fn twin_of(name: &str) -> Option<String> {
+    TWINS.lock().unwrap().as_ref().and_then(|t| t.by_name.get(&twin_key(name)).cloned())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn twins_match_by_name() {
+        super::twin_record("G502 X PLUS", "4D52-ABCD");
+        // Case, spaces and punctuation do not matter.
+        assert_eq!(super::twin_of("g502 x-plus").as_deref(), Some("4D52-ABCD"));
+        assert_eq!(super::twin_of("PRO X 60 (unknown)"), None);
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

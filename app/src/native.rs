@@ -388,6 +388,9 @@ enum Request {
     ToDevice(String, Command),
     /// Stops every session (they give kept LEDs back), then answers.
     Shutdown(Sender<()>),
+    /// Logitech G HUB started (`true`) or closed: Batly steps aside while
+    /// it runs, the G HUB source reports the batteries.
+    GHub(bool),
 }
 
 /// How long `list_receivers` waits for busy sessions.
@@ -424,23 +427,31 @@ impl Native {
                 }
             }
         });
-        // G HUB: Batly leaves the lighting and the onboard mode alone while
-        // it runs (it needs host mode for its key bindings).
+        let (requests, rx) = mpsc::channel();
+        // G HUB: while it runs, Batly does not talk to the Logitech devices
+        // at all. Two programs sending HID++ requests to the same device
+        // mix up their answers (G HUB then loses its host mode, and the key
+        // assignments with it); the G HUB source gives the batteries.
         let ghub = || crate::win::process_running(&["lghub_agent.exe", "lghub.exe", "lghub_system_tray.exe"]);
         hidpp::GHUB_RUNNING.store(ghub(), std::sync::atomic::Ordering::Relaxed);
+        let notify = requests.clone();
         let _ = thread::Builder::new().name("ghub-watch".into()).stack_size(64 * 1024).spawn(move || loop {
             thread::sleep(Duration::from_secs(5));
             let now = ghub();
-            if hidpp::GHUB_RUNNING.swap(now, std::sync::atomic::Ordering::Relaxed) != now {
-                log!("G HUB {}", if now { "started: lighting left to it" } else { "closed" });
+            if hidpp::GHUB_RUNNING.swap(now, std::sync::atomic::Ordering::Relaxed) != now && notify.send(Request::GHub(now)).is_err() {
+                return;
             }
         });
-        let (requests, rx) = mpsc::channel();
         let _ = thread::Builder::new().name("hid-manager".into()).stack_size(256 * 1024).spawn(move || {
             let mut running: HashMap<String, Running> = HashMap::new();
             // Device id -> endpoint key, kept up to date by the sessions.
             let owners: Owners = Arc::new(Mutex::new(Presence::default()));
-            rescan(&mut running, &settings, &hub, &owners);
+            let mut paused = hidpp::GHUB_RUNNING.load(std::sync::atomic::Ordering::Relaxed);
+            if paused {
+                log!("hid: Logitech G HUB is running, the Logitech devices are left to it");
+            } else {
+                rescan(&mut running, &settings, &hub, &owners);
+            }
             loop {
                 let request = match rx.recv_timeout(WATCHDOG) {
                     Ok(request) => request,
@@ -448,7 +459,7 @@ impl Native {
                         // A session that ended on an I/O error (the endpoint
                         // is still there) is reopened without waiting for a
                         // device to be plugged in.
-                        if running.values().any(|r| r.thread.is_finished()) {
+                        if !paused && running.values().any(|r| r.thread.is_finished()) {
                             log!("hid: a session ended, reopening");
                             rescan(&mut running, &settings, &hub, &owners);
                         }
@@ -457,6 +468,25 @@ impl Native {
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 match request {
+                    Request::Rescan | Request::Refresh if paused => {}
+                    Request::GHub(true) if !paused => {
+                        log!("hid: Logitech G HUB started, the Logitech devices are left to it");
+                        paused = true;
+                        for session in running.values() {
+                            session.send(Command::Stop);
+                        }
+                        for (_, session) in running.drain() {
+                            let _ = session.thread.join();
+                        }
+                        // The sessions mark their devices offline; the G HUB
+                        // source shows them again under the same ids.
+                    }
+                    Request::GHub(false) if paused => {
+                        log!("hid: Logitech G HUB closed, Batly reads the Logitech devices again");
+                        paused = false;
+                        rescan(&mut running, &settings, &hub, &owners);
+                    }
+                    Request::GHub(_) => {}
                     Request::Rescan => rescan(&mut running, &settings, &hub, &owners),
                     Request::Refresh => {
                         rescan(&mut running, &settings, &hub, &owners);
@@ -680,6 +710,9 @@ fn spawn_session(key: &str, interfaces: &[Interface], settings: &hidpp::Settings
     let tag: String = key.rsplit('\\').next().unwrap_or(key).chars().take(24).collect();
     let (owners, owner) = (owners.clone(), key.to_string());
     let sink = move |event: HubEvent| {
+        if let HubEvent::Init { id, name, source: Source::Native, .. } = &event {
+            crate::model::twin_record(name, id);
+        }
         // Another endpoint may still see the device: then its Offline /
         // Remove from this endpoint is not passed on.
         if owners.lock().unwrap().route(&owner, &event) {

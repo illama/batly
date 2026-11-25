@@ -275,6 +275,7 @@ fn main() {
     // The demo keeps its fake readings in memory only.
     let history_dir = (cfg.history.enabled && !has("demo")).then(|| cfg_path.with_file_name("history"));
     let history = Arc::new(history::History::open(history_dir, cfg.history.retention_days));
+    model::twins_load((!has("demo")).then(|| cfg_path.with_file_name("twins.json")));
     {
         let history = history.clone();
         hub.subscribe(move |d| {
