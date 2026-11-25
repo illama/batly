@@ -734,6 +734,9 @@ impl App {
             decorate(ID_WEB, Deco::Glyph('\u{E774}'));
             decorate(ID_RECEIVERS, Deco::Glyph('\u{E88E}'));
             decorate(ID_QUIT, Deco::Glyph('\u{E7E8}'));
+            for id in [ID_NUMERIC, ID_SINGLE_ICON, ID_LOW_BATTERY, ID_AUTOSTART] {
+                decorate(id, Deco::Check);
+            }
             for (n, action) in self.services.actions.iter().enumerate() {
                 decorate(ID_ACTION_BASE + n, Deco::Glyph(action.glyph));
             }

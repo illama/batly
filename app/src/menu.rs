@@ -29,6 +29,8 @@ const PAD: f32 = 6.0;
 pub enum Deco {
     /// A "Segoe MDL2 Assets" icon.
     Glyph(char),
+    /// A check box (on or off, from the menu item state).
+    Check,
     /// The device icon with its level.
     Device { kind: DeviceKind, percent: Option<f32>, charging: bool, online: bool, has_battery: bool },
 }
@@ -246,15 +248,25 @@ impl crate::egui_host::View for MenuView {
                             ui.painter().circle_filled(dot, 3.2, c.accent);
                         }
                     }
-                    None if it.checked => {
+                    Some(Deco::Check) | None if it.checked || it.deco == Some(Deco::Check) => {
                         let r = egui::Rect::from_center_size(icon_centre, egui::vec2(16.0, 16.0));
-                        ui.painter().rect_filled(r, egui::CornerRadius::same(4), c.accent);
-                        let pts = vec![
-                            r.center() + egui::vec2(-4.0, 0.2),
-                            r.center() + egui::vec2(-1.2, 3.0),
-                            r.center() + egui::vec2(4.0, -2.8),
-                        ];
-                        ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.8, c.on_accent)));
+                        let on = ui.ctx().animate_bool_with_time(id.with("check"), it.checked, 0.15);
+                        let border = if it.disabled { c.border } else { look::lerp(look::lerp(c.border, c.sub, 0.6), c.accent, h) };
+                        ui.painter().rect(
+                            r,
+                            egui::CornerRadius::same(4),
+                            look::lerp(c.field, c.accent, on),
+                            egui::Stroke::new(1.5, look::lerp(border, c.accent, on)),
+                            egui::StrokeKind::Inside,
+                        );
+                        if on > 0.0 {
+                            let pts = vec![
+                                r.center() + egui::vec2(-4.0, 0.2),
+                                r.center() + egui::vec2(-1.2, 3.0),
+                                r.center() + egui::vec2(4.0, -2.8),
+                            ];
+                            ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.8, look::lerp(c.field, c.on_accent, on))));
+                        }
                     }
                     _ => {}
                 }
