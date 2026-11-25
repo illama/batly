@@ -432,7 +432,10 @@ impl Native {
         // at all. Two programs sending HID++ requests to the same device
         // mix up their answers (G HUB then loses its host mode, and the key
         // assignments with it); the G HUB source gives the batteries.
-        let ghub = || crate::win::process_running(&["lghub_agent.exe", "lghub.exe", "lghub_system_tray.exe"]);
+        let ghub = || {
+            crate::ghub::LINKED.load(std::sync::atomic::Ordering::Relaxed)
+                || crate::win::process_running(&["lghub_agent.exe", "lghub.exe", "lghub_system_tray.exe", "lghub_updater.exe"])
+        };
         hidpp::GHUB_RUNNING.store(ghub(), std::sync::atomic::Ordering::Relaxed);
         let notify = requests.clone();
         let _ = thread::Builder::new().name("ghub-watch".into()).stack_size(64 * 1024).spawn(move || loop {

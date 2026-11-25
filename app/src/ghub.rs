@@ -22,6 +22,10 @@ use tungstenite::{Message, WebSocket};
 const ENDPOINT: &str = "ws://localhost:9010";
 const RECONNECT: Duration = Duration::from_secs(30);
 
+/// Set while Batly is connected to the G HUB agent: G HUB runs (checked
+/// with its processes by the native backend, see `hidpp::GHUB_RUNNING`).
+pub static LINKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct GHub {
     wake: Sender<()>,
     socket: Arc<Mutex<Option<TcpStream>>>,
@@ -36,6 +40,7 @@ impl GHub {
             let mut known: Vec<String> = Vec::new();
             loop {
                 let result = session(&hub, &shared, &mut known);
+                LINKED.store(false, std::sync::atomic::Ordering::Relaxed);
                 log!("ghub: disconnected ({:?})", result.err());
                 *shared.lock().unwrap() = None;
                 for id in known.drain(..) {
@@ -89,6 +94,7 @@ fn session(hub: &Hub, shared: &Mutex<Option<TcpStream>>, known: &mut Vec<String>
     headers.insert("Sec-WebSocket-Protocol", HeaderValue::from_static("json"));
     let (mut ws, _) = tungstenite::client(request, stream).map_err(|e| e.to_string())?;
     log!("ghub: connected");
+    LINKED.store(true, std::sync::atomic::Ordering::Relaxed);
     // G HUB id -> id shown (the Logitech twin's, see `model::twin_of`).
     let mut ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 

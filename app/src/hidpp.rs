@@ -2199,8 +2199,18 @@ impl<T: Transport> Session<T> {
         lighting::load_kept(path).get(&self.device_id(idx)).copied()
     }
 
+    /// Devices with onboard profiles (0x8100) play their lighting on their
+    /// own: Batly never keeps it for them, since applying it means taking
+    /// them out of onboard mode (and away from G HUB's onboard memory).
+    fn has_onboard_profiles(&mut self, idx: u8) -> io::Result<bool> {
+        Ok(self.feature(idx, FEAT_ONBOARD_PROFILES)?.is_some())
+    }
+
     fn keep_led(&mut self, idx: u8, zone: u8, effect: LedEffect) -> io::Result<Result<(), ActionError>> {
         let Some(path) = self.cfg.lighting_file.clone() else { return Ok(Err(ActionError::NotSupported)) };
+        if self.has_onboard_profiles(idx)? {
+            return Ok(Err(ActionError::NotSupported));
+        }
         if self.zone_wire(idx, zone, &effect)?.is_none() {
             return Ok(Err(ActionError::NotSupported));
         }
@@ -2257,6 +2267,14 @@ impl<T: Transport> Session<T> {
             }
             return Ok(());
         };
+        if self.has_onboard_profiles(idx)? {
+            // Kept by an older version on a device with onboard memory:
+            // ignored, the device keeps running from its memory.
+            if let Some(slot) = self.devices.get_mut(&idx) {
+                slot.led_event = None;
+            }
+            return Ok(());
+        }
         let Some(slot) = self.devices.get_mut(&idx) else { return Ok(()) };
         let (active, sleeping, event) = (slot.keep_active, slot.keep_sleeping, slot.led_event.take());
         match event {
@@ -3591,10 +3609,33 @@ mod tests {
     }
 
     #[test]
+    fn lighting_never_kept_on_a_device_with_onboard_memory() {
+        // Keeping it would take the device out of onboard mode (G HUB's
+        // onboard memory then looks gone).
+        let dir = temp_dir("kept-onboard");
+        let mut fake = Fake::new(true);
+        fake.rgb = true;
+        fake.onboard_mode = 1;
+        let (mut s, id) = led_session(fake, None);
+        s.cfg.lighting_file = Some(dir.join("lighting.json"));
+        let blue = LedEffect { color: 0x00A8FF, ..LedEffect::default() };
+        assert_eq!(command(&mut s, &id, Some(Setting::LedKeep { zone: 0, effect: blue })), Err(ActionError::NotSupported));
+        // An entry left by an older version is ignored: nothing claimed.
+        let mut kept = std::collections::BTreeMap::new();
+        kept.insert(id.clone(), (0u8, blue));
+        crate::lighting::save_kept(&dir.join("lighting.json"), &kept).unwrap();
+        command(&mut s, &id, Some(Setting::Dpi(800))).ok();
+        assert!(s.transport.rgb_sw.is_empty(), "LEDs claimed: {:?}", s.transport.rgb_sw);
+        assert_eq!(s.transport.onboard_mode, 1);
+    }
+
+    #[test]
     fn lighting_kept_by_batly() {
         let dir = temp_dir("kept");
         let mut fake = Fake::new(true);
         fake.rgb = true;
+        // Like the PRO X 60: no onboard profiles.
+        fake.onboard = false;
         let (mut s, id) = led_session(fake, None);
         s.cfg.lighting_file = Some(dir.join("lighting.json"));
         let orange = LedEffect { color: 0xFF8000, ..LedEffect::default() };

@@ -287,14 +287,7 @@ pub fn discovery(cfg: &config::Mqtt, base: &str, ctx: &Context, d: &Device) -> V
     let prefix = cfg.discovery_prefix.trim().trim_end_matches('/');
     let prefix = if prefix.is_empty() { "homeassistant" } else { prefix };
     let tid = topic_id(&d.id);
-    let device = json!({
-        "identifiers": [format!("batly_{tid}")],
-        "name": ctx.name(d),
-        "model": d.info.model.clone().unwrap_or_else(|| d.name.clone()),
-        "manufacturer": "Batly",
-        "sw_version": d.info.firmware,
-        "suggested_area": d.info.host,
-    });
+    let device = ha_device(ctx, d, &tid);
     let entity = |component: &str, key: &str, name: &str, extra: Value| {
         let mut v = json!({
             "name": name,
@@ -473,15 +466,24 @@ pub fn read_packet(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
 // ------------------------------------------------------- Home Assistant controls
 
 /// The `device` block of every discovery message of `d`.
+/// Home Assistant rejects the whole message when one of these fields is
+/// `null`: the missing ones are left out.
 fn ha_device(ctx: &Context, d: &Device, tid: &str) -> Value {
-    json!({
+    let mut v = json!({
         "identifiers": [format!("batly_{tid}")],
         "name": ctx.name(d),
         "model": d.info.model.clone().unwrap_or_else(|| d.name.clone()),
         "manufacturer": "Batly",
-        "sw_version": d.info.firmware,
-        "suggested_area": d.info.host,
-    })
+    });
+    if let Some(obj) = v.as_object_mut() {
+        if let Some(fw) = d.info.firmware.as_ref().filter(|f| !f.is_empty()) {
+            obj.insert("sw_version".into(), fw.clone().into());
+        }
+        if let Some(host) = d.info.host.as_ref().filter(|h| !h.is_empty()) {
+            obj.insert("suggested_area".into(), host.clone().into());
+        }
+    }
+    v
 }
 
 fn discovery_prefix(cfg: &config::Mqtt) -> &str {
@@ -513,6 +515,11 @@ fn backlight_name(m: BacklightMode) -> &'static str {
 /// keeps, else the first zone.
 fn light_of(st: &DeviceSettings) -> Option<(u8, LedEffect)> {
     let l = st.lighting.as_ref()?;
+    // A device with onboard memory plays its own lighting: driving it from
+    // Home Assistant would take it out of its onboard mode.
+    if l.onboard != crate::lighting::OnboardStatus::Absent {
+        return None;
+    }
     if let Some(kept) = l.kept {
         return Some(kept);
     }
@@ -874,6 +881,24 @@ mod tests {
         q1.extend_from_slice(&[0, 7]);
         q1.extend_from_slice(b"on");
         assert_eq!(parse_publish(0x32, &q1), Some(("batly/x/set/dpi".to_string(), b"on".to_vec())));
+    }
+
+    /// Home Assistant refuses a discovery message whose `device` has a
+    /// `null` field (seen on 2025+: "string value is None at
+    /// 'device.suggested_area'").
+    #[test]
+    fn discovery_device_has_no_null() {
+        let ctx = ctx();
+        let cfg = config::Mqtt { discovery: true, ..Default::default() };
+        let d = ctx.hub.snapshot().remove(0);
+        let mut msgs = discovery(&cfg, "batly", &ctx, &d);
+        msgs.extend(control_discovery(&cfg, "batly", &ctx, &d, &settings()));
+        for (topic, payload) in msgs {
+            let v: Value = serde_json::from_str(&payload).unwrap();
+            for (k, val) in v["device"].as_object().unwrap() {
+                assert!(!val.is_null(), "{topic}: device.{k} is null");
+            }
+        }
     }
 
     #[test]
