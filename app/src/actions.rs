@@ -76,6 +76,7 @@ pub fn update_action(cfg_path: PathBuf, known: Arc<Mutex<Option<update::Release>
             "Procurar atualizações",
         ])
         .into(),
+        glyph: '\u{E895}',
         run: Box::new(move |_| {
             let known = known.clone();
             let cfg_path = cfg_path.clone();
@@ -138,6 +139,7 @@ pub fn report_action(hub: Arc<Hub>, cfg_path: PathBuf) -> Action {
             "Relatar um problema…",
         ])
         .into(),
+        glyph: '\u{EBE8}',
         run: Box::new(move |_| {
             let devices: Vec<String> = hub.snapshot().iter().map(http::json).collect();
             let devices_json = format!("[{}]", devices.join(","));

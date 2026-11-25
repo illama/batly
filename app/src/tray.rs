@@ -40,10 +40,9 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
     DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
-    SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON, HMENU, LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, SM_CXSMICON, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_NULL, WM_POWERBROADCAST, WM_SETTINGCHANGE,
-    WM_TIMER, WM_USER, WNDCLASSW, WS_OVERLAPPED,
+    SetForegroundWindow, SetTimer, TranslateMessage, HICON, HMENU, LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+    SM_CXSMICON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
+    WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_TIMER, WM_USER, WNDCLASSW, WS_OVERLAPPED,
 };
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -79,8 +78,15 @@ const ID_SETTINGS_FILE: usize = 9;
 const ID_SNOOZE: usize = 10;
 const ID_SINGLE_ICON: usize = 11;
 pub const ID_RECEIVERS: usize = 12;
+/// Opens the tray menu (`--menu`, for screenshots and tests).
+pub const ID_MENU: usize = 13;
 /// `ID_ACTION_BASE + n`: extra actions registered in `Services::actions`.
 const ID_ACTION_BASE: usize = 500;
+
+thread_local! {
+    /// Device ids behind the `ID_DEVICE_BASE + n` commands of the open menu.
+    static MENU_DEVICES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 const ID_DEVICE_BASE: usize = 1000;
 const HOTKEY_ID: i32 = 1;
 
@@ -90,7 +96,6 @@ const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes
 static SYNC_PENDING: AtomicBool = AtomicBool::new(false);
 static THEME_DIRTY: AtomicBool = AtomicBool::new(false);
 static READD_ICONS: AtomicBool = AtomicBool::new(false);
-static MENU_OPEN: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -124,6 +129,8 @@ struct TrayIcon {
 /// update check, problem report…). Runs on the UI thread.
 pub struct Action {
     pub label: String,
+    /// Icon in the menu: a "Segoe MDL2 Assets" character.
+    pub glyph: char,
     pub run: Box<dyn Fn(HWND)>,
 }
 
@@ -631,6 +638,7 @@ impl App {
     }
 
     fn open_panel(&mut self, anchor: Option<POINT>) {
+        crate::menu::close();
         self.chart = None;
         let devices = self.ordered(self.hub.snapshot());
         let content = self.panel_content(&devices);
@@ -718,6 +726,29 @@ impl App {
         // SAFETY: menu handles are created and filled on this thread.
         unsafe {
             let menu = CreatePopupMenu();
+            use crate::menu::{decorate, Deco};
+            decorate(ID_PANEL, Deco::Glyph('\u{E83F}'));
+            decorate(ID_SNOOZE, Deco::Glyph('\u{E916}'));
+            decorate(ID_REFRESH, Deco::Glyph('\u{E72C}'));
+            decorate(ID_SETTINGS, Deco::Glyph('\u{E713}'));
+            decorate(ID_WEB, Deco::Glyph('\u{E774}'));
+            decorate(ID_RECEIVERS, Deco::Glyph('\u{E88E}'));
+            decorate(ID_QUIT, Deco::Glyph('\u{E7E8}'));
+            for (n, action) in self.services.actions.iter().enumerate() {
+                decorate(ID_ACTION_BASE + n, Deco::Glyph(action.glyph));
+            }
+            for (n, d) in devices.iter().enumerate() {
+                decorate(
+                    ID_DEVICE_BASE + n,
+                    Deco::Device {
+                        kind: d.kind,
+                        percent: d.battery.map(|b| b.percent),
+                        charging: d.battery.is_some_and(|b| b.status == crate::model::Status::Charging),
+                        online: d.online,
+                        has_battery: d.has_battery,
+                    },
+                );
+            }
             let add = |id: usize, text: &str, flags: u32| {
                 AppendMenuW(menu, MF_STRING | flags, id, wide(text).as_ptr());
             };
@@ -1136,32 +1167,19 @@ fn request_sync(hwnd: HWND) {
 }
 
 fn show_menu(hwnd: HWND) {
-    if MENU_OPEN.swap(true, Ordering::AcqRel) {
-        return;
-    }
     panel::close();
     if let Some((menu, device_ids)) = with_app(|app| app.build_menu()) {
-        // The state is NOT borrowed while the menu runs its modal loop, so
-        // device updates keep flowing.
-        // SAFETY: valid menu and window handles owned by this thread.
-        let command = unsafe {
+        MENU_DEVICES.with(|d| *d.borrow_mut() = device_ids);
+        // SAFETY: valid menu handle owned by this thread; the flyout reads
+        // it before it is destroyed.
+        unsafe {
             let mut pt = POINT { x: 0, y: 0 };
             GetCursorPos(&mut pt);
             SetForegroundWindow(hwnd);
-            let flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN;
-            crate::menu::style(menu, hwnd);
-            let command = TrackPopupMenu(menu, flags, pt.x, pt.y, 0, hwnd, null());
-            PostMessageW(hwnd, WM_NULL, 0, 0);
+            crate::menu::show(hwnd, menu, (pt.x, pt.y));
             DestroyMenu(menu);
-            crate::menu::release();
-            command
-        };
-        if command > 0 && with_app(|app| app.command(command as usize, &device_ids)) == Some(true) {
-            // SAFETY: our own window; WM_DESTROY cleans up.
-            unsafe { DestroyWindow(hwnd) };
         }
     }
-    MENU_OPEN.store(false, Ordering::Release);
 }
 
 /// Starts a new instance (which waits for this one to exit) and quits:
@@ -1182,9 +1200,6 @@ fn restart(hwnd: HWND) {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if let Some(r) = crate::menu::on_message(hwnd, msg, wparam, lparam) {
-        return r;
-    }
     match msg {
         WM_APP_SYNC => {
             SYNC_PENDING.store(false, Ordering::Release);
@@ -1210,6 +1225,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_HOTKEY => {
             with_app(|app| app.open_panel(None));
+            0
+        }
+        crate::menu::WM_APP_MENU => {
+            let ids = MENU_DEVICES.with(|d| d.borrow().clone());
+            if with_app(|app| app.command(wparam, &ids)) == Some(true) {
+                DestroyWindow(hwnd);
+            }
+            0
+        }
+        WM_COMMAND if wparam & 0xFFFF == ID_MENU => {
+            show_menu(hwnd);
             0
         }
         WM_COMMAND => {
@@ -1404,9 +1430,6 @@ pub fn run(hwnd: HWND, hub: Arc<Hub>, cfg: Config, cfg_path: PathBuf, services: 
     unsafe {
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            if settings_ui::pre_translate(&msg) {
-                continue;
-            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

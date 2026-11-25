@@ -1,58 +1,18 @@
-//! Settings window: every option of `appsettings.toml` with standard Win32
-//! controls, in tabs. Saving writes the file; the tray picks the change up
-//! like any other edit of the file (hot reload).
+//! Settings window: every option of `appsettings.toml`, in pages, drawn
+//! with egui in the Batly style (see [`crate::look`]). Saving writes the
+//! file; the tray picks the change up like any other edit of the file (hot
+//! reload).
 
 use crate::config::Config;
 use crate::i18n::{self, tr};
-use crate::win::{self, wide};
+use crate::look;
+use crate::win;
 use crate::{hotkey, log};
-use std::cell::RefCell;
-use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
-use std::ptr::{null, null_mut};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, COLOR_WINDOW, HFONT};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, NMHDR, TCIF_TEXT, TCITEMW, TCM_GETCURSEL,
-    TCM_INSERTITEMW, TCN_SELCHANGE, WC_TABCONTROLW,
-};
-use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
-use windows_sys::Win32::UI::WindowsAndMessaging::*;
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-const CLASS: &str = "BatlySettings";
-const ID_SAVE: usize = 1;
-const ID_CANCEL: usize = 2;
-const ID_RAW: usize = 3;
-const ID_TOKEN: usize = 4;
-const ID_DEV_LIST: usize = 5;
-const ID_DEV_UP: usize = 6;
-const ID_DEV_DOWN: usize = 7;
-const ID_FIRST_FIELD: usize = 100;
-
-const BS_AUTOCHECKBOX_: u32 = 0x0003;
-const BS_PUSHBUTTON_: u32 = 0x0000;
-const BS_DEFPUSHBUTTON_: u32 = 0x0001;
-const ES_AUTOHSCROLL_: u32 = 0x0080;
-const ES_MULTILINE_: u32 = 0x0004;
-const ES_WANTRETURN_: u32 = 0x1000;
-const ES_NUMBER_: u32 = 0x2000;
-const ES_PASSWORD_: u32 = 0x0020;
-const CBS_DROPDOWNLIST_: u32 = 0x0003;
-const LBS_NOTIFY_: u32 = 0x0001;
-const BM_GETCHECK_: u32 = 0x00F0;
-const BM_SETCHECK_: u32 = 0x00F1;
-const CB_ADDSTRING_: u32 = 0x0143;
-const CB_GETCURSEL_: u32 = 0x0147;
-const CB_SETCURSEL_: u32 = 0x014E;
-const LB_ADDSTRING_: u32 = 0x0180;
-const LB_RESETCONTENT_: u32 = 0x0184;
-const LB_SETCURSEL_: u32 = 0x0186;
-const LB_GETCURSEL_: u32 = 0x0188;
-const LBN_SELCHANGE_: u32 = 1;
-
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Kind {
     Check,
     Number(i64, i64),
@@ -653,6 +613,47 @@ fn fields() -> Vec<Field> {
     ]
 }
 
+const CLASS: &str = "BatlySettings";
+
+/// Value being edited in a field.
+#[derive(Clone, PartialEq, Debug)]
+enum Edit {
+    Bool(bool),
+    Text(String),
+    Choice(usize),
+}
+
+fn to_edit(kind: Kind, v: &Value) -> Edit {
+    match (kind, v) {
+        (Kind::Check, Value::Bool(b)) => Edit::Bool(*b),
+        (Kind::Choice(options), Value::Choice(c)) => Edit::Choice(options.iter().position(|(k, _)| k.eq_ignore_ascii_case(c)).unwrap_or(0)),
+        (_, Value::Num(n)) => Edit::Text(n.to_string()),
+        (_, Value::Text(t)) => Edit::Text(t.clone()),
+        (_, Value::Lines(l)) => Edit::Text(l.join("\n")),
+        (Kind::Check, _) => Edit::Bool(false),
+        (Kind::Choice(_), _) => Edit::Choice(0),
+        _ => Edit::Text(String::new()),
+    }
+}
+
+/// Reads an edited field; `Err` holds a message for an invalid number.
+fn from_edit(kind: Kind, e: &Edit, label: &str) -> Result<Value, String> {
+    Ok(match (kind, e) {
+        (Kind::Check, Edit::Bool(b)) => Value::Bool(*b),
+        (Kind::Choice(options), Edit::Choice(i)) => Value::Choice(options.get(*i).map_or("", |o| o.0).to_string()),
+        (Kind::Number(min, max), Edit::Text(t)) => {
+            let v: i64 = t.trim().parse().map_err(|_| label.to_string())?;
+            if v < min || v > max {
+                return Err(format!("{label} ({min} – {max})"));
+            }
+            Value::Num(v)
+        }
+        (Kind::Lines, Edit::Text(t)) => Value::Lines(t.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
+        (_, Edit::Text(t)) => Value::Text(t.clone()),
+        _ => return Err(label.to_string()),
+    })
+}
+
 /// A device that can be configured (known now or present in the settings).
 #[derive(Clone)]
 pub struct KnownDevice {
@@ -660,54 +661,23 @@ pub struct KnownDevice {
     pub name: String,
 }
 
-struct Ctl {
-    field: usize,
-    hwnd: HWND,
-    label: HWND,
-}
-
-struct State {
-    hwnd: HWND,
+struct Settings {
     owner: HWND,
     cfg: Config,
     path: PathBuf,
     devices: Vec<KnownDevice>,
     selected: Option<usize>,
     fields: Vec<Field>,
-    ctls: Vec<Ctl>,
-    /// Controls of each page that are not fields (device list, buttons…).
-    extras: Vec<(usize, HWND)>,
-    tab: HWND,
-    dev_list: HWND,
-    font: HFONT,
-    autostart: HWND,
+    /// One per field; device fields hold the selected device's values.
+    edits: Vec<Edit>,
+    autostart: bool,
     page: usize,
-}
-
-thread_local! {
-    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-}
-
-pub fn hwnd() -> Option<HWND> {
-    STATE.with(|s| s.borrow().as_ref().map(|st| st.hwnd))
-}
-
-/// Lets the window handle Tab / Enter / Esc; call from the message loop.
-pub fn pre_translate(msg: &MSG) -> bool {
-    match hwnd() {
-        // SAFETY: valid window and message.
-        Some(h) => unsafe { IsDialogMessageW(h, msg) != 0 },
-        None => false,
-    }
+    error: Option<String>,
+    show_secret: bool,
 }
 
 pub fn open(owner: HWND, cfg: &Config, path: PathBuf, mut devices: Vec<KnownDevice>) {
-    if let Some(h) = hwnd() {
-        // SAFETY: our own window.
-        unsafe {
-            ShowWindow(h, SW_RESTORE);
-            SetForegroundWindow(h);
-        }
+    if crate::egui_host::focus(CLASS) {
         return;
     }
     // Devices only known from the settings file are configurable too.
@@ -717,62 +687,29 @@ pub fn open(owner: HWND, cfg: &Config, path: PathBuf, mut devices: Vec<KnownDevi
         }
     }
     sort_devices(&mut devices, cfg);
-
-    // SAFETY: standard window creation; children are created in `build`.
-    unsafe {
-        let icc = INITCOMMONCONTROLSEX { dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_TAB_CLASSES | ICC_STANDARD_CLASSES };
-        InitCommonControlsEx(&icc);
-        let instance = GetModuleHandleW(null());
-        let class_name = wide(CLASS);
-        let mut class: WNDCLASSW = zeroed();
-        class.lpfnWndProc = Some(wnd_proc);
-        class.hInstance = instance;
-        class.lpszClassName = class_name.as_ptr();
-        class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-        class.hbrBackground = (COLOR_WINDOW + 1) as _;
-        class.hIcon = LoadIconW(instance, 1 as _);
-        RegisterClassW(&class);
-        let title = format!("Batly – {}", tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]));
-        let hwnd = CreateWindowExW(
-            WS_EX_CONTROLPARENT,
-            class_name.as_ptr(),
-            wide(&title).as_ptr(),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            100,
-            100,
-            null_mut(),
-            null_mut(),
-            instance,
-            null(),
-        );
-        if hwnd.is_null() {
-            return;
-        }
-        STATE.with(|s| {
-            *s.borrow_mut() = Some(State {
-                hwnd,
-                owner,
-                cfg: cfg.clone(),
-                path,
-                devices,
-                selected: None,
-                fields: fields(),
-                ctls: Vec::new(),
-                extras: Vec::new(),
-                tab: null_mut(),
-                dev_list: null_mut(),
-                font: null_mut(),
-                autostart: null_mut(),
-                page: 0,
-            })
-        });
-        build(hwnd);
-        crate::theme::apply(hwnd);
-        ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
+    let fields = fields();
+    let edits = fields.iter().map(|f| to_edit(f.kind, &(f.get)(cfg, ""))).collect();
+    let mut st = Settings {
+        owner,
+        cfg: cfg.clone(),
+        path,
+        devices,
+        selected: None,
+        fields,
+        edits,
+        autostart: win::autostart_enabled(),
+        page: 0,
+        error: None,
+        show_secret: false,
+    };
+    if !st.devices.is_empty() {
+        st.select(Some(0));
     }
+    let title = format!("Batly – {}", tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]));
+    crate::egui_host::open(
+        crate::egui_host::Options { class: CLASS, title, size: (680.0, 660.0), min_size: (560.0, 460.0), resizable: true },
+        Box::new(st),
+    );
 }
 
 fn sort_devices(devices: &mut [KnownDevice], cfg: &Config) {
@@ -780,448 +717,66 @@ fn sort_devices(devices: &mut [KnownDevice], cfg: &Config) {
     devices.sort_by(|a, b| rank(&a.id).cmp(&rank(&b.id)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
 }
 
-fn message_font(hwnd: HWND) -> HFONT {
-    // SAFETY: NONCLIENTMETRICSW is plain data sized correctly.
-    unsafe {
-        let mut m: NONCLIENTMETRICSW = zeroed();
-        m.cbSize = size_of::<NONCLIENTMETRICSW>() as u32;
-        SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, m.cbSize, (&mut m as *mut NONCLIENTMETRICSW).cast(), 0, GetDpiForWindow(hwnd));
-        CreateFontIndirectW(&m.lfMessageFont)
-    }
-}
-
-/// Creates every control. Positions are in logical pixels, scaled.
-fn build(hwnd: HWND) {
-    let scale = crate::ui::Scale::of(hwnd);
-    let px = |v: i32| scale.px(v);
-    let font = message_font(hwnd);
-    // SAFETY: child controls of our own window; strings outlive the calls.
-    unsafe {
-        let instance = GetModuleHandleW(null());
-        let child = |class: &str, text: &str, style: u32, ex: u32, x: i32, y: i32, w: i32, h: i32, id: usize| -> HWND {
-            let c = CreateWindowExW(
-                ex,
-                wide(class).as_ptr(),
-                wide(text).as_ptr(),
-                WS_CHILD | style,
-                px(x),
-                px(y),
-                px(w),
-                px(h),
-                hwnd,
-                id as _,
-                instance,
-                null(),
-            );
-            SendMessageW(c, WM_SETFONT, font as usize, 1);
-            c
-        };
-
-        let (width, label_w, ctl_x, ctl_w) = (600, 300, 330, 250);
-        let tab = CreateWindowExW(
-            0,
-            WC_TABCONTROLW,
-            null(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-            px(10),
-            px(10),
-            px(width - 20),
-            px(30),
-            hwnd,
-            null_mut(),
-            instance,
-            null(),
-        );
-        SendMessageW(tab, WM_SETFONT, font as usize, 1);
-        for (i, title) in pages().iter().enumerate() {
-            let mut w = wide(title);
-            let mut item: TCITEMW = zeroed();
-            item.mask = TCIF_TEXT;
-            item.pszText = w.as_mut_ptr();
-            SendMessageW(tab, TCM_INSERTITEMW, i, (&item as *const TCITEMW) as LPARAM);
-        }
-
-        let mut ctls = Vec::new();
-        let mut extras = Vec::new();
-        let mut max_y = 0;
-        let (fields_list, dev_count) = STATE.with(|s| {
-            let s = s.borrow();
-            let st = s.as_ref().unwrap();
-            (st.fields.iter().map(|f| (f.page, f.scope, f.label.clone(), f.kind)).collect::<Vec<_>>(), st.devices.len())
-        });
-        let mut y_by_page = [56; 6];
-
-        // Devices page: list and order buttons above the per-device fields.
-        let list = child("LISTBOX", "", WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY_, 0, 20, 56, width - 40 - 110, 150, ID_DEV_LIST);
-        let up = child(
-            "BUTTON",
-            tr(["Move up", "Monter", "Nach oben", "Subir", "Su", "Subir"]),
-            WS_TABSTOP | BS_PUSHBUTTON_,
-            0,
-            width - 120,
-            56,
-            100,
-            28,
-            ID_DEV_UP,
-        );
-        let down = child(
-            "BUTTON",
-            tr(["Move down", "Descendre", "Nach unten", "Bajar", "Giù", "Descer"]),
-            WS_TABSTOP | BS_PUSHBUTTON_,
-            0,
-            width - 120,
-            90,
-            100,
-            28,
-            ID_DEV_DOWN,
-        );
-        extras.extend([(2, list), (2, up), (2, down)]);
-        if dev_count == 0 {
-            let none = child("STATIC", i18n::no_device(), 0, 0, 20, 216, width - 40, 20, 0);
-            extras.push((2, none));
-        }
-        y_by_page[2] = 220;
-
-        // Start with Windows (registry, not a settings field).
-        let autostart = child("BUTTON", i18n::autostart(), WS_TABSTOP | BS_AUTOCHECKBOX_, 0, 20, 0, width - 40, 24, 0);
-        extras.push((0, autostart));
-
-        for (i, (page, _scope, label, kind)) in fields_list.iter().enumerate() {
-            let y = y_by_page[*page];
-            let id = ID_FIRST_FIELD + i;
-            let (ctl, lbl, h) = match kind {
-                Kind::Check => (child("BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX_, 0, 20, y, width - 40, 24, id), null_mut(), 30),
-                Kind::Lines => {
-                    let l = child("STATIC", label, 0, 0, 20, y, width - 40, 20, 0);
-                    let c = child(
-                        "EDIT",
-                        "",
-                        WS_TABSTOP | WS_VSCROLL | ES_MULTILINE_ | ES_WANTRETURN_ | ES_AUTOHSCROLL_,
-                        WS_EX_CLIENTEDGE,
-                        20,
-                        y + 22,
-                        width - 40,
-                        64,
-                        id,
-                    );
-                    (c, l, 94)
-                }
-                _ => {
-                    let l = child("STATIC", label, 0, 0, 20, y + 4, label_w, 20, 0);
-                    let c = match kind {
-                        Kind::Choice(options) => {
-                            let c = child(
-                                "COMBOBOX",
-                                "",
-                                WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST_ | crate::theme::CBS_THEMED,
-                                0,
-                                ctl_x,
-                                y,
-                                ctl_w,
-                                200,
-                                id,
-                            );
-                            for (_, name) in options.iter() {
-                                SendMessageW(c, CB_ADDSTRING_, 0, wide(name).as_ptr() as LPARAM);
-                            }
-                            c
-                        }
-                        Kind::Number(min, _) => {
-                            let style = WS_TABSTOP | ES_AUTOHSCROLL_ | if *min >= 0 { ES_NUMBER_ } else { 0 };
-                            child("EDIT", "", style, WS_EX_CLIENTEDGE, ctl_x, y, 90, 24, id)
-                        }
-                        Kind::Secret if *page == 4 => {
-                            // Room for the "New" button.
-                            let gen = child(
-                                "BUTTON",
-                                tr(["New", "Nouveau", "Neu", "Nuevo", "Nuovo", "Novo"]),
-                                WS_TABSTOP | BS_PUSHBUTTON_,
-                                0,
-                                ctl_x + ctl_w - 80,
-                                y,
-                                80,
-                                24,
-                                ID_TOKEN,
-                            );
-                            extras.push((4, gen));
-                            child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_ | ES_PASSWORD_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w - 86, 24, id)
-                        }
-                        Kind::Secret => {
-                            child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_ | ES_PASSWORD_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w, 24, id)
-                        }
-                        _ => child("EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL_, WS_EX_CLIENTEDGE, ctl_x, y, ctl_w, 24, id),
-                    };
-                    (c, l, 32)
-                }
-            };
-            ctls.push(Ctl { field: i, hwnd: ctl, label: lbl });
-            y_by_page[*page] = y + h;
-        }
-        // The autostart box goes after the general fields.
-        SetWindowPos(autostart, null_mut(), px(20), px(y_by_page[0]), 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-        y_by_page[0] += 30;
-        for y in y_by_page {
-            max_y = max_y.max(y);
-        }
-
-        let bottom = max_y + 16;
-        let raw = child(
-            "BUTTON",
-            tr([
-                "Edit the file…",
-                "Modifier le fichier…",
-                "Datei bearbeiten…",
-                "Editar el archivo…",
-                "Modifica il file…",
-                "Editar o arquivo…",
-            ]),
-            WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON_,
-            0,
-            20,
-            bottom,
-            150,
-            30,
-            ID_RAW,
-        );
-        let _ = raw;
-        child(
-            "BUTTON",
-            tr(["Save", "Enregistrer", "Speichern", "Guardar", "Salva", "Salvar"]),
-            WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON_,
-            0,
-            width - 240,
-            bottom,
-            105,
-            30,
-            ID_SAVE,
-        );
-        child(
-            "BUTTON",
-            tr(["Cancel", "Annuler", "Abbrechen", "Cancelar", "Annulla", "Cancelar"]),
-            WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON_,
-            0,
-            width - 125,
-            bottom,
-            105,
-            30,
-            ID_CANCEL,
-        );
-
-        // Size the window around the client area.
-        let mut r = RECT { left: 0, top: 0, right: px(width), bottom: px(bottom + 46) };
-        windows_sys::Win32::UI::HiDpi::AdjustWindowRectExForDpi(
-            &mut r,
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            0,
-            WS_EX_CONTROLPARENT,
-            GetDpiForWindow(hwnd),
-        );
-        SetWindowPos(hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
-        SetWindowPos(tab, null_mut(), 0, 0, px(width - 20), px(bottom - 16), SWP_NOMOVE | SWP_NOZORDER);
-
-        STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            let st = s.as_mut().unwrap();
-            st.ctls = ctls;
-            st.extras = extras;
-            st.tab = tab;
-            st.dev_list = list;
-            st.font = font;
-            st.autostart = autostart;
-            SendMessageW(autostart, BM_SETCHECK_, win::autostart_enabled() as usize, 0);
-            for c in &st.ctls {
-                let f = &st.fields[c.field];
-                if f.scope == Scope::Global {
-                    write_value(c.hwnd, f.kind, &(f.get)(&st.cfg, ""));
-                }
-            }
-            fill_device_list(st);
-        });
-        if dev_count > 0 {
-            select_device(Some(0));
-        }
-        show_page(0);
-    }
-}
-
-fn fill_device_list(st: &State) {
-    // SAFETY: our own list box.
-    unsafe {
-        SendMessageW(st.dev_list, LB_RESETCONTENT_, 0, 0);
-        for d in &st.devices {
-            let shown = st.cfg.display_name(&d.id, &d.name);
-            let text = if shown != d.name { format!("{shown}  ({})", d.name) } else { shown };
-            SendMessageW(st.dev_list, LB_ADDSTRING_, 0, wide(&text).as_ptr() as LPARAM);
-        }
-        if let Some(i) = st.selected {
-            SendMessageW(st.dev_list, LB_SETCURSEL_, i, 0);
-        }
-    }
-}
-
-fn write_value(h: HWND, kind: Kind, v: &Value) {
-    // SAFETY: valid control handles; strings outlive the calls.
-    unsafe {
-        match (kind, v) {
-            (Kind::Check, Value::Bool(b)) => {
-                SendMessageW(h, BM_SETCHECK_, *b as usize, 0);
-            }
-            (Kind::Choice(options), Value::Choice(c)) => {
-                let i = options.iter().position(|(k, _)| k.eq_ignore_ascii_case(c)).unwrap_or(0);
-                SendMessageW(h, CB_SETCURSEL_, i, 0);
-            }
-            (_, Value::Num(n)) => {
-                SetWindowTextW(h, wide(&n.to_string()).as_ptr());
-            }
-            (_, Value::Text(t)) => {
-                SetWindowTextW(h, wide(t).as_ptr());
-            }
-            (_, Value::Lines(l)) => {
-                SetWindowTextW(h, wide(&l.join("\r\n")).as_ptr());
-            }
-            _ => {}
-        }
-    }
-}
-
-fn window_text(h: HWND) -> String {
-    // SAFETY: buffer sized from GetWindowTextLengthW.
-    unsafe {
-        let len = GetWindowTextLengthW(h).max(0) as usize;
-        let mut buf = vec![0u16; len + 1];
-        let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
-        String::from_utf16_lossy(&buf[..n])
-    }
-}
-
-/// Reads a control; `Err` holds a message for an invalid number.
-fn read_value(h: HWND, kind: Kind, label: &str) -> Result<Value, String> {
-    // SAFETY: valid control handles.
-    unsafe {
-        Ok(match kind {
-            Kind::Check => Value::Bool(SendMessageW(h, BM_GETCHECK_, 0, 0) == 1),
-            Kind::Choice(options) => {
-                let i = SendMessageW(h, CB_GETCURSEL_, 0, 0).max(0) as usize;
-                Value::Choice(options.get(i).map_or("", |o| o.0).to_string())
-            }
-            Kind::Number(min, max) => {
-                let t = window_text(h);
-                let v: i64 = t.trim().parse().map_err(|_| label.to_string())?;
-                if v < min || v > max {
-                    return Err(format!("{label} ({min} – {max})"));
-                }
-                Value::Num(v)
-            }
-            Kind::Lines => Value::Lines(window_text(h).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
-            Kind::Text | Kind::Secret => Value::Text(window_text(h)),
-        })
-    }
-}
-
-/// Stores the device fields of the selected device into the working copy.
-fn commit_device(st: &mut State) -> Result<(), String> {
-    let Some(sel) = st.selected else { return Ok(()) };
-    let id = st.devices[sel].id.clone();
-    for c in &st.ctls {
-        let f = &st.fields[c.field];
-        if f.scope == Scope::Device {
-            let v = read_value(c.hwnd, f.kind, &f.label)?;
-            (f.set)(&mut st.cfg, &id, v);
-        }
-    }
-    Ok(())
-}
-
-fn select_device(index: Option<usize>) {
-    let page = STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        let st = s.as_mut()?;
-        if let Err(e) = commit_device(st) {
-            win::message_box("Batly", &e);
-        }
-        st.selected = index.filter(|i| *i < st.devices.len());
-        let id = st.selected.map(|i| st.devices[i].id.clone());
-        for c in &st.ctls {
-            let f = &st.fields[c.field];
+impl Settings {
+    /// Stores the device fields being edited into the working copy.
+    fn commit_device(&mut self) -> Result<(), String> {
+        let Some(sel) = self.selected else { return Ok(()) };
+        let id = self.devices[sel].id.clone();
+        for (f, e) in self.fields.iter().zip(&self.edits) {
             if f.scope == Scope::Device {
-                if let Some(id) = &id {
-                    write_value(c.hwnd, f.kind, &(f.get)(&st.cfg, id));
-                }
-                // SAFETY: our own controls.
-                unsafe {
-                    EnableWindow(c.hwnd, id.is_some() as i32);
-                }
+                let v = from_edit(f.kind, e, &f.label)?;
+                (f.set)(&mut self.cfg, &id, v);
             }
         }
-        // SAFETY: our own list box.
-        unsafe { SendMessageW(st.dev_list, LB_SETCURSEL_, st.selected.unwrap_or(usize::MAX), 0) };
-        Some(st.page)
-    });
-    let _ = page;
-}
+        Ok(())
+    }
 
-fn move_device(delta: isize) {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        let Some(st) = s.as_mut() else { return };
-        let Some(i) = st.selected else { return };
-        let j = i as isize + delta;
-        if j < 0 || j as usize >= st.devices.len() {
+    fn select(&mut self, index: Option<usize>) {
+        if let Err(e) = self.commit_device() {
+            self.error = Some(e);
             return;
         }
-        let _ = commit_device(st);
-        st.devices.swap(i, j as usize);
-        st.selected = Some(j as usize);
-        st.cfg.ui.device_order = st.devices.iter().map(|d| d.id.clone()).collect();
-        fill_device_list(st);
-    });
-}
-
-fn show_page(page: usize) {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        let Some(st) = s.as_mut() else { return };
-        st.page = page;
-        // SAFETY: our own controls.
-        unsafe {
-            for c in &st.ctls {
-                let visible = st.fields[c.field].page == page;
-                let cmd = if visible { SW_SHOW } else { SW_HIDE };
-                ShowWindow(c.hwnd, cmd);
-                if !c.label.is_null() {
-                    ShowWindow(c.label, cmd);
+        self.selected = index.filter(|i| *i < self.devices.len());
+        if let Some(i) = self.selected {
+            let id = self.devices[i].id.clone();
+            for (f, e) in self.fields.iter().zip(self.edits.iter_mut()) {
+                if f.scope == Scope::Device {
+                    *e = to_edit(f.kind, &(f.get)(&self.cfg, &id));
                 }
             }
-            for (p, h) in &st.extras {
-                ShowWindow(*h, if *p == page { SW_SHOW } else { SW_HIDE });
-            }
         }
-    });
-}
+    }
 
-fn save() -> bool {
-    let result = STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        let st = s.as_mut()?;
-        let mut cfg = st.cfg.clone();
+    fn move_device(&mut self, delta: isize) {
+        let Some(i) = self.selected else { return };
+        let j = i as isize + delta;
+        if j < 0 || j as usize >= self.devices.len() {
+            return;
+        }
+        let _ = self.commit_device();
+        self.devices.swap(i, j as usize);
+        self.selected = Some(j as usize);
+        self.cfg.ui.device_order = self.devices.iter().map(|d| d.id.clone()).collect();
+    }
+
+    fn save(&mut self) -> bool {
+        let mut cfg = self.cfg.clone();
         let mut errors = Vec::new();
-        for c in &st.ctls {
-            let f = &st.fields[c.field];
+        for (f, e) in self.fields.iter().zip(&self.edits) {
             if f.scope != Scope::Global {
                 continue;
             }
-            match read_value(c.hwnd, f.kind, &f.label) {
+            match from_edit(f.kind, e, &f.label) {
                 Ok(v) => (f.set)(&mut cfg, "", v),
                 Err(e) => errors.push(e),
             }
         }
-        st.cfg.clone_from(&cfg);
-        if let Err(e) = commit_device(st) {
+        if let Err(e) = self.commit_device() {
             errors.push(e);
         }
-        cfg.devices.clone_from(&st.cfg.devices);
-        cfg.ui.selected_devices.clone_from(&st.cfg.ui.selected_devices);
-        cfg.ui.device_order.clone_from(&st.cfg.ui.device_order);
+        cfg.devices.clone_from(&self.cfg.devices);
+        cfg.ui.selected_devices.clone_from(&self.cfg.ui.selected_devices);
+        cfg.ui.device_order.clone_from(&self.cfg.ui.device_order);
         if !cfg.ui.hotkey.trim().is_empty() && hotkey::parse(&cfg.ui.hotkey).is_none() {
             errors.push(format!(
                 "{} : {}",
@@ -1238,29 +793,259 @@ fn save() -> bool {
         }
         if !errors.is_empty() {
             let title = tr(["Please check", "À vérifier", "Bitte prüfen", "Revise", "Da verificare", "Verifique"]);
-            return Some(Err(format!("{title}:\n\n{}", errors.join("\n"))));
+            self.error = Some(format!("{title} : {}", errors.join(" · ")));
+            return false;
         }
         // Normalise through the parser (clamps, drops empty device entries).
         let cfg = Config::parse(&cfg.to_toml()).unwrap_or(cfg);
-        // SAFETY: our own check box.
-        let autostart = unsafe { SendMessageW(st.autostart, BM_GETCHECK_, 0, 0) == 1 };
-        if autostart != win::autostart_enabled() {
-            win::set_autostart(autostart);
+        if self.autostart != win::autostart_enabled() {
+            win::set_autostart(self.autostart);
         }
-        Some(cfg.save(&st.path).map_err(|e| e.to_string()).map(|_| st.owner))
-    });
-    match result {
-        Some(Ok(owner)) => {
-            // SAFETY: posting to the tray window.
-            unsafe { PostMessageW(owner, crate::tray::WM_APP_RELOAD, 0, 0) };
-            true
+        match cfg.save(&self.path) {
+            Ok(()) => {
+                // SAFETY: posting to the tray window.
+                unsafe { PostMessageW(self.owner, crate::tray::WM_APP_RELOAD, 0, 0) };
+                true
+            }
+            Err(e) => {
+                log!("settings: {e}");
+                self.error = Some(e.to_string());
+                false
+            }
         }
-        Some(Err(e)) => {
-            log!("settings: {e}");
-            win::message_box("Batly", &e);
-            false
+    }
+
+    /// The fields of `page` with `scope`, drawn as rows of a card.
+    fn field_rows(&mut self, ui: &mut egui::Ui, page: usize, scope: Scope) {
+        let indices: Vec<usize> =
+            (0..self.fields.len()).filter(|&i| self.fields[i].page == page && self.fields[i].scope == scope).collect();
+        let c = look::colours(ui.ctx());
+        for (n, &i) in indices.iter().enumerate() {
+            if n > 0 {
+                look::divider(ui);
+            }
+            let f = &self.fields[i];
+            let label = f.label.clone();
+            let kind = f.kind;
+            let invalid = from_edit(kind, &self.edits[i], &label).is_err();
+            let token_page = page == 4 && matches!(kind, Kind::Secret);
+            let show_secret = self.show_secret;
+            let mut new_token = false;
+            let mut toggle_secret = false;
+            match (&mut self.edits[i], kind) {
+                (Edit::Bool(b), _) => {
+                    look::row(ui, &label, None, |ui| look::switch(ui, b));
+                }
+                (Edit::Choice(sel), Kind::Choice(options)) => {
+                    let names: Vec<&str> = options.iter().map(|o| o.1).collect();
+                    look::row(ui, &label, None, |ui| look::choice(ui, ("choice", i), sel, &names, 220.0));
+                }
+                (Edit::Text(t), Kind::Lines) => {
+                    ui.label(&label);
+                    ui.add(
+                        egui::TextEdit::multiline(t).desired_rows(3).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)),
+                    );
+                }
+                (Edit::Text(t), Kind::Number(..)) => {
+                    look::row(ui, &label, None, |ui| {
+                        let r = look::field(ui, t, 90.0, false);
+                        if invalid {
+                            ui.painter().rect_stroke(
+                                r.rect,
+                                egui::CornerRadius::same(8),
+                                egui::Stroke::new(1.5, c.bad),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                    });
+                }
+                (Edit::Text(t), Kind::Secret) => {
+                    look::row(ui, &label, None, |ui| {
+                        if token_page
+                            && look::button(ui, tr(["New", "Nouveau", "Neu", "Nuevo", "Nuovo", "Novo"]), look::Kind::Secondary).clicked()
+                        {
+                            new_token = true;
+                        }
+                        if look::icon_button(
+                            ui,
+                            if show_secret { '\u{ED1A}' } else { '\u{E7B3}' },
+                            tr(["Show", "Afficher", "Anzeigen", "Mostrar", "Mostra", "Mostrar"]),
+                        )
+                        .clicked()
+                        {
+                            toggle_secret = true;
+                        }
+                        look::field(ui, t, 220.0, !show_secret);
+                    });
+                }
+                (Edit::Text(t), _) => {
+                    look::row(ui, &label, None, |ui| look::field(ui, t, 240.0, false));
+                }
+                _ => {}
+            }
+            if new_token {
+                self.edits[i] = Edit::Text(random_token());
+                self.show_secret = true;
+            }
+            if toggle_secret {
+                self.show_secret = !self.show_secret;
+            }
         }
-        None => false,
+    }
+
+    fn devices_page(&mut self, ui: &mut egui::Ui) {
+        let c = look::colours(ui.ctx());
+        look::card(ui, Some(tr(["Devices", "Appareils", "Geräte", "Dispositivos", "Dispositivi", "Dispositivos"])), |ui| {
+            if self.devices.is_empty() {
+                ui.label(egui::RichText::new(i18n::no_device()).color(c.sub));
+                return;
+            }
+            let mut clicked = None;
+            for (i, d) in self.devices.iter().enumerate() {
+                let shown = self.cfg.display_name(&d.id, &d.name);
+                let active = self.selected == Some(i);
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                let sel = ui.ctx().animate_bool_with_time(resp.id.with("s"), active, 0.18);
+                let fill = look::lerp(look::lerp(egui::Color32::TRANSPARENT, c.hover, hover), look::lerp(c.card, c.accent, 0.14), sel);
+                ui.painter().rect_filled(rect, egui::CornerRadius::same(8), fill);
+                if sel > 0.0 {
+                    let h = 16.0 * sel;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(egui::pos2(rect.left() + 4.0, rect.center().y), egui::vec2(3.0, h)),
+                        egui::CornerRadius::same(2),
+                        c.accent,
+                    );
+                }
+                let font = if active { look::strong(14.0) } else { egui::FontId::proportional(14.0) };
+                ui.painter().text(egui::pos2(rect.left() + 16.0, rect.center().y), egui::Align2::LEFT_CENTER, &shown, font, c.fg);
+                if shown != d.name {
+                    ui.painter().text(
+                        egui::pos2(rect.right() - 12.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        &d.name,
+                        egui::FontId::proportional(12.0),
+                        c.sub,
+                    );
+                }
+                if resp.clicked() {
+                    clicked = Some(i);
+                }
+            }
+            if let Some(i) = clicked {
+                self.select(Some(i));
+            }
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let sel = self.selected;
+                ui.add_enabled_ui(sel.is_some_and(|i| i > 0), |ui| {
+                    if look::button(ui, tr(["Move up", "Monter", "Nach oben", "Subir", "Su", "Subir"]), look::Kind::Secondary).clicked() {
+                        self.move_device(-1);
+                    }
+                });
+                ui.add_enabled_ui(sel.is_some_and(|i| i + 1 < self.devices.len()), |ui| {
+                    if look::button(ui, tr(["Move down", "Descendre", "Nach unten", "Bajar", "Giù", "Descer"]), look::Kind::Secondary)
+                        .clicked()
+                    {
+                        self.move_device(1);
+                    }
+                });
+            });
+        });
+        ui.add_space(8.0);
+        if let Some(i) = self.selected {
+            let name = self.cfg.display_name(&self.devices[i].id, &self.devices[i].name);
+            look::page_in(ui, ("device", i), |ui| {
+                look::card(ui, Some(&name), |ui| self.field_rows(ui, 2, Scope::Device));
+            });
+        }
+    }
+}
+
+impl crate::egui_host::View for Settings {
+    fn ui(&mut self, ui: &mut egui::Ui, ctl: &mut crate::egui_host::Ctl) {
+        let c = look::colours(ui.ctx());
+        let pages = pages();
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !egui::Popup::is_any_open(ui.ctx()) {
+            ctl.close = true;
+        }
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) && self.save() {
+            ctl.close = true;
+        }
+        let footer = 68.0;
+        egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 0 }).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                look::heading(ui, tr(["Settings", "Réglages", "Einstellungen", "Ajustes", "Impostazioni", "Configurações"]), None);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("Batly {}", crate::http::VERSION)).small().color(c.sub));
+                });
+            });
+            let before = self.page;
+            if look::tabs(ui, &mut self.page, &pages) {
+                look::reset_page(ui.ctx(), ("settings-page", self.page));
+                let _ = before;
+            }
+        });
+        let height = (ui.available_height() - footer).max(80.0);
+        egui::ScrollArea::vertical().max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+            egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 10, bottom: 16 }).show(ui, |ui| {
+                let page = self.page;
+                look::page_in(ui, ("settings-page", page), |ui| {
+                    if page == 2 {
+                        self.devices_page(ui);
+                    } else {
+                        look::card(ui, None, |ui| {
+                            self.field_rows(ui, page, Scope::Global);
+                            if page == 0 {
+                                look::divider(ui);
+                                look::row(ui, i18n::autostart(), None, |ui| look::switch(ui, &mut self.autostart));
+                            }
+                        });
+                    }
+                });
+            });
+        });
+        // Footer.
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, c.border));
+        egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 16, bottom: 16 }).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if look::button(
+                    ui,
+                    tr([
+                        "Edit the file…",
+                        "Modifier le fichier…",
+                        "Datei bearbeiten…",
+                        "Editar el archivo…",
+                        "Modifica il file…",
+                        "Editar o arquivo…",
+                    ]),
+                    look::Kind::Ghost,
+                )
+                .clicked()
+                {
+                    win::shell_open(ctl.hwnd, "notepad.exe", Some(&format!("\"{}\"", self.path.display())));
+                    ctl.close = true;
+                }
+                if let Some(e) = &self.error {
+                    ui.label(egui::RichText::new(e).color(c.bad).small());
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if look::button(ui, tr(["Save", "Enregistrer", "Speichern", "Guardar", "Salva", "Salvar"]), look::Kind::Primary)
+                        .clicked()
+                        && self.save()
+                    {
+                        ctl.close = true;
+                    }
+                    if look::button(ui, tr(["Cancel", "Annuler", "Abbrechen", "Cancelar", "Annulla", "Cancelar"]), look::Kind::Secondary)
+                        .clicked()
+                    {
+                        ctl.close = true;
+                    }
+                });
+            });
+        });
     }
 }
 
@@ -1275,75 +1060,4 @@ fn random_token() -> String {
         out.push_str(&format!("{:08x}", h.finish() as u32));
     }
     out
-}
-
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Theme: background, labels, check boxes, light/dark switch.
-    if let Some(r) = crate::theme::on_message(hwnd, msg, wparam, lparam) {
-        return r;
-    }
-    match msg {
-        WM_COMMAND => {
-            let id = wparam & 0xFFFF;
-            let code = (wparam >> 16) as u32;
-            match id {
-                ID_SAVE => {
-                    if save() {
-                        DestroyWindow(hwnd);
-                    }
-                }
-                ID_CANCEL => {
-                    DestroyWindow(hwnd);
-                }
-                ID_RAW => {
-                    let path = STATE.with(|s| s.borrow().as_ref().map(|st| st.path.clone()));
-                    if let Some(p) = path {
-                        win::shell_open(hwnd, "notepad.exe", Some(&format!("\"{}\"", p.display())));
-                    }
-                    DestroyWindow(hwnd);
-                }
-                ID_TOKEN => {
-                    let field = STATE.with(|s| {
-                        let s = s.borrow();
-                        let st = s.as_ref()?;
-                        st.ctls.iter().find(|c| st.fields[c.field].page == 4 && st.fields[c.field].kind == Kind::Secret).map(|c| c.hwnd)
-                    });
-                    if let Some(h) = field {
-                        SetWindowTextW(h, wide(&random_token()).as_ptr());
-                    }
-                }
-                ID_DEV_LIST if code == LBN_SELCHANGE_ => {
-                    let list = STATE.with(|s| s.borrow().as_ref().map(|st| st.dev_list));
-                    if let Some(l) = list {
-                        let i = SendMessageW(l, LB_GETCURSEL_, 0, 0);
-                        select_device((i >= 0).then_some(i as usize));
-                    }
-                }
-                ID_DEV_UP => move_device(-1),
-                ID_DEV_DOWN => move_device(1),
-                _ => {}
-            }
-            0
-        }
-        WM_NOTIFY => {
-            let hdr = &*(lparam as *const NMHDR);
-            if hdr.code == TCN_SELCHANGE {
-                let page = SendMessageW(hdr.hwndFrom, TCM_GETCURSEL, 0, 0).max(0) as usize;
-                show_page(page);
-            }
-            0
-        }
-        WM_CLOSE => {
-            DestroyWindow(hwnd);
-            0
-        }
-        WM_DESTROY => {
-            let font = STATE.with(|s| s.borrow_mut().take().map(|st| st.font));
-            if let Some(f) = font {
-                DeleteObject(f);
-            }
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
 }

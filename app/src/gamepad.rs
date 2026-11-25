@@ -29,16 +29,6 @@ pub enum XBattery {
 
 pub const BATTERY_TYPE_DISCONNECTED: u8 = 0;
 pub const BATTERY_TYPE_WIRED: u8 = 1;
-pub const BATTERY_TYPE_ALKALINE: u8 = 2;
-pub const BATTERY_TYPE_NIMH: u8 = 3;
-
-/// Whether an XInput headset answer is a real headset. Some drivers answer
-/// the headset query for every slot, even empty ones, with an "unknown"
-/// battery at full level: only a headset plugged into a listed controller
-/// and reporting a real battery type counts.
-pub fn real_headset(pad_present: bool, battery_type: u8) -> bool {
-    pad_present && matches!(battery_type, BATTERY_TYPE_ALKALINE | BATTERY_TYPE_NIMH)
-}
 
 /// XInput battery type / level (BATTERY_LEVEL_EMPTY..FULL) to a percentage.
 pub fn xinput_battery(battery_type: u8, level: u8) -> XBattery {
@@ -162,7 +152,6 @@ mod imp {
 
     const POLL: Duration = Duration::from_secs(60);
     const BATTERY_DEVTYPE_GAMEPAD: u8 = 0;
-    const BATTERY_DEVTYPE_HEADSET: u8 = 1;
 
     #[repr(C)]
     #[derive(Default)]
@@ -236,41 +225,33 @@ mod imp {
         }
     }
 
+    /// XInput controllers. Headsets (`BATTERY_DEVTYPE_HEADSET`) are not
+    /// asked: a headset plugged into a controller has no battery of its own,
+    /// and drivers answer that query with the controller's level or a full
+    /// "unknown" battery, even for empty slots (phantom "Xbox headsets").
     fn xinput_devices(get: GetBatteryInformation) -> Vec<Seen> {
         let mut out = Vec::new();
         for slot in 0..4u32 {
-            let mut pad_present = false;
-            for (devtype, kind) in [(BATTERY_DEVTYPE_GAMEPAD, DeviceKind::Gamepad), (BATTERY_DEVTYPE_HEADSET, DeviceKind::Headset)] {
-                let mut info = XInputBatteryInformation::default();
-                // SAFETY: valid out pointer of the documented layout.
-                if unsafe { get(slot, devtype, &mut info) } != 0 {
-                    continue;
-                }
-                if kind == DeviceKind::Headset && !real_headset(pad_present, info.battery_type) {
-                    continue;
-                }
-                let (has_battery, battery) = match xinput_battery(info.battery_type, info.battery_level) {
-                    XBattery::Disconnected => continue,
-                    // A wired controller is listed (without battery); a wired
-                    // or absent headset is not.
-                    XBattery::Wired if kind == DeviceKind::Headset => continue,
-                    XBattery::Wired => (false, None),
-                    XBattery::Level(p) => {
-                        (true, Some(Battery { percent: p, status: Status::Discharging, millivolts: None, mileage: None }))
-                    }
-                };
-                if kind == DeviceKind::Gamepad {
-                    pad_present = true;
-                }
-                let (id, name) = if kind == DeviceKind::Gamepad {
-                    let base = tr(["Xbox controller", "Manette Xbox", "Xbox-Controller", "Mando Xbox", "Controller Xbox", "Comando Xbox"]);
-                    (format!("xinput-{}", slot + 1), format!("{base} {}", slot + 1))
-                } else {
-                    let base = tr(["Xbox headset", "Casque Xbox", "Xbox-Headset", "Auriculares Xbox", "Cuffie Xbox", "Headset Xbox"]);
-                    (format!("xinput-{}-headset", slot + 1), format!("{base} {}", slot + 1))
-                };
-                out.push(Seen { id, name, kind, has_battery, battery, info: DeviceInfo::default() });
+            let mut info = XInputBatteryInformation::default();
+            // SAFETY: valid out pointer of the documented layout.
+            if unsafe { get(slot, BATTERY_DEVTYPE_GAMEPAD, &mut info) } != 0 {
+                continue;
             }
+            let (has_battery, battery) = match xinput_battery(info.battery_type, info.battery_level) {
+                XBattery::Disconnected => continue,
+                // A wired controller is listed, without battery.
+                XBattery::Wired => (false, None),
+                XBattery::Level(p) => (true, Some(Battery { percent: p, status: Status::Discharging, millivolts: None, mileage: None })),
+            };
+            let base = tr(["Xbox controller", "Manette Xbox", "Xbox-Controller", "Mando Xbox", "Controller Xbox", "Comando Xbox"]);
+            out.push(Seen {
+                id: format!("xinput-{}", slot + 1),
+                name: format!("{base} {}", slot + 1),
+                kind: DeviceKind::Gamepad,
+                has_battery,
+                battery,
+                info: DeviceInfo::default(),
+            });
         }
         out
     }
@@ -328,16 +309,6 @@ mod tests {
         assert_eq!(xinput_battery(3, 1), XBattery::Level(30.0));
         assert_eq!(xinput_battery(0xFF, 2), XBattery::Level(65.0));
         assert_eq!(xinput_battery(2, 3), XBattery::Level(100.0));
-    }
-
-    #[test]
-    fn phantom_headsets() {
-        // Empty slot answering "unknown, full": not a headset.
-        assert!(!real_headset(false, 0xFF));
-        assert!(!real_headset(true, 0xFF));
-        assert!(!real_headset(false, BATTERY_TYPE_NIMH));
-        assert!(real_headset(true, BATTERY_TYPE_NIMH));
-        assert!(real_headset(true, BATTERY_TYPE_ALKALINE));
     }
 
     #[test]

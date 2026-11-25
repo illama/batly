@@ -2,11 +2,11 @@
 //! connected devices) with their paired devices, pairs / unpairs devices
 //! and edits a few hardware settings of the selected device.
 //!
-//! Standard Win32 controls only (common controls v6 through the manifest),
-//! system message font, per-monitor DPI aware. Every HID request runs on
-//! the session threads of [`Native`]; answers come back as posted messages
-//! carrying a boxed payload, so the UI thread never blocks on a device.
-//! The window lives on the UI thread; `open` is called from there.
+//! Drawn with egui in the Batly style (see [`crate::look`]), hosted by
+//! [`crate::egui_host`]. Every HID request runs on the session threads of
+//! [`Native`]; the answers come back on channels that the window polls at
+//! each frame (a redraw is requested while one is awaited), so the UI
+//! thread never blocks on a device. `open` is called on the UI thread.
 
 use crate::hidpp::{
     passkey_clicks, ActionError, BacklightMode, DeviceSettings, PairedDevice, PairingError, PairingEvent, ReceiverInfo, ReceiverKind,
@@ -14,161 +14,27 @@ use crate::hidpp::{
 };
 use crate::i18n::{lang, tr, Lang};
 use crate::lighting::{self, EffectKind, LedEffect, Lighting, OnboardStatus, PERIOD_MAX_MS, PERIOD_MIN_MS};
+use crate::look;
 use crate::model::DeviceKind;
 use crate::native::Native;
-use crate::win::wide;
-use std::cell::{Cell, RefCell};
-use std::mem::{size_of, zeroed};
-use std::ptr::{null, null_mut};
-use std::sync::mpsc::Receiver;
-use std::time::Duration;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, GetSysColorBrush, COLOR_BTNFACE, HFONT};
-use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, InvalidateRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
-use windows_sys::Win32::UI::Controls::SetScrollInfo;
-use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, SetWindowTheme, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, LVCOLUMNW,
-    LVITEMW, LVN_ITEMCHANGED, NMHDR, NMLISTVIEW,
-};
-use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, IsChild, IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, LoadIconW,
-    MessageBoxW, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW,
-    SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, CW_USEDEFAULT, HHOOK, IDC_ARROW, IDYES, MB_ICONWARNING, MB_YESNO, MSG,
-    NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WH_GETMESSAGE, WM_APP,
-    WNDCLASSW,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetScrollInfo, MINMAXINFO, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK,
-    SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL, SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXVSCROLL, WM_GETMINMAXINFO, WM_MOUSEWHEEL,
-    WM_SIZE, WM_VSCROLL, WS_THICKFRAME,
-};
+use std::ptr::null;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
 
 const CLASS: &str = "BatlyReceivers";
-
-// Posted messages; `lParam` owns a `Box<Option<T>>` (see `post`).
-const WM_APP_LIST: u32 = WM_APP + 40; // Option<Vec<ReceiverInfo>>
-const WM_APP_SETTINGS: u32 = WM_APP + 41; // Option<Result<DeviceSettings, ActionError>>, wParam = seq << 1 | is_set
-const WM_APP_PAIRING: u32 = WM_APP + 42; // Option<PairingEvent>, None = end of stream
-const WM_APP_UNPAIR: u32 = WM_APP + 43; // Option<Result<(), ActionError>>
-const WM_APP_CHANGED: u32 = WM_APP + 44; // no payload
-const WM_APP_DIAG: u32 = WM_APP + 45; // Option<Result<String, ActionError>>
-
-const TIMER_REFRESH: usize = 1;
-
-// Window messages, styles and notifications (plain values: the
-// windows-sys constants come with a variety of integer types).
-const WM_DESTROY: u32 = 0x0002;
-const WM_CLOSE: u32 = 0x0010;
-const WM_SETFONT: u32 = 0x0030;
-const WM_NOTIFY: u32 = 0x004E;
-const WM_KEYFIRST: u32 = 0x0100;
-const WM_KEYLAST: u32 = 0x0109;
-const WM_COMMAND: u32 = 0x0111;
-const WM_TIMER: u32 = 0x0113;
-const WM_HSCROLL: u32 = 0x0114;
-const WM_DPICHANGED: u32 = 0x02E0;
-const WM_NULL: u32 = 0x0000;
-const PM_REMOVE: usize = 0x0001;
-const IDCANCEL: u16 = 2;
-
-const WS_OVERLAPPED: u32 = 0x0000_0000;
-const WS_CAPTION: u32 = 0x00C0_0000;
-const WS_SYSMENU: u32 = 0x0008_0000;
-const WS_MINIMIZEBOX: u32 = 0x0002_0000;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_TABSTOP: u32 = 0x0001_0000;
-const WS_GROUP: u32 = 0x0002_0000;
-const WS_VSCROLL: u32 = 0x0020_0000;
-const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
-const WS_EX_CONTROLPARENT: u32 = 0x0001_0000;
-
-const BS_PUSHBUTTON: u32 = 0x0;
-const BS_GROUPBOX: u32 = 0x7;
-const BN_CLICKED: u32 = 0;
-const SS_LEFT: u32 = 0x0;
-const SS_CENTER: u32 = 0x1;
-const SS_NOPREFIX: u32 = 0x80;
-const SS_CENTERIMAGE: u32 = 0x200;
-const SS_ENDELLIPSIS: u32 = 0x4000;
-const CBS_DROPDOWNLIST: u32 = 0x3;
-const CBN_SELCHANGE: u32 = 1;
-const CB_ADDSTRING: u32 = 0x0143;
-const CB_GETCURSEL: u32 = 0x0147;
-const CB_RESETCONTENT: u32 = 0x014B;
-const CB_SETCURSEL: u32 = 0x014E;
-const CB_GETITEMDATA: u32 = 0x0150;
-const CB_SETITEMDATA: u32 = 0x0151;
-const CB_SETMINVISIBLE: u32 = 0x1701;
-const TBS_AUTOTICKS: u32 = 0x1;
-const TBM_GETPOS: u32 = 0x0400;
-const TBM_SETPOS: u32 = 0x0405;
-const TBM_SETRANGEMIN: u32 = 0x0407;
-const TBM_SETRANGEMAX: u32 = 0x0408;
-const TBM_SETPAGESIZE: u32 = 0x0415;
-const TBM_SETTICFREQ: u32 = 0x0414;
-const TB_ENDTRACK: usize = 8;
-const LVS_REPORT: u32 = 0x1;
-const LVS_SINGLESEL: u32 = 0x4;
-const LVS_SHOWSELALWAYS: u32 = 0x8;
-const LVS_NOSORTHEADER: u32 = 0x8000;
-const LVS_EX_FULLROWSELECT: usize = 0x20;
-const LVS_EX_DOUBLEBUFFER: usize = 0x10000;
-const LVM_DELETEALLITEMS: u32 = 0x1009;
-const LVM_GETNEXTITEM: u32 = 0x100C;
-const LVM_ENSUREVISIBLE: u32 = 0x1013;
-const LVM_SETCOLUMNWIDTH: u32 = 0x101E;
-const LVM_SETITEMSTATE: u32 = 0x102B;
-const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
-const LVM_INSERTITEMW: u32 = 0x104D;
-const LVM_INSERTCOLUMNW: u32 = 0x1061;
-const LVM_SETITEMTEXTW: u32 = 0x1074;
-const LVCF_WIDTH: u32 = 0x2;
-const LVCF_TEXT: u32 = 0x4;
-const LVIF_TEXT: u32 = 0x1;
-const LVIF_PARAM: u32 = 0x4;
-const LVIF_STATE: u32 = 0x8;
-const LVIS_FOCUSED: u32 = 0x1;
-const LVIS_SELECTED: u32 = 0x2;
-const LVNI_SELECTED: usize = 0x2;
-
-// Control ids.
-const ID_RECEIVER: u16 = 100;
-const ID_LIST: u16 = 101;
-const ID_PAIR: u16 = 102;
-const ID_UNPAIR: u16 = 103;
-const ID_DPI: u16 = 110;
-const ID_RATE: u16 = 111;
-const ID_BL_MODE: u16 = 112;
-const ID_BL_LEVEL: u16 = 113;
-const ID_WHEEL: u16 = 114;
-const ID_WHEEL_SPEED: u16 = 115;
-const ID_LED_ZONE: u16 = 116;
-const ID_LED_EFFECT: u16 = 117;
-const ID_LED_COLOR: u16 = 118;
-const ID_LED_SPEED: u16 = 119;
-const ID_LED_PREVIEW: u16 = 120;
-const ID_LED_SAVE: u16 = 121;
-const ID_LED_RELEASE: u16 = 122;
-const ID_LED_DIAG: u16 = 123;
-const ID_LED_RESTORE: u16 = 124;
-
-/// Content in pixels at 96 DPI. The window is never taller than the
-/// work area of its screen: the content then scrolls (scroll bar, wheel).
-const CLIENT: (i32, i32) = (640, 702);
-/// Smallest height the window can be resized to, at 96 DPI.
-const MIN_HEIGHT: i32 = 320;
-/// Window style: resizable in height, with a vertical scroll bar.
-const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_VSCROLL;
-/// List view columns: width at 96 DPI.
-const COLUMNS: [i32; 5] = [196, 56, 128, 130, 88];
 /// SmartShift speed range shown on the slider (Solaar uses the same).
 const WHEEL_MAX: u8 = 50;
+/// How long an answer of the device is awaited.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(20);
+/// Device events come in bursts: the list is read again this long after
+/// the last one.
+const REFRESH_DELAY: Duration = Duration::from_millis(700);
+/// Redraw interval while an answer is awaited.
+const POLL: Duration = Duration::from_millis(100);
 
 // ------------------------------------------------------------ strings
 
@@ -183,9 +49,7 @@ text! {
     s_receiver => "Receiver:", "Récepteur :", "Empfänger:", "Receptor:", "Ricevitore:", "Receptor:";
     s_searching => "Looking for receivers…", "Recherche des récepteurs…", "Empfänger werden gesucht…", "Buscando receptores…", "Ricerca dei ricevitori…", "Procurando receptores…";
     s_none => "No receiver or device found", "Aucun récepteur ni appareil détecté", "Kein Empfänger oder Gerät gefunden", "No se encontró ningún receptor ni dispositivo", "Nessun ricevitore o dispositivo trovato", "Nenhum receptor ou dispositivo encontrado";
-    s_col_device => "Device", "Appareil", "Gerät", "Dispositivo", "Dispositivo", "Dispositivo";
     s_col_slot => "Slot", "Empl.", "Platz", "Ranura", "Slot", "Slot";
-    s_col_status => "Status", "État", "Status", "Estado", "Stato", "Estado";
     s_col_firmware => "Firmware", "Micrologiciel", "Firmware", "Firmware", "Firmware", "Firmware";
     s_col_channel => "Easy-Switch", "Easy-Switch", "Easy-Switch", "Easy-Switch", "Easy-Switch", "Easy-Switch";
     s_connected => "connected", "connecté", "verbunden", "conectado", "connesso", "conectado";
@@ -367,89 +231,84 @@ fn rate_label(ms: u8) -> String {
     }
 }
 
+text! {
+    s_devices => "Devices", "Appareils", "Geräte", "Dispositivos", "Dispositivi", "Dispositivos";
+    s_bl_level => "Backlight level", "Niveau du rétroéclairage", "Beleuchtungsstufe", "Nivel de retroiluminación", "Livello di retroilluminazione", "Nível de retroiluminação";
+    s_wheel_speed => "SmartShift threshold", "Seuil SmartShift", "SmartShift-Schwelle", "Umbral de SmartShift", "Soglia SmartShift", "Limiar do SmartShift";
+    s_zone => "Zone", "Zone", "Zone", "Zona", "Zona", "Zona";
+    s_effect => "Effect", "Effet", "Effekt", "Efecto", "Effetto", "Efeito";
+    s_color => "Color", "Couleur", "Farbe", "Color", "Colore", "Cor";
+    s_cancel => "Cancel", "Annuler", "Abbrechen", "Cancelar", "Annulla", "Cancelar";
+}
+
 // --------------------------------------------------------- async plumbing
 
-/// Posts `value` to the window; the receiver of the message owns the box.
-fn post<T: Send + 'static>(hwnd: isize, msg: u32, wparam: usize, value: Option<T>) -> bool {
-    let boxed = Box::into_raw(Box::new(value));
-    // SAFETY: plain FFI call; on failure the box is reclaimed below.
-    let ok = unsafe { PostMessageW(hwnd as HWND, msg, wparam, boxed as LPARAM) } != 0;
-    if !ok {
-        // SAFETY: the message was not queued, we still own the box.
-        drop(unsafe { Box::from_raw(boxed) });
+/// One awaited answer: `poll` gives `Some(None)` when the channel closed or
+/// nothing came within [`ANSWER_TIMEOUT`].
+struct Pending<T> {
+    rx: Receiver<T>,
+    deadline: Instant,
+}
+
+impl<T> Pending<T> {
+    fn new(rx: Receiver<T>) -> Self {
+        Self { rx, deadline: Instant::now() + ANSWER_TIMEOUT }
     }
-    ok
-}
 
-/// Waits (on a helper thread) for one answer and posts it; `None` when
-/// the channel closed or nothing came within 20 s.
-fn forward_once<T: Send + 'static>(hwnd: HWND, msg: u32, wparam: usize, rx: Receiver<T>) {
-    let raw = hwnd as isize;
-    let _ = std::thread::Builder::new().stack_size(64 * 1024).spawn(move || {
-        post(raw, msg, wparam, rx.recv_timeout(Duration::from_secs(20)).ok());
-    });
-}
-
-/// Posts every value of a stream, then `None` when it closes.
-fn forward_stream<T: Send + 'static>(hwnd: HWND, msg: u32, rx: Receiver<T>) {
-    let raw = hwnd as isize;
-    let _ = std::thread::Builder::new().stack_size(64 * 1024).spawn(move || {
-        for value in rx.iter() {
-            if !post(raw, msg, 0, Some(value)) {
-                return;
-            }
+    fn poll(&self) -> Option<Option<T>> {
+        match self.rx.try_recv() {
+            Ok(v) => Some(Some(v)),
+            Err(TryRecvError::Disconnected) => Some(None),
+            Err(TryRecvError::Empty) if Instant::now() >= self.deadline => Some(None),
+            Err(TryRecvError::Empty) => None,
         }
-        post::<T>(raw, msg, 0, None);
-    });
+    }
 }
 
-/// Takes back a payload posted with `post`.
-///
-/// # Safety
-/// `lparam` must come from `post::<T>` for this very message.
-unsafe fn take<T>(lparam: LPARAM) -> Option<T> {
-    *Box::from_raw(lparam as *mut Option<T>)
+/// Wakes the window (from any thread) when a native device changed.
+fn change_notifier(hwnd: HWND, changed: Arc<AtomicBool>) -> Box<dyn Fn() + Send + Sync> {
+    let raw = hwnd as isize;
+    Box::new(move || {
+        changed.store(true, Ordering::Relaxed);
+        // SAFETY: plain FFI call; a stale handle is harmless.
+        unsafe { InvalidateRect(raw as HWND, null(), 0) };
+    })
 }
 
 // ------------------------------------------------------------- the window
 
-struct Controls {
-    receiver: HWND,
-    info: HWND,
-    list: HWND,
-    pair: HWND,
-    unpair: HWND,
-    pair_text: HWND,
-    pair_code: HWND,
-    dpi: HWND,
-    rate: HWND,
-    bl_mode: HWND,
-    bl_level: HWND,
-    wheel: HWND,
-    wheel_speed: HWND,
-    led_zone: HWND,
-    led_effect: HWND,
-    led_color: HWND,
-    led_speed: HWND,
-    led_preview: HWND,
-    led_save: HWND,
-    led_release: HWND,
-    led_diag: HWND,
-    led_restore: HWND,
-    status: HWND,
+/// Colour of a message.
+#[derive(Clone, Copy, PartialEq)]
+enum Tone {
+    Normal,
+    Good,
+    Warn,
 }
 
-struct Ui {
-    hwnd: HWND,
+/// What a confirmed dialog does.
+enum Action {
+    /// Receiver id, slot, device name.
+    Unpair(String, u8, String),
+    Led(Setting),
+}
+
+/// A question shown over the window before an action.
+struct Confirm {
+    title: &'static str,
+    text: String,
+    danger: bool,
+    action: Action,
+}
+
+struct Window {
     native: Native,
-    dpi: u32,
-    font: HFONT,
-    big_font: HFONT,
-    /// Every control with its rectangle at 96 DPI.
-    layout: Vec<(HWND, [i32; 4])>,
-    /// Scroll position of the content, in physical pixels.
-    scroll: i32,
-    c: Controls,
+    hwnd: HWND,
+    /// Set by the change notifier of [`Native::watch`].
+    changed: Arc<AtomicBool>,
+    /// When to read the list again (debounced device changes).
+    refresh_at: Option<Instant>,
+    /// Whether a first list arrived.
+    loaded: bool,
     receivers: Vec<ReceiverInfo>,
     /// Selected receiver id.
     receiver: Option<String>,
@@ -464,453 +323,133 @@ struct Ui {
     /// Receiver id of the pairing in progress, and whether it ended.
     pairing: Option<String>,
     pairing_final: bool,
-    /// Name of the device being unpaired.
+    pair_text: String,
+    pair_tone: Tone,
+    pair_code: String,
+    /// Name of the device being unpaired, and whether the answer is awaited.
     unpairing: String,
+    unpair_pending: bool,
     /// Lighting being edited: zone index and effect.
     led: Option<(u8, LedEffect)>,
     /// Lighting setting waiting for its answer.
     led_pending: Option<Setting>,
     /// Device whose LEDs Batly controls (preview shown).
     led_preview: Option<String>,
-    /// Custom colors of the color dialog.
-    custom_colors: [u32; 16],
-    hook: HHOOK,
-}
-
-thread_local! {
-    static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
-    /// Window handle, readable without borrowing `UI` (keyboard hook).
-    static HWND_CELL: Cell<isize> = const { Cell::new(0) };
-}
-
-/// Runs `f` on the window state unless it is already borrowed (re-entrant
-/// notification while the state is being updated): returns `None` then.
-fn with_ui<R>(f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    UI.with(|cell| cell.try_borrow_mut().ok().and_then(|mut ui| ui.as_mut().map(f)))
-}
-
-fn scale(v: i32, dpi: u32) -> i32 {
-    (v as i64 * dpi as i64 / 96) as i32
-}
-
-/// Window width, and height showing all the content, at `dpi`.
-fn window_size(dpi: u32) -> (i32, i32) {
-    let mut r = RECT { left: 0, top: 0, right: scale(CLIENT.0, dpi), bottom: scale(CLIENT.1, dpi) };
-    // SAFETY: valid RECT; plain metrics query.
-    unsafe {
-        AdjustWindowRectExForDpi(&mut r, STYLE, 0, WS_EX_CONTROLPARENT, dpi);
-        r.right += GetSystemMetricsForDpi(SM_CXVSCROLL, dpi);
-    }
-    (r.right - r.left, r.bottom - r.top)
-}
-
-/// Work area (screen without the taskbar) of the window's monitor.
-fn work_area(hwnd: HWND) -> Option<RECT> {
-    // SAFETY: valid MONITORINFO with its size set.
-    unsafe {
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let mut info: MONITORINFO = zeroed();
-        info.cbSize = size_of::<MONITORINFO>() as u32;
-        (GetMonitorInfoW(monitor, &mut info) != 0).then_some(info.rcWork)
-    }
+    /// Slider positions moved but not applied yet.
+    bl_level: Option<u8>,
+    wheel_speed: Option<u8>,
+    status: String,
+    tone: Tone,
+    confirm: Option<Confirm>,
+    list_rx: Option<Pending<Vec<ReceiverInfo>>>,
+    /// Tag (`seq << 1 | is_set`) and answer of the last settings request.
+    settings_rx: Option<(usize, Pending<Result<DeviceSettings, ActionError>>)>,
+    pairing_rx: Option<Receiver<PairingEvent>>,
+    unpair_rx: Option<Pending<Result<(), ActionError>>>,
+    diag_rx: Option<Pending<Result<String, ActionError>>>,
 }
 
 /// Opens the window, or brings it to the front if it is already open.
 /// Must be called on the UI thread (the one running the message loop).
 pub fn open(native: &Native) {
-    let existing = HWND_CELL.with(|c| c.get());
-    if existing != 0 {
-        let hwnd = existing as HWND;
-        // SAFETY: our own window, alive while HWND_CELL is set.
-        unsafe {
-            if IsIconic(hwnd) != 0 {
-                ShowWindow(hwnd, SW_RESTORE);
-            }
-            SetForegroundWindow(hwnd);
-        }
+    if crate::egui_host::focus(CLASS) {
         return;
     }
-    // SAFETY: window class registration and creation on this thread; all
-    // strings are NUL-terminated buffers that outlive the calls.
-    unsafe {
-        let icc = INITCOMMONCONTROLSEX {
-            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES,
-        };
-        InitCommonControlsEx(&icc);
-        let instance = GetModuleHandleW(null());
-        let class_name = wide(CLASS);
-        let mut class: WNDCLASSW = zeroed();
-        class.lpfnWndProc = Some(wnd_proc);
-        class.hInstance = instance;
-        class.lpszClassName = class_name.as_ptr();
-        class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-        class.hIcon = LoadIconW(instance, 1 as _);
-        class.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
-        // Fails harmlessly when the class is already registered.
-        RegisterClassW(&class);
-
-        let style = STYLE;
-        let hwnd = CreateWindowExW(
-            WS_EX_CONTROLPARENT,
-            class_name.as_ptr(),
-            wide(s_title()).as_ptr(),
-            style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CLIENT.0,
-            CLIENT.1,
-            null_mut(),
-            null_mut(),
-            instance,
-            null(),
-        );
-        if hwnd.is_null() {
-            return;
-        }
-        let dpi = GetDpiForWindow(hwnd).max(96);
-        let (font, big_font) = create_fonts(dpi);
-        let (c, layout) = create_controls(hwnd);
-        let mut ui = Ui {
-            hwnd,
-            native: native.clone(),
-            dpi,
-            font,
-            big_font,
-            layout,
-            scroll: 0,
-            c,
-            receivers: Vec::new(),
-            receiver: None,
-            slot: None,
-            device: None,
-            settings: None,
-            seq: 0,
-            busy: false,
-            pairing: None,
-            pairing_final: false,
-            unpairing: String::new(),
-            led: None,
-            led_pending: None,
-            led_preview: None,
-            custom_colors: [0x00FF_FFFF; 16],
-            hook: null_mut(),
-        };
-        ui.apply_dpi(dpi, None);
-        ui.hook = SetWindowsHookExW(WH_GETMESSAGE, Some(dialog_keys), null_mut(), GetCurrentThreadId());
-        HWND_CELL.with(|cell| cell.set(hwnd as isize));
-
-        native.watch(Some(change_notifier(hwnd)));
-        ui.set_text(ui.c.info, s_searching());
-        ui.show_settings();
-        ui.update_buttons();
-        ui.request_list();
-        UI.with(|cell| *cell.borrow_mut() = Some(ui));
-
-        crate::theme::apply(hwnd);
-        ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
-        with_ui(|ui| SetFocus(ui.c.list));
-    }
-}
-
-/// Wakes the window (from any thread) when a native device changed.
-fn change_notifier(hwnd: HWND) -> Box<dyn Fn() + Send + Sync> {
-    let raw = hwnd as isize;
-    Box::new(move || {
-        // SAFETY: plain FFI call; a stale handle is harmless.
-        unsafe { PostMessageW(raw as HWND, WM_APP_CHANGED, 0, 0) };
-    })
-}
-
-/// Message font of the system at `dpi`, and a large bold one for codes.
-fn create_fonts(dpi: u32) -> (HFONT, HFONT) {
-    // SAFETY: `ncm` is a plain structure with its size set; the LOGFONTs
-    // passed to CreateFontIndirectW are valid.
-    unsafe {
-        let mut ncm: NONCLIENTMETRICSW = zeroed();
-        ncm.cbSize = size_of::<NONCLIENTMETRICSW>() as u32;
-        SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, ncm.cbSize, (&mut ncm as *mut NONCLIENTMETRICSW).cast(), 0, dpi);
-        let mut lf = ncm.lfMessageFont;
-        if lf.lfHeight == 0 {
-            lf.lfHeight = -scale(12, dpi);
-        }
-        let font = CreateFontIndirectW(&lf);
-        lf.lfHeight = lf.lfHeight.saturating_mul(2);
-        lf.lfWeight = 600;
-        let big = CreateFontIndirectW(&lf);
-        (font, big)
-    }
-}
-
-/// Creates every child control (positions are set by `Ui::apply_dpi`).
-///
-/// # Safety
-/// `hwnd` must be a window created on this thread.
-unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
-    let instance = GetModuleHandleW(null());
-    let mut layout = Vec::new();
-    let mut make = |class: &str, text: &str, style: u32, ex: u32, id: u16, rect: [i32; 4]| -> HWND {
-        let h = CreateWindowExW(
-            ex,
-            wide(class).as_ptr(),
-            wide(text).as_ptr(),
-            WS_CHILD | WS_VISIBLE | style,
-            0,
-            0,
-            0,
-            0,
-            hwnd,
-            id as usize as _,
-            instance,
-            null(),
-        );
-        layout.push((h, rect));
-        h
+    let changed = Arc::new(AtomicBool::new(false));
+    let mut w = Window {
+        native: native.clone(),
+        hwnd: std::ptr::null_mut(),
+        changed: changed.clone(),
+        refresh_at: None,
+        loaded: false,
+        receivers: Vec::new(),
+        receiver: None,
+        slot: None,
+        device: None,
+        settings: None,
+        seq: 0,
+        busy: false,
+        pairing: None,
+        pairing_final: false,
+        pair_text: String::new(),
+        pair_tone: Tone::Normal,
+        pair_code: String::new(),
+        unpairing: String::new(),
+        unpair_pending: false,
+        led: None,
+        led_pending: None,
+        led_preview: None,
+        bl_level: None,
+        wheel_speed: None,
+        status: String::new(),
+        tone: Tone::Normal,
+        confirm: None,
+        list_rx: None,
+        settings_rx: None,
+        pairing_rx: None,
+        unpair_rx: None,
+        diag_rx: None,
     };
-    let label = SS_LEFT | SS_NOPREFIX | SS_CENTERIMAGE;
-    let combo = CBS_DROPDOWNLIST | crate::theme::CBS_THEMED | WS_VSCROLL | WS_TABSTOP;
-    let track = TBS_AUTOTICKS | WS_TABSTOP;
-
-    make("STATIC", s_receiver(), label, 0, 0, [12, 12, 96, 24]);
-    let receiver = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_RECEIVER, [112, 12, 516, 300]);
-    let info = make("STATIC", "", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, [12, 44, 616, 20]);
-    let list = make(
-        "SysListView32",
-        "",
-        LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_TABSTOP | WS_GROUP,
-        WS_EX_CLIENTEDGE,
-        ID_LIST,
-        [12, 70, 616, 176],
-    );
-    let pair = make("BUTTON", s_pair(), BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_PAIR, [12, 254, 240, 28]);
-    let unpair = make("BUTTON", s_unpair(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_UNPAIR, [260, 254, 160, 28]);
-    let pair_text = make("STATIC", "", SS_LEFT | SS_NOPREFIX, 0, 0, [12, 290, 616, 64]);
-    let pair_code = make("STATIC", "", SS_CENTER | SS_NOPREFIX | SS_CENTERIMAGE, 0, 0, [12, 354, 616, 40]);
-    make("BUTTON", s_group(), BS_GROUPBOX, 0, 0, [12, 400, 616, 266]);
-    make("STATIC", s_dpi(), label, 0, 0, [28, 424, 180, 24]);
-    let dpi = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_DPI, [212, 424, 150, 300]);
-    make("STATIC", s_rate(), label, 0, 0, [28, 458, 180, 24]);
-    let rate = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_RATE, [212, 458, 150, 300]);
-    make("STATIC", s_backlight(), label, 0, 0, [28, 492, 180, 24]);
-    let bl_mode = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_BL_MODE, [212, 492, 150, 300]);
-    let bl_level = make("msctls_trackbar32", "", track, 0, ID_BL_LEVEL, [370, 490, 246, 28]);
-    make("STATIC", s_wheel(), label, 0, 0, [28, 526, 180, 24]);
-    let wheel = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_WHEEL, [212, 526, 150, 300]);
-    let wheel_speed = make("msctls_trackbar32", "", track, 0, ID_WHEEL_SPEED, [370, 524, 246, 28]);
-    make("STATIC", s_led(), label, 0, 0, [28, 560, 180, 24]);
-    let led_zone = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_LED_ZONE, [212, 560, 150, 300]);
-    let led_effect = make("COMBOBOX", "", combo | WS_GROUP, 0, ID_LED_EFFECT, [370, 560, 130, 300]);
-    let led_color = make("BUTTON", "#000000", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_COLOR, [508, 558, 108, 28]);
-    make("STATIC", s_led_speed(), label, 0, 0, [28, 594, 180, 24]);
-    let led_speed = make("msctls_trackbar32", "", track, 0, ID_LED_SPEED, [212, 592, 288, 28]);
-    let led_preview = make("BUTTON", s_led_preview(), BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 0, ID_LED_PREVIEW, [28, 628, 92, 28]);
-    let led_save = make("BUTTON", s_led_save(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_SAVE, [126, 628, 186, 28]);
-    let led_restore = make("BUTTON", s_led_restore(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_RESTORE, [318, 628, 96, 28]);
-    let led_release = make("BUTTON", s_led_release(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_RELEASE, [420, 628, 100, 28]);
-    let led_diag = make("BUTTON", s_led_diag(), BS_PUSHBUTTON | WS_TABSTOP, 0, ID_LED_DIAG, [526, 628, 90, 28]);
-    let status = make("STATIC", "", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, [12, 674, 616, 20]);
-
-    SetWindowTheme(list, wide("Explorer").as_ptr(), null());
-    SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as LPARAM);
-    let titles = [s_col_device(), s_col_slot(), s_col_status(), s_col_firmware(), s_col_channel()];
-    for (i, (title, width)) in titles.iter().zip(COLUMNS).enumerate() {
-        let mut text = wide(title);
-        let mut col: LVCOLUMNW = zeroed();
-        col.mask = LVCF_TEXT | LVCF_WIDTH;
-        col.cx = width;
-        col.pszText = text.as_mut_ptr();
-        SendMessageW(list, LVM_INSERTCOLUMNW, i, &col as *const LVCOLUMNW as LPARAM);
+    w.request_list();
+    let title = format!("Batly – {}", s_title());
+    let opts = crate::egui_host::Options { class: CLASS, title, size: (680.0, 760.0), min_size: (560.0, 480.0), resizable: true };
+    if let Some(hwnd) = crate::egui_host::open(opts, Box::new(w)) {
+        native.watch(Some(change_notifier(hwnd, changed)));
     }
-    for combo in [receiver, dpi, rate, bl_mode, wheel, led_zone, led_effect] {
-        SendMessageW(combo, CB_SETMINVISIBLE, 12, 0);
-    }
-    SendMessageW(wheel_speed, TBM_SETRANGEMIN, 0, 1);
-    SendMessageW(wheel_speed, TBM_SETRANGEMAX, 1, WHEEL_MAX as LPARAM);
-    SendMessageW(wheel_speed, TBM_SETTICFREQ, 7, 0);
-    SendMessageW(wheel_speed, TBM_SETPAGESIZE, 0, 5);
-    // Effect speed: period in seconds, fast (left) to slow (right).
-    SendMessageW(led_speed, TBM_SETRANGEMIN, 0, (PERIOD_MIN_MS / 1000) as LPARAM);
-    SendMessageW(led_speed, TBM_SETRANGEMAX, 1, (PERIOD_MAX_MS / 1000) as LPARAM);
-    SendMessageW(led_speed, TBM_SETTICFREQ, 1, 0);
-    SendMessageW(led_speed, TBM_SETPAGESIZE, 0, 2);
-
-    let c = Controls {
-        receiver,
-        info,
-        list,
-        pair,
-        unpair,
-        pair_text,
-        pair_code,
-        dpi,
-        rate,
-        bl_mode,
-        bl_level,
-        wheel,
-        wheel_speed,
-        led_zone,
-        led_effect,
-        led_color,
-        led_speed,
-        led_preview,
-        led_save,
-        led_release,
-        led_diag,
-        led_restore,
-        status,
-    };
-    (c, layout)
 }
 
-impl Ui {
-    fn set_text(&self, hwnd: HWND, text: &str) {
-        // SAFETY: valid window and NUL-terminated string.
-        unsafe { SetWindowTextW(hwnd, wide(text).as_ptr()) };
+impl Window {
+    fn set_status(&mut self, text: &str, tone: Tone) {
+        self.status = text.to_string();
+        self.tone = tone;
     }
 
-    fn enable(&self, hwnd: HWND, on: bool) {
-        // SAFETY: valid window handle.
-        unsafe { EnableWindow(hwnd, on as i32) };
-    }
-
-    /// Fonts, positions and column widths for `dpi`; `suggested` is the
-    /// window rectangle proposed by WM_DPICHANGED.
-    fn apply_dpi(&mut self, dpi: u32, suggested: Option<RECT>) {
-        if dpi != self.dpi {
-            let (font, big) = create_fonts(dpi);
-            // SAFETY: fonts we created; the controls get the new ones
-            // through WM_SETFONT below before they draw again.
-            unsafe {
-                DeleteObject(self.font as _);
-                DeleteObject(self.big_font as _);
-            }
-            self.font = font;
-            self.big_font = big;
-            self.dpi = dpi;
+    /// Reads every answer that came in; true while one is still awaited.
+    fn poll(&mut self) -> bool {
+        if self.changed.swap(false, Ordering::Relaxed) {
+            self.refresh_at = Some(Instant::now() + REFRESH_DELAY);
         }
-        // SAFETY: child windows of our window; RECT pointers are valid.
-        unsafe {
-            self.place();
-            for &(h, _) in &self.layout {
-                let font = if h == self.c.pair_code { self.big_font } else { self.font };
-                SendMessageW(h, WM_SETFONT, font as WPARAM, 1);
-            }
-            for (i, width) in COLUMNS.iter().enumerate() {
-                SendMessageW(self.c.list, LVM_SETCOLUMNWIDTH, i, scale(*width, dpi) as LPARAM);
-            }
-            match suggested {
-                Some(r) => {
-                    SetWindowPos(self.hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-                }
-                None => {
-                    let (w, full) = window_size(dpi);
-                    let h = full.min(work_area(self.hwnd).map_or(full, |r| r.bottom - r.top));
-                    SetWindowPos(self.hwnd, null_mut(), 0, 0, w, h, SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
+        if self.refresh_at.is_some_and(|at| Instant::now() >= at) {
+            self.refresh_at = None;
+            self.request_list();
+        }
+        if let Some(list) = self.list_rx.as_ref().and_then(Pending::poll) {
+            self.list_rx = None;
+            self.on_list(list.unwrap_or_default());
+        }
+        if let Some((tag, result)) = self.settings_rx.as_ref().and_then(|(tag, p)| p.poll().map(|r| (*tag, r))) {
+            self.settings_rx = None;
+            self.on_settings(tag, result);
+        }
+        while let Some(rx) = &self.pairing_rx {
+            match rx.try_recv() {
+                Ok(event) => self.on_pairing(Some(event)),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pairing_rx = None;
+                    self.on_pairing(None);
                 }
             }
         }
-        self.update_scroll();
-    }
-
-    /// Moves every control to its place, shifted by the scroll position.
-    fn place(&self) {
-        let dpi = self.dpi;
-        // SAFETY: child windows of our window.
-        unsafe {
-            for &(h, [x, y, w, hgt]) in &self.layout {
-                SetWindowPos(
-                    h,
-                    null_mut(),
-                    scale(x, dpi),
-                    scale(y, dpi) - self.scroll,
-                    scale(w, dpi),
-                    scale(hgt, dpi),
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
+        if let Some(result) = self.unpair_rx.as_ref().and_then(Pending::poll) {
+            self.unpair_rx = None;
+            self.on_unpaired(result);
         }
-    }
-
-    /// Scroll range after a resize; keeps the position within it.
-    fn update_scroll(&mut self) {
-        let mut client: RECT = unsafe { zeroed() };
-        // SAFETY: our window, valid RECT.
-        unsafe { GetClientRect(self.hwnd, &mut client) };
-        let page = client.bottom - client.top;
-        let content = scale(CLIENT.1, self.dpi);
-        let pos = self.scroll.clamp(0, (content - page).max(0));
-        let moved = pos != self.scroll;
-        self.scroll = pos;
-        let info = SCROLLINFO {
-            cbSize: size_of::<SCROLLINFO>() as u32,
-            // Always shown (greyed when everything fits): the width stays put.
-            fMask: SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL,
-            nMin: 0,
-            nMax: content - 1,
-            nPage: page.max(0) as u32,
-            nPos: pos,
-            nTrackPos: 0,
-        };
-        // SAFETY: valid SCROLLINFO.
-        unsafe { SetScrollInfo(self.hwnd, SB_VERT, &info, 1) };
-        if moved {
-            self.place();
-            // SAFETY: plain call.
-            unsafe { InvalidateRect(self.hwnd, null(), 1) };
+        if let Some(result) = self.diag_rx.as_ref().and_then(Pending::poll) {
+            self.diag_rx = None;
+            self.on_diagnose(result);
         }
-    }
-
-    /// Scrolls the content to `pos` (physical pixels).
-    fn scroll_to(&mut self, pos: i32) {
-        let before = self.scroll;
-        self.scroll = pos;
-        self.update_scroll();
-        if self.scroll != before {
-            self.place();
-            // SAFETY: plain call.
-            unsafe { InvalidateRect(self.hwnd, null(), 1) };
-        }
-    }
-
-    fn on_vscroll(&mut self, request: i32) {
-        let mut info = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..unsafe { zeroed() } };
-        // SAFETY: valid SCROLLINFO.
-        unsafe { GetScrollInfo(self.hwnd, SB_VERT, &mut info) };
-        let line = scale(40, self.dpi);
-        let page = info.nPage as i32;
-        let pos = match request {
-            SB_LINEUP => self.scroll - line,
-            SB_LINEDOWN => self.scroll + line,
-            SB_PAGEUP => self.scroll - page,
-            SB_PAGEDOWN => self.scroll + page,
-            SB_THUMBTRACK | SB_THUMBPOSITION => info.nTrackPos,
-            SB_TOP => 0,
-            SB_BOTTOM => i32::MAX / 2,
-            _ => return,
-        };
-        self.scroll_to(pos);
-    }
-
-    /// Brings a control that got the keyboard focus into view.
-    fn reveal(&mut self, focus: HWND) {
-        let Some(&(_, [_, y, _, h])) = self.layout.iter().find(|(c, _)| *c == focus) else { return };
-        let mut client: RECT = unsafe { zeroed() };
-        // SAFETY: our window, valid RECT.
-        unsafe { GetClientRect(self.hwnd, &mut client) };
-        let (top, bottom) = (scale(y, self.dpi), scale(y + h, self.dpi));
-        let margin = scale(8, self.dpi);
-        if top - margin < self.scroll {
-            self.scroll_to(top - margin);
-        } else if bottom + margin > self.scroll + client.bottom {
-            self.scroll_to(bottom + margin - client.bottom);
-        }
+        self.list_rx.is_some()
+            || self.settings_rx.is_some()
+            || self.pairing_rx.is_some()
+            || self.unpair_rx.is_some()
+            || self.diag_rx.is_some()
     }
 
     // ---------------------------------------------------------- receivers
 
-    fn request_list(&self) {
-        forward_once(self.hwnd, WM_APP_LIST, 0, self.native.list_receivers());
+    fn request_list(&mut self) {
+        self.list_rx = Some(Pending::new(self.native.list_receivers()));
     }
 
     fn current(&self) -> Option<&ReceiverInfo> {
@@ -924,34 +463,17 @@ impl Ui {
     }
 
     fn on_list(&mut self, receivers: Vec<ReceiverInfo>) {
+        self.loaded = true;
         self.receivers = receivers;
         if self.current().is_none() {
             self.receiver = self.receivers.first().map(|r| r.id.clone());
             self.slot = None;
         }
-        // SAFETY: combo box owned by our window; strings outlive the calls.
-        unsafe {
-            SendMessageW(self.c.receiver, CB_RESETCONTENT, 0, 0);
-            for (i, r) in self.receivers.iter().enumerate() {
-                let label = match r.kind {
-                    ReceiverKind::Direct => format!("{} (USB / Bluetooth)", r.name),
-                    _ => r.name.clone(),
-                };
-                let dup = self.receivers[..i].iter().filter(|o| o.name == r.name).count();
-                let label = if dup > 0 { format!("{label} #{}", dup + 1) } else { label };
-                SendMessageW(self.c.receiver, CB_ADDSTRING, 0, wide(&label).as_ptr() as LPARAM);
-                if Some(&r.id) == self.receiver.as_ref() {
-                    SendMessageW(self.c.receiver, CB_SETCURSEL, i, 0);
-                }
-            }
-        }
         self.fill_devices();
     }
 
-    fn on_receiver_changed(&mut self) {
-        // SAFETY: combo box owned by our window.
-        let sel = unsafe { SendMessageW(self.c.receiver, CB_GETCURSEL, 0, 0) };
-        let id = usize::try_from(sel).ok().and_then(|i| self.receivers.get(i)).map(|r| r.id.clone());
+    fn on_receiver_changed(&mut self, index: usize) {
+        let id = self.receivers.get(index).map(|r| r.id.clone());
         if id != self.receiver {
             self.receiver = id;
             self.slot = None;
@@ -959,9 +481,32 @@ impl Ui {
         }
     }
 
-    /// Receiver summary, device list, then the selection-dependent parts.
-    fn fill_devices(&mut self) {
-        let info = match self.current() {
+    /// Labels of the receivers in the drop-down list.
+    fn receiver_labels(&self) -> Vec<String> {
+        self.receivers
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let label = match r.kind {
+                    ReceiverKind::Direct => format!("{} (USB / Bluetooth)", r.name),
+                    _ => r.name.clone(),
+                };
+                let dup = self.receivers[..i].iter().filter(|o| o.name == r.name).count();
+                if dup > 0 {
+                    format!("{label} #{}", dup + 1)
+                } else {
+                    label
+                }
+            })
+            .collect()
+    }
+
+    /// Summary of the selected receiver.
+    fn receiver_info(&self) -> String {
+        if !self.loaded {
+            return s_searching().to_string();
+        }
+        match self.current() {
             None => s_none().to_string(),
             Some(r) if r.kind == ReceiverKind::Direct => s_direct().to_string(),
             Some(r) => {
@@ -974,66 +519,25 @@ impl Ui {
                 }
                 format!("{} · {}", r.name, parts.join(" · "))
             }
-        };
-        self.set_text(self.c.info, &info);
+        }
+    }
 
-        let devices: Vec<PairedDevice> = self.current().map(|r| r.devices.clone()).unwrap_or_default();
-        if self.slot.is_some_and(|s| !devices.iter().any(|d| d.slot == s)) {
+    /// Keeps the selection valid, then reloads what depends on it.
+    fn fill_devices(&mut self) {
+        let devices: Vec<u8> = self.current().map(|r| r.devices.iter().map(|d| d.slot).collect()).unwrap_or_default();
+        if self.slot.is_some_and(|s| !devices.contains(&s)) {
             self.slot = None;
         }
         if self.slot.is_none() {
-            self.slot = devices.first().map(|d| d.slot);
-        }
-        // SAFETY: list view owned by our window; every LVITEMW and string
-        // buffer outlives the SendMessageW call that uses it.
-        unsafe {
-            SendMessageW(self.c.list, LVM_DELETEALLITEMS, 0, 0);
-            for (row, d) in devices.iter().enumerate() {
-                let cells = [
-                    d.name.clone(),
-                    if d.slot == 0xFF { "—".to_string() } else { d.slot.to_string() },
-                    if d.online { s_connected() } else { s_asleep() }.to_string(),
-                    d.info.firmware.clone().unwrap_or_else(|| "—".into()),
-                    d.info.host_channel.map_or_else(|| "—".into(), |(cur, n)| format!("{cur} / {n}")),
-                ];
-                for (col, text) in cells.iter().enumerate() {
-                    let mut buf = wide(text);
-                    let mut item: LVITEMW = zeroed();
-                    item.iItem = row as i32;
-                    item.iSubItem = col as i32;
-                    item.pszText = buf.as_mut_ptr();
-                    if col == 0 {
-                        item.mask = LVIF_TEXT | LVIF_PARAM;
-                        item.lParam = d.slot as LPARAM;
-                        SendMessageW(self.c.list, LVM_INSERTITEMW, 0, &item as *const LVITEMW as LPARAM);
-                    } else {
-                        item.mask = LVIF_TEXT;
-                        SendMessageW(self.c.list, LVM_SETITEMTEXTW, row, &item as *const LVITEMW as LPARAM);
-                    }
-                }
-                if Some(d.slot) == self.slot {
-                    let mut item: LVITEMW = zeroed();
-                    item.mask = LVIF_STATE;
-                    item.state = LVIS_SELECTED | LVIS_FOCUSED;
-                    item.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
-                    SendMessageW(self.c.list, LVM_SETITEMSTATE, row, &item as *const LVITEMW as LPARAM);
-                    SendMessageW(self.c.list, LVM_ENSUREVISIBLE, row, 0);
-                }
-            }
+            self.slot = devices.first().copied();
         }
         self.device_changed(false);
-        self.update_buttons();
     }
 
-    fn on_select(&mut self) {
-        // SAFETY: list view owned by our window.
-        let row = unsafe { SendMessageW(self.c.list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as LPARAM) };
-        let devices: Vec<u8> = self.current().map(|r| r.devices.iter().map(|d| d.slot).collect()).unwrap_or_default();
-        let slot = usize::try_from(row).ok().and_then(|i| devices.get(i).copied());
+    fn on_select(&mut self, slot: Option<u8>) {
         if slot != self.slot {
             self.slot = slot;
             self.device_changed(true);
-            self.update_buttons();
         }
     }
 
@@ -1054,25 +558,26 @@ impl Ui {
         self.device = id.clone();
         self.settings = None;
         self.led = None;
+        self.bl_level = None;
+        self.wheel_speed = None;
         self.busy = false;
         self.seq += 1;
         match (&selected, id) {
             (Some(d), Some(id)) if d.online => {
                 self.busy = true;
-                self.set_text(self.c.status, s_reading());
-                forward_once(self.hwnd, WM_APP_SETTINGS, self.seq << 1, self.native.get_settings(&id));
+                self.set_status(s_reading(), Tone::Normal);
+                self.settings_rx = Some((self.seq << 1, Pending::new(self.native.get_settings(&id))));
             }
-            (Some(_), Some(_)) => self.set_text(self.c.status, s_err_offline()),
-            (Some(_), None) => self.set_text(self.c.status, s_not_identified()),
-            (None, _) => self.set_text(self.c.status, ""),
+            (Some(_), Some(_)) => self.set_status(s_err_offline(), Tone::Warn),
+            (Some(_), None) => self.set_status(s_not_identified(), Tone::Warn),
+            (None, _) => self.set_status("", Tone::Normal),
         }
-        self.show_settings();
     }
 
     /// Short description of the selected device in the status line.
-    fn show_status_for(&self, device: Option<&PairedDevice>) {
+    fn show_status_for(&mut self, device: Option<&PairedDevice>) {
         let Some(d) = device else {
-            self.set_text(self.c.status, "");
+            self.set_status("", Tone::Normal);
             return;
         };
         let mut parts = Vec::new();
@@ -1093,114 +598,99 @@ impl Ui {
         } else if let Some(reason) = self.lighting().and_then(|l| onboard_reason(l.onboard)) {
             parts.push(reason.to_string());
         }
-        self.set_text(self.c.status, &parts.join(" · "));
+        self.set_status(&parts.join(" · "), Tone::Normal);
     }
 
-    fn update_buttons(&self) {
-        let r = self.current();
-        let pairing_here = self.pairing.is_some() && self.pairing == self.receiver;
-        let can_pair = r.is_some_and(|r| r.kind.can_pair()) && self.pairing.is_none();
-        self.enable(self.c.pair, can_pair || pairing_here);
-        self.set_text(self.c.pair, if pairing_here { s_cancel_pair() } else { s_pair() });
-        let can_unpair = r.is_some_and(|r| r.kind.can_unpair()) && self.selected_device().is_some() && self.pairing.is_none();
-        self.enable(self.c.unpair, can_unpair);
-        self.enable(self.c.receiver, self.pairing.is_none());
+    fn pairing_here(&self) -> bool {
+        self.pairing.is_some() && self.pairing == self.receiver
+    }
+
+    fn can_pair(&self) -> bool {
+        (self.current().is_some_and(|r| r.kind.can_pair()) && self.pairing.is_none()) || self.pairing_here()
+    }
+
+    fn can_unpair(&self) -> bool {
+        self.current().is_some_and(|r| r.kind.can_unpair())
+            && self.selected_device().is_some()
+            && self.pairing.is_none()
+            && !self.unpair_pending
     }
 
     // ----------------------------------------------------------- settings
 
-    /// Fills the settings controls from `self.settings`.
-    fn show_settings(&self) {
-        let s = self.settings.as_ref();
-        let usable = !self.busy;
-        // SAFETY: combo boxes / trackbars owned by our window; strings
-        // outlive the calls.
-        unsafe {
-            let fill = |combo: HWND, items: &[(String, isize)], current: Option<isize>, enabled: bool| {
-                SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-                if items.is_empty() {
-                    SendMessageW(combo, CB_ADDSTRING, 0, wide("—").as_ptr() as LPARAM);
-                    SendMessageW(combo, CB_SETCURSEL, 0, 0);
-                }
-                for (i, (text, data)) in items.iter().enumerate() {
-                    SendMessageW(combo, CB_ADDSTRING, 0, wide(text).as_ptr() as LPARAM);
-                    SendMessageW(combo, CB_SETITEMDATA, i, *data);
-                    if Some(*data) == current {
-                        SendMessageW(combo, CB_SETCURSEL, i, 0);
+    /// Sends a setting of the settings card, unless nothing changes.
+    fn send_setting(&mut self, setting: Setting) {
+        let Some(current) = self.settings.clone() else { return };
+        if self.busy {
+            return;
+        }
+        let Some(device) = self.device.clone() else { return };
+        // Nothing to write when the value did not change.
+        let unchanged = match setting {
+            Setting::Dpi(v) => current.dpi.as_ref().is_some_and(|d| d.current == v),
+            Setting::ReportRate(v) => current.report_rate.as_ref().is_some_and(|r| r.current == v),
+            Setting::Backlight { mode, level } => {
+                current.backlight.as_ref().is_some_and(|b| b.mode == mode && (mode != BacklightMode::Manual || b.level == level))
+            }
+            Setting::SmartShift(m) => current.smart_shift == Some(m),
+            Setting::Led { .. }
+            | Setting::LedRelease
+            | Setting::LedRestore
+            | Setting::LedKeep { .. }
+            | Setting::LedForget
+            | Setting::Host(_) => false,
+        };
+        if unchanged {
+            self.bl_level = None;
+            self.wheel_speed = None;
+            return;
+        }
+        self.seq += 1;
+        self.busy = true;
+        self.set_status(s_applying(), Tone::Normal);
+        self.settings_rx = Some((self.seq << 1 | 1, Pending::new(self.native.set_setting(&device, setting))));
+    }
+
+    fn on_settings(&mut self, tag: usize, result: Option<Result<DeviceSettings, ActionError>>) {
+        if tag >> 1 != self.seq {
+            return; // stale answer (another device was selected meanwhile)
+        }
+        self.busy = false;
+        self.bl_level = None;
+        self.wheel_speed = None;
+        let was_set = tag & 1 == 1;
+        let led = self.led_pending.take();
+        if result.as_ref().is_some_and(|r| r.is_err()) && matches!(led, Some(Setting::Led { save: false, .. })) {
+            self.led_preview = None;
+        }
+        match result {
+            Some(Ok(s)) => {
+                self.settings = Some(s);
+                if let Some(setting) = led {
+                    if matches!(
+                        setting,
+                        Setting::Led { save: true, .. } | Setting::LedRestore | Setting::LedKeep { .. } | Setting::LedForget
+                    ) {
+                        self.led = None; // show what the device now holds
                     }
+                    let text = match setting {
+                        Setting::Led { save: true, .. } => s_led_saved(),
+                        Setting::LedRelease => s_led_released(),
+                        Setting::LedRestore => s_led_restored(),
+                        Setting::LedKeep { .. } => s_led_kept(),
+                        Setting::LedForget => s_led_forgotten(),
+                        _ => s_led_previewed(),
+                    };
+                    self.set_status(text, Tone::Good);
+                } else if was_set {
+                    self.set_status(s_applied(), Tone::Good);
+                } else {
+                    let device = self.selected_device().cloned();
+                    self.show_status_for(device.as_ref());
                 }
-                EnableWindow(combo, (enabled && !items.is_empty()) as i32);
-            };
-
-            let dpi = s.and_then(|s| s.dpi.as_ref());
-            let mut items: Vec<(String, isize)> =
-                dpi.map(|d| d.choices.iter().map(|&v| (v.to_string(), v as isize)).collect()).unwrap_or_default();
-            if let Some(d) = dpi.filter(|d| !d.choices.contains(&d.current)) {
-                items.push((d.current.to_string(), d.current as isize));
             }
-            fill(self.c.dpi, &items, dpi.map(|d| d.current as isize), usable);
-
-            let rate = s.and_then(|s| s.report_rate.as_ref());
-            let items: Vec<(String, isize)> =
-                rate.map(|r| r.choices.iter().map(|&ms| (rate_label(ms), ms as isize)).collect()).unwrap_or_default();
-            fill(self.c.rate, &items, rate.map(|r| r.current as isize), usable);
-
-            let bl = s.and_then(|s| s.backlight.as_ref());
-            let mut modes: Vec<BacklightMode> = bl.map(|b| b.modes.clone()).unwrap_or_default();
-            if let Some(b) = bl.filter(|b| !b.modes.contains(&b.mode)) {
-                modes.push(b.mode);
-            }
-            let items: Vec<(String, isize)> = modes.iter().map(|&m| (backlight_name(m).to_string(), m as isize)).collect();
-            fill(self.c.bl_mode, &items, bl.map(|b| b.mode as isize), usable);
-            let levels = bl.map_or(0, |b| b.levels);
-            SendMessageW(self.c.bl_level, TBM_SETRANGEMIN, 0, 0);
-            SendMessageW(self.c.bl_level, TBM_SETRANGEMAX, 1, levels.saturating_sub(1).max(1) as LPARAM);
-            SendMessageW(self.c.bl_level, TBM_SETPOS, 1, bl.map_or(0, |b| b.level) as LPARAM);
-            let manual = bl.is_some_and(|b| b.mode == BacklightMode::Manual && b.levels > 1);
-            EnableWindow(self.c.bl_level, (usable && manual) as i32);
-
-            let wheel = s.and_then(|s| s.smart_shift);
-            let items: Vec<(String, isize)> = if wheel.is_some() {
-                vec![(s_wheel_free().into(), 0), (s_wheel_ratchet().into(), 1), (s_wheel_smart().into(), 2)]
-            } else {
-                Vec::new()
-            };
-            let (current, speed) = match wheel {
-                Some(WheelMode::FreeSpin) => (Some(0), 16),
-                Some(WheelMode::Ratchet) => (Some(1), 16),
-                Some(WheelMode::Smart(t)) => (Some(2), t.min(WHEEL_MAX)),
-                None => (None, 16),
-            };
-            fill(self.c.wheel, &items, current, usable);
-            SendMessageW(self.c.wheel_speed, TBM_SETPOS, 1, speed as LPARAM);
-            EnableWindow(self.c.wheel_speed, (usable && current == Some(2)) as i32);
-
-            let light = s.and_then(|s| s.lighting.as_ref());
-            let (zone, effect) = self.led_state().unwrap_or((0, LedEffect::default()));
-            let zones: Vec<(String, isize)> =
-                light.map(|l| l.zones.iter().map(|z| (zone_name(z.location, z.index), z.index as isize)).collect()).unwrap_or_default();
-            fill(self.c.led_zone, &zones, light.map(|_| zone as isize), usable);
-            let kinds = light.and_then(|l| l.zones.iter().find(|z| z.index == zone)).map(|z| z.kinds()).unwrap_or_default();
-            let items: Vec<(String, isize)> = kinds
-                .iter()
-                .map(|&k| (effect_name(k).to_string(), EffectKind::ALL.iter().position(|x| *x == k).unwrap_or(0) as isize))
-                .collect();
-            let kind_index = EffectKind::ALL.iter().position(|x| *x == effect.kind).unwrap_or(0) as isize;
-            fill(self.c.led_effect, &items, light.map(|_| kind_index), usable);
-            let has = light.is_some() && usable;
-            SetWindowTextW(self.c.led_color, wide(&format!("#{:06X}", effect.color & 0xFF_FFFF)).as_ptr());
-            EnableWindow(self.c.led_color, (has && effect.kind.has_color()) as i32);
-            SendMessageW(self.c.led_speed, TBM_SETPOS, 1, (effect.period_ms / 1000) as LPARAM);
-            EnableWindow(self.c.led_speed, (has && effect.kind.has_speed()) as i32);
-            EnableWindow(self.c.led_preview, has as i32);
-            let writable = light.is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. }));
-            // Writable memory: saved in the device; otherwise kept by Batly.
-            let can_save = !writable || (zone as usize) < lighting::PROFILE_ZONES;
-            EnableWindow(self.c.led_save, (has && can_save) as i32);
-            let kept = light.is_some_and(|l| l.kept.is_some());
-            EnableWindow(self.c.led_restore, (usable && light.is_some() && (writable || kept)) as i32);
-            EnableWindow(self.c.led_release, (usable && self.led_preview.is_some() && self.led_preview == self.device) as i32);
-            EnableWindow(self.c.led_diag, (usable && self.settings.is_some()) as i32);
+            Some(Err(e)) => self.set_status(action_error(e), Tone::Warn),
+            None => self.set_status(s_err_gone(), Tone::Warn),
         }
     }
 
@@ -1223,46 +713,31 @@ impl Ui {
         Some((zone.index, zone.current.unwrap_or_default()))
     }
 
-    /// A lighting control changed: update the edited effect.
-    fn on_led_control(&mut self, id: u16) {
-        let Some((mut zone, mut effect)) = self.led_state() else { return };
-        match id {
-            ID_LED_ZONE => {
-                let Some(z) = self.combo_value(self.c.led_zone) else { return };
-                zone = z as u8;
-                // Start from what that zone holds.
-                if let Some(current) = self.lighting().and_then(|l| l.zones.iter().find(|x| x.index == zone)).and_then(|x| x.current) {
-                    effect = current;
-                }
-                let kinds = self.lighting().and_then(|l| l.zones.iter().find(|x| x.index == zone)).map(|x| x.kinds()).unwrap_or_default();
-                if !kinds.contains(&effect.kind) {
-                    effect.kind = kinds.first().copied().unwrap_or(EffectKind::Static);
-                }
-            }
-            ID_LED_EFFECT => {
-                let Some(k) = self.combo_value(self.c.led_effect) else { return };
-                effect.kind = EffectKind::ALL.get(k as usize).copied().unwrap_or(EffectKind::Static);
-            }
-            ID_LED_SPEED => {
-                // SAFETY: trackbar owned by our window.
-                let secs = unsafe { SendMessageW(self.c.led_speed, TBM_GETPOS, 0, 0) };
-                effect.period_ms = (secs.clamp(1, 20) * 1000) as u16;
-            }
-            _ => return,
+    fn writable(&self) -> bool {
+        self.lighting().is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. }))
+    }
+
+    /// Another zone was chosen: start from what that zone holds.
+    fn set_led_zone(&mut self, zone: u8) {
+        let Some((_, mut effect)) = self.led_state() else { return };
+        if let Some(current) = self.lighting().and_then(|l| l.zones.iter().find(|x| x.index == zone)).and_then(|x| x.current) {
+            effect = current;
+        }
+        let kinds = self.lighting().and_then(|l| l.zones.iter().find(|x| x.index == zone)).map(|x| x.kinds()).unwrap_or_default();
+        if !kinds.contains(&effect.kind) {
+            effect.kind = kinds.first().copied().unwrap_or(EffectKind::Static);
         }
         self.led = Some((zone, effect));
-        self.show_settings();
-        let writable = self.lighting().is_some_and(|l| matches!(l.onboard, OnboardStatus::Writable { .. }));
-        if id == ID_LED_ZONE && writable && zone as usize >= lighting::PROFILE_ZONES {
-            self.set_text(self.c.status, s_onb_zone());
+        if self.writable() && zone as usize >= lighting::PROFILE_ZONES {
+            self.set_status(s_onb_zone(), Tone::Warn);
         }
     }
 
-    fn set_led_color(&mut self, color: u32) {
+    /// Changes the edited effect of the zone shown.
+    fn edit_led(&mut self, f: impl FnOnce(&mut LedEffect)) {
         if let Some((zone, mut effect)) = self.led_state() {
-            effect.color = color & 0xFF_FFFF;
+            f(&mut effect);
             self.led = Some((zone, effect));
-            self.show_settings();
         }
     }
 
@@ -1282,9 +757,8 @@ impl Ui {
         self.seq += 1;
         self.busy = true;
         self.led_pending = Some(setting);
-        self.set_text(self.c.status, s_applying());
-        self.show_settings();
-        forward_once(self.hwnd, WM_APP_SETTINGS, self.seq << 1 | 1, self.native.set_setting(&device, setting));
+        self.set_status(s_applying(), Tone::Normal);
+        self.settings_rx = Some((self.seq << 1 | 1, Pending::new(self.native.set_setting(&device, setting))));
     }
 
     fn led_preview_now(&mut self) {
@@ -1302,6 +776,32 @@ impl Ui {
         Some((zone, effect, name, matches!(light.onboard, OnboardStatus::Writable { .. }), light.kept.is_some()))
     }
 
+    /// Asks before saving the lighting (in the device, or kept by Batly).
+    fn ask_save(&mut self) {
+        let Some((zone, effect, name, writable, _)) = self.led_save_target() else { return };
+        let (text, setting) = if writable {
+            (s_led_save_confirm(), Setting::Led { zone, effect, save: true })
+        } else {
+            (s_led_keep_confirm(), Setting::LedKeep { zone, effect })
+        };
+        self.confirm =
+            Some(Confirm { title: s_led_save(), text: text.replace("{name}", &name), danger: false, action: Action::Led(setting) });
+    }
+
+    /// Asks before restoring the original lighting (or forgetting the kept one).
+    fn ask_restore(&mut self) {
+        let Some((_, _, name, writable, kept)) = self.led_save_target() else { return };
+        let (text, setting) = if writable {
+            (s_led_restore_confirm(), Setting::LedRestore)
+        } else if kept {
+            (s_led_forget_confirm(), Setting::LedForget)
+        } else {
+            return;
+        };
+        self.confirm =
+            Some(Confirm { title: s_led_restore(), text: text.replace("{name}", &name), danger: false, action: Action::Led(setting) });
+    }
+
     /// Gives the LEDs of a previewed device back (selection change, close).
     fn release_preview(&mut self) {
         if let Some(device) = self.led_preview.take() {
@@ -1314,8 +814,8 @@ impl Ui {
         if self.busy {
             return;
         }
-        self.set_text(self.c.status, s_reading());
-        forward_once(self.hwnd, WM_APP_DIAG, 0, self.native.diagnose(&device));
+        self.set_status(s_reading(), Tone::Normal);
+        self.diag_rx = Some(Pending::new(self.native.diagnose(&device)));
     }
 
     fn on_diagnose(&mut self, result: Option<Result<String, ActionError>>) {
@@ -1325,124 +825,14 @@ impl Ui {
                 match std::fs::write(&path, text) {
                     Ok(()) => {
                         crate::win::shell_open(self.hwnd, &path.to_string_lossy(), None);
-                        self.set_text(self.c.status, s_diag_done());
+                        self.set_status(s_diag_done(), Tone::Good);
                     }
-                    Err(e) => self.set_text(self.c.status, &e.to_string()),
+                    Err(e) => self.set_status(&e.to_string(), Tone::Warn),
                 }
             }
-            Some(Err(e)) => self.set_text(self.c.status, action_error(e)),
-            None => self.set_text(self.c.status, s_err_gone()),
+            Some(Err(e)) => self.set_status(action_error(e), Tone::Warn),
+            None => self.set_status(s_err_gone(), Tone::Warn),
         }
-    }
-
-    fn combo_value(&self, combo: HWND) -> Option<isize> {
-        // SAFETY: combo box owned by our window.
-        unsafe {
-            let sel = SendMessageW(combo, CB_GETCURSEL, 0, 0);
-            (sel >= 0).then(|| SendMessageW(combo, CB_GETITEMDATA, sel as usize, 0))
-        }
-    }
-
-    fn track_value(&self, track: HWND) -> u8 {
-        // SAFETY: trackbar owned by our window.
-        unsafe { SendMessageW(track, TBM_GETPOS, 0, 0) }.clamp(0, 255) as u8
-    }
-
-    /// A settings control changed: build the setting and send it.
-    fn on_setting_control(&mut self, id: u16) {
-        let Some(current) = self.settings.clone() else { return };
-        if self.busy {
-            return;
-        }
-        let setting = match id {
-            ID_DPI => self.combo_value(self.c.dpi).map(|v| Setting::Dpi(v as u16)).filter(|_| current.dpi.is_some()),
-            ID_RATE => self.combo_value(self.c.rate).map(|v| Setting::ReportRate(v as u8)).filter(|_| current.report_rate.is_some()),
-            ID_BL_MODE | ID_BL_LEVEL => current.backlight.as_ref().and_then(|b| {
-                let mode = match self.combo_value(self.c.bl_mode)? {
-                    v if v == BacklightMode::On as isize => BacklightMode::On,
-                    v if v == BacklightMode::Auto as isize => BacklightMode::Auto,
-                    v if v == BacklightMode::Manual as isize => BacklightMode::Manual,
-                    _ => BacklightMode::Off,
-                };
-                let level = if id == ID_BL_LEVEL { self.track_value(self.c.bl_level) } else { b.level };
-                Some(Setting::Backlight { mode, level })
-            }),
-            ID_WHEEL | ID_WHEEL_SPEED => current.smart_shift.and_then(|_| {
-                Some(Setting::SmartShift(match self.combo_value(self.c.wheel)? {
-                    0 => WheelMode::FreeSpin,
-                    1 => WheelMode::Ratchet,
-                    _ => WheelMode::Smart(self.track_value(self.c.wheel_speed).max(1)),
-                }))
-            }),
-            _ => None,
-        };
-        let (Some(setting), Some(device)) = (setting, self.device.clone()) else { return };
-        // Nothing to write when the value did not change.
-        let unchanged = match setting {
-            Setting::Dpi(v) => current.dpi.as_ref().is_some_and(|d| d.current == v),
-            Setting::ReportRate(v) => current.report_rate.as_ref().is_some_and(|r| r.current == v),
-            Setting::Backlight { mode, level } => {
-                current.backlight.as_ref().is_some_and(|b| b.mode == mode && (mode != BacklightMode::Manual || b.level == level))
-            }
-            Setting::SmartShift(m) => current.smart_shift == Some(m),
-            Setting::Led { .. }
-            | Setting::LedRelease
-            | Setting::LedRestore
-            | Setting::LedKeep { .. }
-            | Setting::LedForget
-            | Setting::Host(_) => false,
-        };
-        if unchanged {
-            return;
-        }
-        self.seq += 1;
-        self.busy = true;
-        self.set_text(self.c.status, s_applying());
-        self.show_settings();
-        forward_once(self.hwnd, WM_APP_SETTINGS, self.seq << 1 | 1, self.native.set_setting(&device, setting));
-    }
-
-    fn on_settings(&mut self, tag: usize, result: Option<Result<DeviceSettings, ActionError>>) {
-        if tag >> 1 != self.seq {
-            return; // stale answer (another device was selected meanwhile)
-        }
-        self.busy = false;
-        let was_set = tag & 1 == 1;
-        let led = self.led_pending.take();
-        if result.as_ref().is_some_and(|r| r.is_err()) && matches!(led, Some(Setting::Led { save: false, .. })) {
-            self.led_preview = None;
-        }
-        match result {
-            Some(Ok(s)) => {
-                self.settings = Some(s);
-                if let Some(setting) = led {
-                    if matches!(
-                        setting,
-                        Setting::Led { save: true, .. } | Setting::LedRestore | Setting::LedKeep { .. } | Setting::LedForget
-                    ) {
-                        self.led = None; // show what the device now holds
-                    }
-                    self.set_text(
-                        self.c.status,
-                        match setting {
-                            Setting::Led { save: true, .. } => s_led_saved(),
-                            Setting::LedRelease => s_led_released(),
-                            Setting::LedRestore => s_led_restored(),
-                            Setting::LedKeep { .. } => s_led_kept(),
-                            Setting::LedForget => s_led_forgotten(),
-                            _ => s_led_previewed(),
-                        },
-                    );
-                } else if was_set {
-                    self.set_text(self.c.status, s_applied());
-                } else {
-                    self.show_status_for(self.selected_device());
-                }
-            }
-            Some(Err(e)) => self.set_text(self.c.status, action_error(e)),
-            None => self.set_text(self.c.status, s_err_gone()),
-        }
-        self.show_settings();
     }
 
     // ------------------------------------------------------------ pairing
@@ -1460,12 +850,12 @@ impl Ui {
             ReceiverKind::Lightspeed | ReceiverKind::Nano => text = format!("{text}\n{}", s_pair_replaces()),
             _ => {}
         }
-        self.set_text(self.c.pair_text, &text);
-        self.set_text(self.c.pair_code, "");
+        self.pair_text = text;
+        self.pair_tone = Tone::Normal;
+        self.pair_code.clear();
         self.pairing = Some(id.clone());
         self.pairing_final = false;
-        self.update_buttons();
-        forward_stream(self.hwnd, WM_APP_PAIRING, self.native.pair(&id));
+        self.pairing_rx = Some(self.native.pair(&id));
     }
 
     fn on_pairing(&mut self, event: Option<PairingEvent>) {
@@ -1473,39 +863,43 @@ impl Ui {
         match event {
             Some(PairingEvent::Waiting) => {}
             Some(PairingEvent::Found { name }) => {
-                self.set_text(self.c.pair_text, &quote(s_pair_found(), &name));
+                self.pair_text = quote(s_pair_found(), &name);
+                self.pair_tone = Tone::Normal;
             }
             Some(PairingEvent::Passkey { name, code, keyboard }) => {
+                self.pair_tone = Tone::Normal;
                 if keyboard {
-                    self.set_text(self.c.pair_text, &quote(s_pair_keyboard(), &name));
+                    self.pair_text = quote(s_pair_keyboard(), &name);
                     let spaced: Vec<String> = code.chars().map(String::from).collect();
-                    self.set_text(self.c.pair_code, &spaced.join(" "));
+                    self.pair_code = spaced.join(" ");
                 } else {
-                    let text = quote(s_pair_mouse(), &name).replace("{l}", s_left()).replace("{r}", s_right());
-                    self.set_text(self.c.pair_text, &text);
+                    self.pair_text = quote(s_pair_mouse(), &name).replace("{l}", s_left()).replace("{r}", s_right());
                     let clicks = passkey_clicks(&code).unwrap_or_default();
                     let seq: Vec<&str> = clicks.iter().map(|&right| if right { s_right() } else { s_left() }).collect();
-                    self.set_text(self.c.pair_code, &seq.join(" "));
+                    self.pair_code = seq.join(" ");
                 }
             }
             Some(final_event) => {
                 self.pairing_final = true;
-                let text = match final_event {
-                    PairingEvent::Paired { slot, name } => s_pair_done().replace("{name}", &name).replace("{slot}", &slot.to_string()),
-                    PairingEvent::Failed(e) => s_pair_failed().replace("{reason}", pairing_reason(e)),
-                    PairingEvent::Timeout => s_pair_timeout().to_string(),
-                    _ => s_pair_cancelled().to_string(),
+                let (text, tone) = match final_event {
+                    PairingEvent::Paired { slot, name } => {
+                        (s_pair_done().replace("{name}", &name).replace("{slot}", &slot.to_string()), Tone::Good)
+                    }
+                    PairingEvent::Failed(e) => (s_pair_failed().replace("{reason}", pairing_reason(e)), Tone::Warn),
+                    PairingEvent::Timeout => (s_pair_timeout().to_string(), Tone::Warn),
+                    _ => (s_pair_cancelled().to_string(), Tone::Normal),
                 };
-                self.set_text(self.c.pair_text, &text);
-                self.set_text(self.c.pair_code, "");
+                self.pair_text = text;
+                self.pair_tone = tone;
+                self.pair_code.clear();
             }
             None => {
                 if !self.pairing_final {
-                    self.set_text(self.c.pair_text, s_pair_lost());
-                    self.set_text(self.c.pair_code, "");
+                    self.pair_text = s_pair_lost().to_string();
+                    self.pair_tone = Tone::Warn;
+                    self.pair_code.clear();
                 }
                 self.pairing = None;
-                self.update_buttons();
                 self.request_list();
             }
         }
@@ -1520,292 +914,508 @@ impl Ui {
         Some((r.id.clone(), d.slot, d.name.clone()))
     }
 
+    fn ask_unpair(&mut self) {
+        let Some((receiver, slot, name)) = self.unpair_target() else { return };
+        self.confirm = Some(Confirm {
+            title: s_unpair(),
+            text: s_unpair_confirm().replace("{name}", &name),
+            danger: true,
+            action: Action::Unpair(receiver, slot, name),
+        });
+    }
+
     fn unpair(&mut self, receiver: &str, slot: u8, name: &str) {
-        self.set_text(self.c.status, "");
-        self.enable(self.c.unpair, false);
-        forward_once(self.hwnd, WM_APP_UNPAIR, 0, self.native.unpair(receiver, slot));
-        self.set_text(self.c.pair_text, "");
-        self.set_text(self.c.pair_code, "");
+        self.set_status("", Tone::Normal);
+        self.unpair_pending = true;
+        self.unpair_rx = Some(Pending::new(self.native.unpair(receiver, slot)));
+        self.pair_text.clear();
+        self.pair_code.clear();
         self.unpairing = name.to_string();
     }
 
     fn on_unpaired(&mut self, result: Option<Result<(), ActionError>>) {
-        let text = match result {
-            Some(Ok(())) => s_unpaired().replace("{name}", &self.unpairing),
-            Some(Err(e)) => action_error(e).to_string(),
-            None => s_err_gone().to_string(),
+        let (text, tone) = match result {
+            Some(Ok(())) => (s_unpaired().replace("{name}", &self.unpairing), Tone::Good),
+            Some(Err(e)) => (action_error(e).to_string(), Tone::Warn),
+            None => (s_err_gone().to_string(), Tone::Warn),
         };
-        self.set_text(self.c.pair_text, &text);
+        self.pair_text = text;
+        self.pair_tone = tone;
+        self.unpair_pending = false;
         self.slot = None;
         self.request_list();
-        self.update_buttons();
     }
 
-    fn destroy(&mut self) {
+    fn run(&mut self, action: Action) {
+        match action {
+            Action::Unpair(receiver, slot, name) => self.unpair(&receiver, slot, &name),
+            Action::Led(setting) => self.send_led(setting),
+        }
+    }
+
+    // ------------------------------------------------------------ drawing
+
+    fn header(&mut self, ui: &mut egui::Ui) {
+        let c = look::colours(ui.ctx());
+        look::heading(ui, s_title(), None);
+        let labels = self.receiver_labels();
+        if !labels.is_empty() {
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let mut sel = self.receivers.iter().position(|r| Some(&r.id) == self.receiver.as_ref()).unwrap_or(usize::MAX);
+            let enabled = self.pairing.is_none();
+            let changed = ui
+                .horizontal(|ui| {
+                    ui.label(egui::RichText::new(s_receiver()).color(c.sub));
+                    ui.add_enabled_ui(enabled, |ui| look::choice(ui, "receiver", &mut sel, &refs, (ui.available_width() - 12.0).min(420.0)))
+                        .inner
+                })
+                .inner;
+            if changed {
+                self.on_receiver_changed(sel);
+            }
+        }
+        let info = self.receiver_info();
+        ui.horizontal(|ui| {
+            if !self.loaded {
+                ui.spinner();
+            }
+            ui.label(egui::RichText::new(info).small().color(c.sub));
+        });
+    }
+
+    fn devices_card(&mut self, ui: &mut egui::Ui) {
+        let c = look::colours(ui.ctx());
+        let devices: Vec<PairedDevice> = self.current().map(|r| r.devices.clone()).unwrap_or_default();
+        let mut clicked = None;
+        let mut pair = false;
+        let mut unpair = false;
+        let (can_pair, can_unpair, pairing_here) = (self.can_pair(), self.can_unpair(), self.pairing_here());
+        look::card(ui, Some(s_devices()), |ui| {
+            if devices.is_empty() {
+                ui.label(egui::RichText::new("—").color(c.sub));
+            }
+            for d in &devices {
+                let active = self.slot == Some(d.slot);
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), egui::Sense::click());
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                let sel = ui.ctx().animate_bool_with_time(resp.id.with("s"), active, 0.18);
+                let fill = look::lerp(look::lerp(egui::Color32::TRANSPARENT, c.hover, hover), look::lerp(c.card, c.accent, 0.14), sel);
+                let p = ui.painter();
+                p.rect_filled(rect, egui::CornerRadius::same(8), fill);
+                if sel > 0.0 {
+                    let h = 18.0 * sel;
+                    p.rect_filled(
+                        egui::Rect::from_center_size(egui::pos2(rect.left() + 4.0, rect.center().y), egui::vec2(3.0, h)),
+                        egui::CornerRadius::same(2),
+                        c.accent,
+                    );
+                }
+                // State on the right: a dot and a word.
+                let (state, dot) = if d.online { (s_connected(), c.charge) } else { (s_asleep(), c.sub) };
+                let galley = p.layout_no_wrap(state.to_string(), egui::FontId::proportional(12.0), c.sub);
+                let state_w = galley.size().x;
+                let state_pos = egui::pos2(rect.right() - 12.0 - state_w, rect.center().y - galley.size().y / 2.0);
+                p.galley(state_pos, galley, c.sub);
+                p.circle_filled(egui::pos2(state_pos.x - 9.0, rect.center().y), 4.0, dot);
+                // Name and details on the left, clipped before the state.
+                let text_clip = egui::Rect::from_min_max(rect.min, egui::pos2(state_pos.x - 20.0, rect.max.y));
+                let p = p.with_clip_rect(text_clip.intersect(p.clip_rect()));
+                let font = if active { look::strong(14.0) } else { egui::FontId::proportional(14.0) };
+                p.text(egui::pos2(rect.left() + 16.0, rect.center().y - 9.0), egui::Align2::LEFT_CENTER, &d.name, font, c.fg);
+                let mut details = Vec::new();
+                if d.slot != 0xFF {
+                    details.push(format!("{} {}", s_col_slot(), d.slot));
+                }
+                if let Some(fw) = &d.info.firmware {
+                    details.push(format!("{} {fw}", s_col_firmware()));
+                }
+                if let Some((cur, n)) = d.info.host_channel {
+                    details.push(format!("{} {cur} / {n}", s_col_channel()));
+                }
+                if let Some(kind) = d.kind {
+                    details.insert(0, kind_name(kind).to_string());
+                }
+                p.text(
+                    egui::pos2(rect.left() + 16.0, rect.center().y + 10.0),
+                    egui::Align2::LEFT_CENTER,
+                    details.join(" · "),
+                    egui::FontId::proportional(12.0),
+                    c.sub,
+                );
+                if resp.clicked() {
+                    clicked = Some(d.slot);
+                }
+            }
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(can_pair, |ui| {
+                    let (text, kind) =
+                        if pairing_here { (s_cancel_pair(), look::Kind::Secondary) } else { (s_pair(), look::Kind::Primary) };
+                    if look::button(ui, text, kind).clicked() {
+                        pair = true;
+                    }
+                });
+                ui.add_enabled_ui(can_unpair, |ui| {
+                    if look::button(ui, s_unpair(), look::Kind::Danger).clicked() {
+                        unpair = true;
+                    }
+                });
+            });
+        });
+        if let Some(slot) = clicked {
+            self.on_select(Some(slot));
+        }
+        if pair {
+            self.start_or_cancel_pairing();
+        }
+        if unpair {
+            self.ask_unpair();
+        }
+    }
+
+    fn pairing_card(&mut self, ui: &mut egui::Ui) {
+        if self.pair_text.is_empty() {
+            return;
+        }
+        let c = look::colours(ui.ctx());
+        let colour = tone_colour(&c, self.pair_tone);
+        ui.add_space(8.0);
+        look::card(ui, None, |ui| {
+            ui.horizontal(|ui| {
+                if self.pairing.is_some() && !self.pairing_final {
+                    ui.spinner();
+                }
+                ui.add(egui::Label::new(egui::RichText::new(&self.pair_text).color(colour)).wrap());
+            });
+            if !self.pair_code.is_empty() {
+                ui.add_space(4.0);
+                egui::Frame::new()
+                    .fill(look::lerp(c.card, c.accent, 0.12))
+                    .stroke(egui::Stroke::new(1.0, look::lerp(c.border, c.accent, 0.5)))
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new(&self.pair_code).font(look::strong(30.0)).color(c.fg));
+                        });
+                    });
+            }
+        });
+    }
+
+    fn settings_card(&mut self, ui: &mut egui::Ui) {
+        let c = look::colours(ui.ctx());
+        let Some(s) = self.settings.clone() else {
+            if self.busy {
+                ui.add_space(8.0);
+                look::card(ui, Some(s_group()), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new(s_reading()).color(c.sub));
+                    });
+                });
+            }
+            return;
+        };
+        if s.dpi.is_none() && s.report_rate.is_none() && s.backlight.is_none() && s.smart_shift.is_none() {
+            return;
+        }
+        let usable = !self.busy;
+        let mut send = None;
+        ui.add_space(8.0);
+        look::card(ui, Some(s_group()), |ui| {
+            ui.add_enabled_ui(usable, |ui| {
+                let mut first = true;
+                let mut sep = |ui: &mut egui::Ui| {
+                    if !first {
+                        look::divider(ui);
+                    }
+                    first = false;
+                };
+                if let Some(d) = &s.dpi {
+                    sep(ui);
+                    let mut values = d.choices.clone();
+                    if !values.contains(&d.current) {
+                        values.push(d.current);
+                    }
+                    let names: Vec<String> = values.iter().map(u16::to_string).collect();
+                    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    let mut sel = values.iter().position(|v| *v == d.current).unwrap_or(usize::MAX);
+                    if look::row(ui, s_dpi(), None, |ui| look::choice(ui, "dpi", &mut sel, &refs, 180.0)) {
+                        send = values.get(sel).map(|&v| Setting::Dpi(v));
+                    }
+                }
+                if let Some(r) = &s.report_rate {
+                    sep(ui);
+                    let names: Vec<String> = r.choices.iter().map(|&ms| rate_label(ms)).collect();
+                    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    let mut sel = r.choices.iter().position(|v| *v == r.current).unwrap_or(usize::MAX);
+                    if look::row(ui, s_rate(), None, |ui| look::choice(ui, "rate", &mut sel, &refs, 180.0)) {
+                        send = r.choices.get(sel).map(|&v| Setting::ReportRate(v));
+                    }
+                }
+                if let Some(b) = &s.backlight {
+                    sep(ui);
+                    let mut modes = b.modes.clone();
+                    if !modes.contains(&b.mode) {
+                        modes.push(b.mode);
+                    }
+                    let refs: Vec<&str> = modes.iter().map(|&m| backlight_name(m)).collect();
+                    let mut sel = modes.iter().position(|m| *m == b.mode).unwrap_or(usize::MAX);
+                    if look::row(ui, s_backlight(), None, |ui| look::choice(ui, "backlight", &mut sel, &refs, 180.0)) {
+                        send = modes.get(sel).map(|&mode| Setting::Backlight { mode, level: b.level });
+                    }
+                    if b.levels > 1 {
+                        let manual = b.mode == BacklightMode::Manual;
+                        let mut v = self.bl_level.unwrap_or(b.level).min(b.levels - 1);
+                        let resp = look::row(ui, s_bl_level(), None, |ui| {
+                            ui.add_enabled(manual, egui::Slider::new(&mut v, 0..=b.levels - 1).integer())
+                        });
+                        if resp.changed() {
+                            self.bl_level = Some(v);
+                        }
+                        if committed(&resp) {
+                            send = Some(Setting::Backlight { mode: b.mode, level: v });
+                        }
+                    }
+                }
+                if let Some(m) = s.smart_shift {
+                    sep(ui);
+                    let (current, speed) = match m {
+                        WheelMode::FreeSpin => (0, 16),
+                        WheelMode::Ratchet => (1, 16),
+                        WheelMode::Smart(t) => (2, t.min(WHEEL_MAX)),
+                    };
+                    let speed = self.wheel_speed.unwrap_or(speed);
+                    let mode = |i: usize, speed: u8| match i {
+                        0 => WheelMode::FreeSpin,
+                        1 => WheelMode::Ratchet,
+                        _ => WheelMode::Smart(speed.max(1)),
+                    };
+                    let mut sel = current;
+                    let names = [s_wheel_free(), s_wheel_ratchet(), s_wheel_smart()];
+                    if look::row(ui, s_wheel(), None, |ui| look::choice(ui, "wheel", &mut sel, &names, 180.0)) {
+                        send = Some(Setting::SmartShift(mode(sel, speed)));
+                    }
+                    let mut v = speed;
+                    let resp = look::row(ui, s_wheel_speed(), None, |ui| {
+                        ui.add_enabled(current == 2, egui::Slider::new(&mut v, 1..=WHEEL_MAX).integer())
+                    });
+                    if resp.changed() {
+                        self.wheel_speed = Some(v);
+                    }
+                    if committed(&resp) {
+                        send = Some(Setting::SmartShift(mode(current, v)));
+                    }
+                }
+            });
+        });
+        if let Some(setting) = send {
+            self.send_setting(setting);
+        }
+    }
+
+    fn lighting_card(&mut self, ui: &mut egui::Ui) {
+        let Some(light) = self.lighting().cloned() else { return };
+        let usable = !self.busy;
+        let (zone, effect) = self.led_state().unwrap_or((0, LedEffect::default()));
+        let writable = matches!(light.onboard, OnboardStatus::Writable { .. });
+        let kept = light.kept.is_some();
+        // Writable memory: saved in the device; otherwise kept by Batly.
+        let can_save = !writable || (zone as usize) < lighting::PROFILE_ZONES;
+        let previewing = self.led_preview.is_some() && self.led_preview == self.device;
+        let mut new_zone = None;
+        let mut new_effect = effect;
+        let (mut preview, mut save, mut restore, mut release, mut diag) = (false, false, false, false, false);
+        ui.add_space(8.0);
+        look::card(ui, Some(s_led()), |ui| {
+            ui.add_enabled_ui(usable, |ui| {
+                let names: Vec<String> = light.zones.iter().map(|z| zone_name(z.location, z.index)).collect();
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let mut sel = light.zones.iter().position(|z| z.index == zone).unwrap_or(usize::MAX);
+                if look::row(ui, s_zone(), None, |ui| look::choice(ui, "led-zone", &mut sel, &refs, 180.0)) {
+                    new_zone = light.zones.get(sel).map(|z| z.index);
+                }
+                look::divider(ui);
+                let kinds = light.zones.iter().find(|z| z.index == zone).map(|z| z.kinds()).unwrap_or_default();
+                let refs: Vec<&str> = kinds.iter().map(|&k| effect_name(k)).collect();
+                let mut sel = kinds.iter().position(|k| *k == effect.kind).unwrap_or(usize::MAX);
+                if look::row(ui, s_effect(), None, |ui| look::choice(ui, "led-effect", &mut sel, &refs, 180.0)) {
+                    if let Some(&k) = kinds.get(sel) {
+                        new_effect.kind = k;
+                    }
+                }
+                look::divider(ui);
+                let rgb = effect.color & 0xFF_FFFF;
+                let mut srgb = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+                look::row(ui, s_color(), None, |ui| {
+                    ui.add_enabled_ui(effect.kind.has_color(), |ui| {
+                        egui::widgets::color_picker::color_edit_button_srgb(ui, &mut srgb);
+                        ui.label(egui::RichText::new(format!("#{rgb:06X}")).monospace());
+                    });
+                });
+                let picked = (srgb[0] as u32) << 16 | (srgb[1] as u32) << 8 | srgb[2] as u32;
+                if picked != rgb {
+                    new_effect.color = picked;
+                }
+                look::divider(ui);
+                let (min, max) = (PERIOD_MIN_MS / 1000, PERIOD_MAX_MS / 1000);
+                let mut secs = effect.period_ms / 1000;
+                let resp = look::row(ui, s_led_speed(), None, |ui| {
+                    ui.add_enabled(effect.kind.has_speed(), egui::Slider::new(&mut secs, min..=max).integer().suffix(" s"))
+                });
+                if resp.changed() {
+                    new_effect.period_ms = secs.clamp(1, 20) * 1000;
+                }
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    preview = look::button(ui, s_led_preview(), look::Kind::Primary).clicked();
+                    ui.add_enabled_ui(can_save, |ui| save = look::button(ui, s_led_save(), look::Kind::Secondary).clicked());
+                    ui.add_enabled_ui(writable || kept, |ui| restore = look::button(ui, s_led_restore(), look::Kind::Secondary).clicked());
+                    ui.add_enabled_ui(previewing, |ui| release = look::button(ui, s_led_release(), look::Kind::Secondary).clicked());
+                    diag = look::button(ui, s_led_diag(), look::Kind::Ghost).clicked();
+                });
+            });
+        });
+        if let Some(z) = new_zone {
+            self.set_led_zone(z);
+        } else if new_effect != effect {
+            self.edit_led(|e| *e = new_effect);
+        }
+        if preview {
+            self.led_preview_now();
+        }
+        if save {
+            self.ask_save();
+        }
+        if restore {
+            self.ask_restore();
+        }
+        if release {
+            self.send_led(Setting::LedRelease);
+        }
+        if diag {
+            self.diagnose();
+        }
+    }
+
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = &self.confirm else { return };
+        let c = look::colours(ctx);
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::unique("receivers-confirm")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(egui::RichText::new(confirm.title.trim_end_matches('…')).font(look::strong(16.0)).color(c.fg));
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(egui::RichText::new(&confirm.text).color(c.fg)).wrap());
+            ui.add_space(6.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let kind = if confirm.danger { look::Kind::Danger } else { look::Kind::Primary };
+                if look::button(ui, confirm.title.trim_end_matches('…'), kind).clicked() {
+                    answer = Some(true);
+                }
+                if look::button(ui, s_cancel(), look::Kind::Secondary).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if answer.is_none() && modal.should_close() {
+            answer = Some(false);
+        }
+        if let Some(yes) = answer {
+            if let Some(confirm) = self.confirm.take() {
+                if yes {
+                    self.run(confirm.action);
+                }
+            }
+        }
+    }
+
+    /// Up / down arrows move the selection in the device list.
+    fn arrow_keys(&mut self, ui: &egui::Ui) {
+        if self.confirm.is_some() || egui::Popup::is_any_open(ui.ctx()) || ui.ctx().memory(|m| m.focused().is_some()) {
+            return;
+        }
+        let (up, down) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown)));
+        if !up && !down {
+            return;
+        }
+        let slots: Vec<u8> = self.current().map(|r| r.devices.iter().map(|d| d.slot).collect()).unwrap_or_default();
+        let at = self.slot.and_then(|s| slots.iter().position(|x| *x == s));
+        let next = match (at, up) {
+            (Some(i), true) => i.checked_sub(1),
+            (Some(i), false) => Some(i + 1),
+            (None, _) => Some(0),
+        };
+        if let Some(&slot) = next.and_then(|i| slots.get(i)) {
+            self.on_select(Some(slot));
+        }
+    }
+}
+
+/// Whether a slider was released (mouse) or moved with the keyboard.
+fn committed(resp: &egui::Response) -> bool {
+    resp.drag_stopped() || (resp.changed() && !resp.dragged())
+}
+
+fn tone_colour(c: &look::Colours, tone: Tone) -> egui::Color32 {
+    match tone {
+        Tone::Normal => c.sub,
+        Tone::Good => c.charge,
+        Tone::Warn => c.warn,
+    }
+}
+
+impl crate::egui_host::View for Window {
+    fn ui(&mut self, ui: &mut egui::Ui, ctl: &mut crate::egui_host::Ctl) {
+        self.hwnd = ctl.hwnd;
+        let waiting = self.poll();
+        if waiting {
+            ui.ctx().request_repaint_after(POLL);
+        }
+        if let Some(at) = self.refresh_at {
+            ui.ctx().request_repaint_after(at.saturating_duration_since(Instant::now()));
+        }
+        let c = look::colours(ui.ctx());
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.confirm.is_none() && !egui::Popup::is_any_open(ui.ctx()) {
+            ctl.close = true;
+        }
+        self.arrow_keys(ui);
+        let footer = 46.0;
+        egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 6 }).show(ui, |ui| self.header(ui));
+        let height = (ui.available_height() - footer).max(80.0);
+        egui::ScrollArea::vertical().max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+            egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 4, bottom: 16 }).show(ui, |ui| {
+                self.devices_card(ui);
+                self.pairing_card(ui);
+                let key = (self.receiver.clone(), self.device.clone());
+                look::page_in(ui, ("receivers-device", key), |ui| {
+                    self.settings_card(ui);
+                    self.lighting_card(ui);
+                });
+            });
+        });
+        // Status line.
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, c.border));
+        egui::Frame::new().inner_margin(egui::Margin { left: 24, right: 24, top: 12, bottom: 12 }).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if self.busy || self.diag_rx.is_some() || self.unpair_rx.is_some() {
+                    ui.spinner();
+                }
+                ui.add(egui::Label::new(egui::RichText::new(&self.status).small().color(tone_colour(&c, self.tone))).truncate());
+            });
+        });
+        self.confirm_dialog(ui.ctx());
+    }
+
+    fn closed(&mut self) {
         self.release_preview();
         if let Some(id) = self.pairing.take() {
             self.native.cancel_pairing(&id);
         }
         self.native.watch(None);
-        // SAFETY: hook and fonts created by us; the controls using the
-        // fonts are being destroyed with the window.
-        unsafe {
-            if !self.hook.is_null() {
-                UnhookWindowsHookEx(self.hook);
-            }
-            DeleteObject(self.font as _);
-            DeleteObject(self.big_font as _);
-        }
-    }
-}
-
-/// Keyboard navigation (Tab, arrows, Esc) without access to the message
-/// loop: messages for our window go through IsDialogMessage first.
-///
-/// # Safety
-/// Called by Windows as a WH_GETMESSAGE hook: `lparam` points to the MSG
-/// being retrieved, which may be modified.
-unsafe extern "system" fn dialog_keys(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && wparam == PM_REMOVE {
-        let msg = &mut *(lparam as *mut MSG);
-        let main = HWND_CELL.with(|c| c.get()) as HWND;
-        if !main.is_null()
-            && (WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message)
-            && (msg.hwnd == main || IsChild(main, msg.hwnd) != 0)
-            && IsDialogMessageW(main, msg) != 0
-        {
-            msg.message = WM_NULL;
-            msg.wParam = 0;
-            msg.lParam = 0;
-            // Tab may have moved the focus to a control out of view.
-            with_ui(|ui| ui.reveal(GetFocus()));
-        }
-    }
-    CallNextHookEx(null_mut(), code, wparam, lparam)
-}
-
-/// Re-posts a payload message that arrived while the state was borrowed
-/// (the payload stays owned by the message).
-///
-/// # Safety
-/// Same contract as `PostMessageW`.
-unsafe fn repost(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    PostMessageW(hwnd, msg, wparam, lparam);
-    0
-}
-
-/// # Safety
-/// Called by Windows with the parameters of a message for our window;
-/// WM_NOTIFY / WM_DPICHANGED `lparam` pointers are valid for the call and
-/// WM_APP_* payloads come from `post` with the matching type.
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Theme: background, labels, group boxes, light/dark switch.
-    if let Some(r) = crate::theme::on_message(hwnd, msg, wparam, lparam) {
-        return r;
-    }
-    let busy = || UI.with(|cell| cell.try_borrow_mut().is_err());
-    match msg {
-        WM_COMMAND => {
-            let id = (wparam & 0xFFFF) as u16;
-            let code = ((wparam >> 16) & 0xFFFF) as u32;
-            match (id, code) {
-                (ID_RECEIVER, CBN_SELCHANGE) => {
-                    with_ui(|ui| ui.on_receiver_changed());
-                }
-                (ID_DPI | ID_RATE | ID_BL_MODE | ID_WHEEL, CBN_SELCHANGE) => {
-                    with_ui(|ui| ui.on_setting_control(id));
-                }
-                (ID_LED_ZONE | ID_LED_EFFECT, CBN_SELCHANGE) => {
-                    with_ui(|ui| ui.on_led_control(id));
-                }
-                (ID_LED_COLOR, BN_CLICKED) => {
-                    // The color dialog runs a modal loop: not under borrow.
-                    if let Some(Some((color, mut custom))) = with_ui(|ui| ui.led_state().map(|(_, e)| (e.color, ui.custom_colors))) {
-                        let mut cc: CHOOSECOLORW = zeroed();
-                        cc.lStructSize = size_of::<CHOOSECOLORW>() as u32;
-                        cc.hwndOwner = hwnd;
-                        // COLORREF is 0x00BBGGRR.
-                        cc.rgbResult = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color >> 16) & 0xFF);
-                        cc.lpCustColors = custom.as_mut_ptr();
-                        cc.Flags = CC_RGBINIT | CC_FULLOPEN;
-                        if ChooseColorW(&mut cc) != 0 {
-                            let c = cc.rgbResult;
-                            let rgb = ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
-                            with_ui(|ui| {
-                                ui.custom_colors = custom;
-                                ui.set_led_color(rgb);
-                            });
-                        }
-                    }
-                }
-                (ID_LED_PREVIEW, BN_CLICKED) => {
-                    with_ui(|ui| ui.led_preview_now());
-                }
-                (ID_LED_RELEASE, BN_CLICKED) => {
-                    with_ui(|ui| ui.send_led(Setting::LedRelease));
-                }
-                (ID_LED_DIAG, BN_CLICKED) => {
-                    with_ui(|ui| ui.diagnose());
-                }
-                (ID_LED_RESTORE, BN_CLICKED) => {
-                    if let Some(Some((_, _, name, writable, kept))) = with_ui(|ui| ui.led_save_target()) {
-                        let (text, setting) = if writable {
-                            (s_led_restore_confirm(), Setting::LedRestore)
-                        } else if kept {
-                            (s_led_forget_confirm(), Setting::LedForget)
-                        } else {
-                            return 0;
-                        };
-                        let text = text.replace("{name}", &name);
-                        let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_led_restore()).as_ptr(), MB_YESNO | MB_ICONWARNING);
-                        if answer == IDYES {
-                            with_ui(|ui| ui.send_led(setting));
-                        }
-                    }
-                }
-                (ID_LED_SAVE, BN_CLICKED) => {
-                    // The confirmation runs a modal loop: not under borrow.
-                    if let Some(Some((zone, effect, name, writable, _))) = with_ui(|ui| ui.led_save_target()) {
-                        let (text, setting) = if writable {
-                            (s_led_save_confirm(), Setting::Led { zone, effect, save: true })
-                        } else {
-                            (s_led_keep_confirm(), Setting::LedKeep { zone, effect })
-                        };
-                        let text = text.replace("{name}", &name);
-                        let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_led_save()).as_ptr(), MB_YESNO | MB_ICONWARNING);
-                        if answer == IDYES {
-                            with_ui(|ui| ui.send_led(setting));
-                        }
-                    }
-                }
-                (ID_PAIR, BN_CLICKED) => {
-                    with_ui(|ui| ui.start_or_cancel_pairing());
-                }
-                (ID_UNPAIR, BN_CLICKED) => {
-                    // The confirmation runs a modal loop: not under borrow.
-                    if let Some(Some((receiver, slot, name))) = with_ui(|ui| ui.unpair_target()) {
-                        let text = s_unpair_confirm().replace("{name}", &name);
-                        let answer = MessageBoxW(hwnd, wide(&text).as_ptr(), wide(s_unpair()).as_ptr(), MB_YESNO | MB_ICONWARNING);
-                        if answer == IDYES {
-                            with_ui(|ui| ui.unpair(&receiver, slot, &name));
-                        }
-                    }
-                }
-                (IDCANCEL, _) => {
-                    DestroyWindow(hwnd);
-                }
-                _ => {}
-            }
-            0
-        }
-        WM_NOTIFY => {
-            let hdr = &*(lparam as *const NMHDR);
-            if hdr.idFrom == ID_LIST as usize && hdr.code == LVN_ITEMCHANGED {
-                let nm = &*(lparam as *const NMLISTVIEW);
-                if nm.uChanged & LVIF_STATE != 0 && (nm.uNewState ^ nm.uOldState) & LVIS_SELECTED != 0 {
-                    with_ui(|ui| ui.on_select());
-                }
-            }
-            0
-        }
-        WM_VSCROLL => {
-            with_ui(|ui| ui.on_vscroll((wparam & 0xFFFF) as i32));
-            0
-        }
-        WM_MOUSEWHEEL => {
-            let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-            with_ui(|ui| ui.scroll_to(ui.scroll - delta * scale(48, ui.dpi) / 120));
-            0
-        }
-        WM_SIZE => {
-            with_ui(Ui::update_scroll);
-            0
-        }
-        WM_GETMINMAXINFO => {
-            // Fixed width; from MIN_HEIGHT to the full content.
-            let dpi = GetDpiForWindow(hwnd).max(96);
-            let (w, full) = window_size(dpi);
-            let mmi = &mut *(lparam as *mut MINMAXINFO);
-            mmi.ptMinTrackSize.x = w;
-            mmi.ptMaxTrackSize.x = w;
-            mmi.ptMinTrackSize.y = scale(MIN_HEIGHT, dpi).min(full);
-            mmi.ptMaxTrackSize.y = full;
-            0
-        }
-        WM_HSCROLL => {
-            if wparam & 0xFFFF == TB_ENDTRACK {
-                let from = lparam as HWND;
-                with_ui(|ui| {
-                    if from == ui.c.bl_level {
-                        ui.on_setting_control(ID_BL_LEVEL);
-                    } else if from == ui.c.wheel_speed {
-                        ui.on_setting_control(ID_WHEEL_SPEED);
-                    } else if from == ui.c.led_speed {
-                        ui.on_led_control(ID_LED_SPEED);
-                    }
-                });
-            }
-            0
-        }
-        WM_APP_LIST if busy() => repost(hwnd, msg, wparam, lparam),
-        WM_APP_LIST => {
-            let list = take::<Vec<ReceiverInfo>>(lparam);
-            with_ui(|ui| ui.on_list(list.unwrap_or_default()));
-            0
-        }
-        WM_APP_SETTINGS if busy() => repost(hwnd, msg, wparam, lparam),
-        WM_APP_SETTINGS => {
-            let result = take::<Result<DeviceSettings, ActionError>>(lparam);
-            with_ui(|ui| ui.on_settings(wparam, result));
-            0
-        }
-        WM_APP_PAIRING if busy() => repost(hwnd, msg, wparam, lparam),
-        WM_APP_PAIRING => {
-            let event = take::<PairingEvent>(lparam);
-            with_ui(|ui| ui.on_pairing(event));
-            0
-        }
-        WM_APP_DIAG if busy() => repost(hwnd, msg, wparam, lparam),
-        WM_APP_DIAG => {
-            let result = take::<Result<String, ActionError>>(lparam);
-            with_ui(|ui| ui.on_diagnose(result));
-            0
-        }
-        WM_APP_UNPAIR if busy() => repost(hwnd, msg, wparam, lparam),
-        WM_APP_UNPAIR => {
-            let result = take::<Result<(), ActionError>>(lparam);
-            with_ui(|ui| ui.on_unpaired(result));
-            0
-        }
-        WM_APP_CHANGED => {
-            // Device events come in bursts: debounce.
-            SetTimer(hwnd, TIMER_REFRESH, 700, None);
-            0
-        }
-        WM_TIMER => {
-            KillTimer(hwnd, wparam);
-            if wparam == TIMER_REFRESH {
-                with_ui(|ui| ui.request_list());
-            }
-            0
-        }
-        WM_DPICHANGED => {
-            let dpi = (wparam & 0xFFFF) as u32;
-            let suggested = *(lparam as *const RECT);
-            with_ui(|ui| ui.apply_dpi(dpi, Some(suggested)));
-            0
-        }
-        WM_CLOSE => {
-            DestroyWindow(hwnd);
-            0
-        }
-        WM_DESTROY => {
-            HWND_CELL.with(|c| c.set(0));
-            if let Some(mut ui) = UI.with(|cell| cell.try_borrow_mut().ok().and_then(|mut u| u.take())) {
-                ui.destroy();
-            }
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }

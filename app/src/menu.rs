@@ -1,61 +1,72 @@
-//! The tray menu in the Batly style: owner-drawn items on the panel
-//! colours, a rounded highlight under the mouse, accent check marks and the
-//! text after a tab (shortcut, level) right-aligned and dimmed.
-//!
-//! [`style`] turns the items of a menu built with `AppendMenuW` into
-//! owner-drawn ones; [`on_message`], called first by the window that owns
-//! the menu, measures and draws them.
+//! The tray menu, in the Batly style: a flyout drawn with egui that slides
+//! in, with animated hover, icons, device levels in colour and check
+//! switches. It is built like a classic menu (`AppendMenuW`, which keeps
+//! the tray code simple) and read back from the `HMENU`; a click posts
+//! [`WM_APP_MENU`] with the command to the tray window.
 
-use crate::gfx::Canvas;
-use crate::ui::{self, Font, Scale};
+use crate::icon::{self, IconSpec};
+use crate::look;
+use crate::model::DeviceKind;
+use crate::ui;
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
-use std::ptr::null_mut;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateSolidBrush, GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, DT_LEFT, DT_RIGHT, DT_VCENTER, HBRUSH, HDC,
-};
+use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMenuItemCount, GetMenuItemInfoW, SetMenuInfo, SetMenuItemInfoW, HMENU, MENUINFO, MENUITEMINFOW, MFT_OWNERDRAW, MFT_SEPARATOR,
-    MIIM_DATA, MIIM_FTYPE, MIIM_STATE, MIIM_STRING, MIM_BACKGROUND, WM_DRAWITEM, WM_MEASUREITEM,
+    GetMenuItemCount, GetMenuItemInfoW, PostMessageW, HMENU, MENUITEMINFOW, MFS_CHECKED, MFS_DISABLED, MFT_SEPARATOR, MIIM_FTYPE, MIIM_ID,
+    MIIM_STATE, MIIM_STRING, WM_APP,
 };
 
-const ODT_MENU: u32 = 1;
-const ODS_SELECTED: u32 = 0x0001;
-const ODS_GRAYED: u32 = 0x0002;
-const ODS_DISABLED: u32 = 0x0004;
-const ODS_CHECKED: u32 = 0x0008;
+/// Posted to the owner with the command id in `wparam`.
+pub const WM_APP_MENU: u32 = WM_APP + 20;
+const CLASS: &str = "BatlyMenu";
+const WIDTH: f32 = 320.0;
+const ITEM_H: f32 = 34.0;
+const SEP_H: f32 = 9.0;
+const PAD: f32 = 6.0;
 
-#[derive(Clone, Default)]
+/// What is drawn in the left column of an item.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Deco {
+    /// A "Segoe MDL2 Assets" icon.
+    Glyph(char),
+    /// The device icon with its level.
+    Device { kind: DeviceKind, percent: Option<f32>, charging: bool, online: bool, has_battery: bool },
+}
+
+#[derive(Clone, Debug, Default)]
 struct Item {
+    id: usize,
     text: String,
     /// Text after the tab, right-aligned.
     right: String,
     separator: bool,
-}
-
-struct Menus {
-    items: Vec<Item>,
-    brush: HBRUSH,
-    owner: HWND,
+    checked: bool,
+    disabled: bool,
+    deco: Option<Deco>,
 }
 
 thread_local! {
-    static MENUS: RefCell<Option<Menus>> = const { RefCell::new(None) };
+    static DECOS: RefCell<Vec<(usize, Deco)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Owner-draws every item of `menu`, shown by `owner`.
-pub fn style(menu: HMENU, owner: HWND) {
-    let p = ui::palette();
+/// Gives the item of command `id` an icon; call while building the menu,
+/// before [`show`].
+pub fn decorate(id: usize, deco: Deco) {
+    DECOS.with(|d| d.borrow_mut().push((id, deco)));
+}
+
+/// The items of `menu`, with their decorations.
+fn items(menu: HMENU) -> Vec<Item> {
+    let decos = DECOS.with(|d| std::mem::take(&mut *d.borrow_mut()));
     let mut items = Vec::new();
-    // SAFETY: menu handle owned by this thread; buffers sized as declared.
+    // SAFETY: menu handle owned by this thread; buffer sized as declared.
     unsafe {
         let count = GetMenuItemCount(menu).max(0) as u32;
         for i in 0..count {
             let mut buf = [0u16; 512];
             let mut mii: MENUITEMINFOW = zeroed();
             mii.cbSize = size_of::<MENUITEMINFOW>() as u32;
-            mii.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_STRING;
+            mii.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_STRING | MIIM_ID;
             mii.dwTypeData = buf.as_mut_ptr();
             mii.cch = buf.len() as u32 - 1;
             if GetMenuItemInfoW(menu, i, 1, &mut mii) == 0 {
@@ -67,146 +78,213 @@ pub fn style(menu: HMENU, owner: HWND) {
                 Some((a, b)) => (a.to_string(), b.to_string()),
                 None => (full, String::new()),
             };
-            items.push(Item { text, right, separator });
-            let mut set: MENUITEMINFOW = zeroed();
-            set.cbSize = size_of::<MENUITEMINFOW>() as u32;
-            set.fMask = MIIM_FTYPE | MIIM_DATA;
-            set.fType = MFT_OWNERDRAW | if separator { MFT_SEPARATOR } else { 0 };
-            set.dwItemData = items.len();
-            SetMenuItemInfoW(menu, i, 1, &set);
+            let id = mii.wID as usize;
+            items.push(Item {
+                id,
+                text,
+                right,
+                separator,
+                checked: mii.fState & MFS_CHECKED != 0,
+                disabled: mii.fState & MFS_DISABLED != 0 || (id == 0 && !separator),
+                deco: decos.iter().find(|(i, _)| *i == id && id != 0).map(|(_, d)| *d),
+            });
         }
-        let brush = CreateSolidBrush(p.bg);
-        let mut info: MENUINFO = zeroed();
-        info.cbSize = size_of::<MENUINFO>() as u32;
-        info.fMask = MIM_BACKGROUND;
-        info.hbrBack = brush;
-        SetMenuInfo(menu, &info);
-        MENUS.with(|m| {
-            if let Some(old) = m.borrow_mut().replace(Menus { items, brush, owner }) {
-                windows_sys::Win32::Graphics::Gdi::DeleteObject(old.brush as _);
+    }
+    items
+}
+
+struct MenuView {
+    owner: HWND,
+    items: Vec<Item>,
+    /// Keyboard highlight.
+    active: Option<usize>,
+    icons: Vec<Option<egui::TextureHandle>>,
+}
+
+/// Shows `menu` as a flyout at `anchor` (screen point); `owner` receives
+/// the chosen command.
+pub fn show(owner: HWND, menu: HMENU, anchor: (i32, i32)) {
+    let items = items(menu);
+    let height = PAD * 2.0 + items.iter().map(|i| if i.separator { SEP_H } else { ITEM_H }).sum::<f32>();
+    let icons = vec![None; items.len()];
+    crate::egui_host::popup(CLASS, (WIDTH, height), anchor, Box::new(MenuView { owner, items, active: None, icons }));
+}
+
+/// Closes the menu flyout if it is open.
+pub fn close() {
+    if let Some(h) = crate::egui_host::find(CLASS) {
+        // SAFETY: our own window.
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(h) };
+    }
+}
+
+impl MenuView {
+    fn icon(&mut self, ctx: &egui::Context, n: usize) -> Option<egui::TextureId> {
+        let Some(Deco::Device { kind, percent, charging, online, has_battery }) = self.items[n].deco else { return None };
+        if self.icons[n].is_none() {
+            let light = !ctx.global_style().visuals.dark_mode;
+            let size = 44;
+            let spec = IconSpec {
+                kind,
+                percent: if has_battery { percent.map(f32::round) } else { Some(100.0) },
+                charging,
+                light_foreground: !light,
+                dimmed: !online,
+            };
+            let rgba = icon::render(&spec, size);
+            let image = egui::ColorImage::from_rgba_unmultiplied([size, size], &rgba);
+            self.icons[n] = Some(ctx.load_texture(format!("menu-icon-{n}"), image, egui::TextureOptions::LINEAR));
+        }
+        self.icons[n].as_ref().map(|t| t.id())
+    }
+
+    fn choose(&self, n: usize, ctl: &mut crate::egui_host::Ctl) {
+        let it = &self.items[n];
+        if it.separator || it.disabled {
+            return;
+        }
+        // SAFETY: posting to the tray window.
+        unsafe { PostMessageW(self.owner, WM_APP_MENU, it.id, 0) };
+        ctl.close = true;
+    }
+}
+
+impl crate::egui_host::View for MenuView {
+    fn ui(&mut self, ui: &mut egui::Ui, ctl: &mut crate::egui_host::Ctl) {
+        let c = look::colours(ui.ctx());
+        let p = if c.bg == look::colour(ui::LIGHT.bg) { ui::LIGHT } else { ui::DARK };
+        // Keyboard: arrows, Enter, Escape.
+        let selectable: Vec<usize> = (0..self.items.len()).filter(|&i| !self.items[i].separator && !self.items[i].disabled).collect();
+        let (down, up, enter, esc) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if esc {
+            ctl.close = true;
+            return;
+        }
+        if (down || up) && !selectable.is_empty() {
+            let pos = self.active.and_then(|a| selectable.iter().position(|&s| s == a));
+            let next = match (pos, down) {
+                (None, true) => 0,
+                (None, false) => selectable.len() - 1,
+                (Some(p), true) => (p + 1) % selectable.len(),
+                (Some(p), false) => (p + selectable.len() - 1) % selectable.len(),
+            };
+            self.active = Some(selectable[next]);
+        }
+        if enter {
+            if let Some(a) = self.active {
+                self.choose(a, ctl);
+                return;
+            }
+        }
+
+        // Opening: fade and slide in.
+        let mut chosen = None;
+        look::page_in(ui, "menu", |ui| {
+            let full = ui.max_rect();
+            let mut y = full.top() + PAD;
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            for n in 0..self.items.len() {
+                let it = self.items[n].clone();
+                if it.separator {
+                    let mid = y + SEP_H / 2.0;
+                    ui.painter().hline((full.left() + 14.0)..=(full.right() - 14.0), mid, egui::Stroke::new(1.0, c.border));
+                    y += SEP_H;
+                    continue;
+                }
+                let rect = egui::Rect::from_min_size(egui::pos2(full.left() + PAD, y), egui::vec2(full.width() - PAD * 2.0, ITEM_H));
+                y += ITEM_H;
+                let id = egui::Id::unique(("menu-item", n));
+                let resp = ui.interact(rect, id, if it.disabled { egui::Sense::hover() } else { egui::Sense::click() });
+                if resp.hovered() && !it.disabled && pointer.is_some() {
+                    self.active = Some(n);
+                }
+                let hot = self.active == Some(n) && !it.disabled;
+                let h = ui.ctx().animate_bool_with_time(id, hot, 0.1);
+                if h > 0.0 {
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(8), look::lerp(egui::Color32::TRANSPARENT, c.hover, h));
+                    let bar_h = 14.0 * h;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(egui::pos2(rect.left() + 2.0, rect.center().y), egui::vec2(3.0, bar_h)),
+                        egui::CornerRadius::same(2),
+                        c.accent,
+                    );
+                }
+                if !it.disabled {
+                    resp.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    chosen = Some(n);
+                }
+                // Left column.
+                let icon_centre = egui::pos2(rect.left() + 20.0, rect.center().y);
+                let fg = if it.disabled { c.sub } else { c.fg };
+                match it.deco {
+                    Some(Deco::Glyph(g)) if look::has_icons() => {
+                        let col = if it.disabled { c.border } else { look::lerp(c.sub, c.accent, h) };
+                        ui.painter().text(icon_centre, egui::Align2::CENTER_CENTER, g, look::icon_font(15.0), col);
+                    }
+                    Some(Deco::Device { .. }) => {
+                        if let Some(tex) = self.icon(ui.ctx(), n) {
+                            let r = egui::Rect::from_center_size(icon_centre, egui::vec2(22.0, 22.0));
+                            ui.painter().image(
+                                tex,
+                                r,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        if it.checked {
+                            let dot = icon_centre + egui::vec2(9.0, 8.0);
+                            ui.painter().circle_filled(dot, 5.0, look::lerp(c.bg, c.hover, h));
+                            ui.painter().circle_filled(dot, 3.2, c.accent);
+                        }
+                    }
+                    None if it.checked => {
+                        let r = egui::Rect::from_center_size(icon_centre, egui::vec2(16.0, 16.0));
+                        ui.painter().rect_filled(r, egui::CornerRadius::same(4), c.accent);
+                        let pts = vec![
+                            r.center() + egui::vec2(-4.0, 0.2),
+                            r.center() + egui::vec2(-1.2, 3.0),
+                            r.center() + egui::vec2(4.0, -2.8),
+                        ];
+                        ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.8, c.on_accent)));
+                    }
+                    _ => {}
+                }
+                let strong = it.checked && matches!(it.deco, Some(Deco::Device { .. }));
+                let font = if strong { look::strong(13.5) } else { egui::FontId::proportional(13.5) };
+                let text_pos = egui::pos2(rect.left() + 40.0 + h * 2.0, rect.center().y);
+                // Right text: shortcut, or level coloured when low / charging.
+                let mut right_w = 0.0;
+                if !it.right.is_empty() {
+                    let mut col = c.sub;
+                    let mut rfont = egui::FontId::proportional(12.5);
+                    if let Some(Deco::Device { percent: Some(v), charging, online: true, has_battery: true, .. }) = it.deco {
+                        if charging || v <= 30.0 {
+                            col = look::colour(p.level(v, charging));
+                            rfont = look::strong(12.5);
+                        }
+                    }
+                    let g = ui.painter().layout_no_wrap(it.right.clone(), rfont, col);
+                    right_w = g.size().x + 12.0;
+                    ui.painter().galley(egui::pos2(rect.right() - 12.0 - g.size().x, rect.center().y - g.size().y / 2.0), g, col);
+                }
+                let max_w = rect.right() - right_w - text_pos.x - 8.0;
+                let mut job = egui::text::LayoutJob::simple_singleline(it.text.clone(), font, fg);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(20.0));
+                let g = ui.painter().layout_job(job);
+                ui.painter().galley(egui::pos2(text_pos.x, text_pos.y - g.size().y / 2.0), g, fg);
             }
         });
-    }
-}
-
-#[repr(C)]
-struct MeasureItem {
-    ctl_type: u32,
-    ctl_id: u32,
-    item_id: u32,
-    item_width: u32,
-    item_height: u32,
-    item_data: usize,
-}
-
-#[repr(C)]
-struct DrawItem {
-    ctl_type: u32,
-    ctl_id: u32,
-    item_id: u32,
-    item_action: u32,
-    item_state: u32,
-    hwnd_item: HWND,
-    hdc: HDC,
-    rc_item: RECT,
-    item_data: usize,
-}
-
-fn item(data: usize) -> Option<(Item, HWND)> {
-    MENUS.with(|m| m.borrow().as_ref().and_then(|m| data.checked_sub(1).and_then(|i| m.items.get(i)).map(|it| (it.clone(), m.owner))))
-}
-
-fn width(dc: HDC, font: &Font, s: &str) -> i32 {
-    let w: Vec<u16> = s.encode_utf16().collect();
-    let mut size = SIZE { cx: 0, cy: 0 };
-    // SAFETY: valid DC and font; the old font is restored.
-    unsafe {
-        let old = SelectObject(dc, font.0 as _);
-        GetTextExtentPoint32W(dc, w.as_ptr(), w.len() as i32, &mut size);
-        SelectObject(dc, old);
-    }
-    size.cx
-}
-
-/// Measures and draws the owner-drawn menu items.
-///
-/// # Safety
-/// The arguments must be those the window procedure received.
-pub unsafe fn on_message(_hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
-    match msg {
-        WM_MEASUREITEM => {
-            let mi = &mut *(lparam as *mut MeasureItem);
-            if mi.ctl_type != ODT_MENU {
-                return None;
-            }
-            let (it, owner) = item(mi.item_data)?;
-            let s = Scale::of(owner);
-            if it.separator {
-                mi.item_height = s.px(9) as u32;
-                mi.item_width = s.px(40) as u32;
-                return Some(1);
-            }
-            let font = Font::new(s, 13, 400);
-            let dc = GetDC(null_mut());
-            let w = width(dc, &font, &it.text) + if it.right.is_empty() { 0 } else { s.px(32) + width(dc, &font, &it.right) };
-            ReleaseDC(null_mut(), dc);
-            mi.item_width = (w + s.px(36 + 18)) as u32;
-            mi.item_height = s.px(32) as u32;
-            Some(1)
+        if let Some(n) = chosen {
+            self.choose(n, ctl);
         }
-        WM_DRAWITEM => {
-            let di = &*(lparam as *const DrawItem);
-            if di.ctl_type != ODT_MENU {
-                return None;
-            }
-            let (it, owner) = item(di.item_data)?;
-            draw(di, &it, Scale::of(owner));
-            Some(1)
-        }
-        _ => None,
     }
-}
-
-unsafe fn draw(di: &DrawItem, it: &Item, s: Scale) {
-    let p = ui::palette();
-    let r = di.rc_item;
-    let Some(mut cv) = Canvas::new(r, p.bg) else { return };
-    if it.separator {
-        let mid = (r.top + r.bottom) / 2;
-        cv.fill(RECT { left: r.left + s.px(12), top: mid, right: r.right - s.px(12), bottom: mid + 1 }, p.border);
-        cv.blit(di.hdc);
-        return;
-    }
-    let disabled = di.item_state & (ODS_GRAYED | ODS_DISABLED) != 0;
-    let selected = di.item_state & ODS_SELECTED != 0;
-    let checked = di.item_state & ODS_CHECKED != 0;
-    if selected && !disabled {
-        let pill = RECT { left: r.left + s.px(4), top: r.top + s.px(1), right: r.right - s.px(4), bottom: r.bottom - s.px(1) };
-        cv.round_rect(pill, s.px(6) as f32, p.hover, 1.0, None);
-    }
-    if checked {
-        let size = s.px(16);
-        let top = r.top + (r.bottom - r.top - size) / 2;
-        let b = RECT { left: r.left + s.px(12), top, right: r.left + s.px(12) + size, bottom: top + size };
-        cv.round_rect(b, s.px(4) as f32, if disabled { p.border } else { p.accent }, 1.0, None);
-        cv.check(b, p.on_accent, s.px(2) as f32);
-    }
-    cv.blit(di.hdc);
-    let font = Font::new(s, 13, if checked { 600 } else { 400 });
-    let fg = if disabled { p.sub } else { p.fg };
-    ui::text(di.hdc, &font, fg, &it.text, RECT { left: r.left + s.px(38), right: r.right - s.px(14), ..r }, DT_LEFT | DT_VCENTER);
-    if !it.right.is_empty() {
-        let small = Font::new(s, 13, 400);
-        ui::text(di.hdc, &small, p.sub, &it.right, RECT { left: r.left + s.px(38), right: r.right - s.px(16), ..r }, DT_RIGHT | DT_VCENTER);
-    }
-}
-
-/// Frees what [`style`] kept, once the menu is closed.
-pub fn release() {
-    MENUS.with(|m| {
-        if let Some(old) = m.borrow_mut().take() {
-            // SAFETY: the menu that used the brush is destroyed.
-            unsafe { windows_sys::Win32::Graphics::Gdi::DeleteObject(old.brush as _) };
-        }
-    });
 }

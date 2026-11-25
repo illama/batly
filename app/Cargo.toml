@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 png = "0.18"
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,8 +36,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Console",
+    "Win32_System_DataExchange",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Controls",

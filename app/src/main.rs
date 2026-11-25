@@ -34,10 +34,14 @@ mod webhooks;
 
 #[cfg(windows)]
 mod actions;
+#[cfg(windows)]
+mod egui_host;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod gfx;
 #[cfg(windows)]
 mod hidio;
+#[cfg(windows)]
+mod look;
 #[cfg(windows)]
 mod menu;
 #[cfg(windows)]
@@ -50,8 +54,8 @@ mod presence;
 mod receivers;
 #[cfg(windows)]
 mod settings_ui;
-#[cfg(windows)]
-mod theme;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod soft;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
@@ -217,6 +221,8 @@ fn main() {
         Some(tray::ID_PANEL)
     } else if has("receivers") {
         Some(tray::ID_RECEIVERS)
+    } else if has("menu") {
+        Some(tray::ID_MENU)
     } else {
         None
     };
@@ -259,7 +265,6 @@ fn main() {
     };
     i18n::init(&cfg.ui.language, system_lang);
 
-    theme::init();
     if first_launch {
         welcome::run(&mut cfg, &cfg_path);
     }

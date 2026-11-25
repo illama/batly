@@ -4,8 +4,8 @@
 use crate::win::{self, wide};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode, SetTextColor,
-    CLEARTYPE_QUALITY, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT, PS_SOLID, TRANSPARENT,
+    CreateFontW, DeleteObject, DrawTextW, SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, DT_END_ELLIPSIS, DT_NOPREFIX,
+    DT_SINGLELINE, HDC, HFONT, TRANSPARENT,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 
@@ -135,6 +135,11 @@ pub struct Font(pub HFONT);
 impl Font {
     /// `size` in logical pixels, `weight` 400 = regular, 600 = semibold.
     pub fn new(scale: Scale, size: i32, weight: i32) -> Self {
+        Self::face(scale, size, weight, "Segoe UI")
+    }
+
+    /// Same with another typeface ("Segoe MDL2 Assets" for icons).
+    pub fn face(scale: Scale, size: i32, weight: i32, face: &str) -> Self {
         // SAFETY: valid NUL-terminated face name.
         Self(unsafe {
             CreateFontW(
@@ -151,7 +156,7 @@ impl Font {
                 0,
                 CLEARTYPE_QUALITY as u32,
                 0,
-                wide("Segoe UI").as_ptr(),
+                wide(face).as_ptr(),
             )
         })
     }
@@ -161,31 +166,6 @@ impl Drop for Font {
     fn drop(&mut self) {
         // SAFETY: we own the font; it is no longer selected when dropped.
         unsafe { DeleteObject(self.0) };
-    }
-}
-
-pub fn fill(dc: HDC, r: RECT, color: COLORREF) {
-    // SAFETY: valid DC; the brush is released right away.
-    unsafe {
-        let brush = CreateSolidBrush(color);
-        FillRect(dc, &r, brush);
-        DeleteObject(brush);
-    }
-}
-
-/// Filled rounded rectangle (radius in physical pixels).
-pub fn round_rect(dc: HDC, r: RECT, radius: i32, color: COLORREF, border: Option<COLORREF>) {
-    // SAFETY: valid DC; GDI objects are restored and released.
-    unsafe {
-        let brush = CreateSolidBrush(color);
-        let pen = CreatePen(PS_SOLID, 1, border.unwrap_or(color));
-        let old_brush = SelectObject(dc, brush);
-        let old_pen = SelectObject(dc, pen);
-        RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        DeleteObject(brush);
-        DeleteObject(pen);
     }
 }
 

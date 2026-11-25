@@ -87,16 +87,6 @@ impl Canvas {
         }
     }
 
-    /// Outline only.
-    pub fn outline(&mut self, r: RECT, radius: f32, c: COLORREF, width: f32) {
-        let (x, y, w, h) = self.local(r);
-        let half = width / 2.0;
-        if let Some(path) = rounded(x + half, y + half, w - width, h - width, (radius - half).max(0.0)) {
-            let stroke = Stroke { width, ..Stroke::default() };
-            self.pixmap.stroke_path(&path, &paint(c, 1.0), &stroke, Transform::identity(), None);
-        }
-    }
-
     pub fn circle(&mut self, cx: i32, cy: i32, radius: f32, c: COLORREF, alpha: f32) {
         let (x, y) = ((cx - self.left) as f32, (cy - self.top) as f32);
         if let Some(path) = PathBuilder::from_circle(x, y, radius) {
@@ -152,34 +142,6 @@ impl Canvas {
         };
         let p = Paint { shader, anti_alias: true, ..Paint::default() };
         self.pixmap.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
-    }
-
-    /// Check mark inside `r`.
-    pub fn check(&mut self, r: RECT, c: COLORREF, width: f32) {
-        let (x, y, w, h) = self.local(r);
-        let pts = [(x + w * 0.24, y + h * 0.52), (x + w * 0.43, y + h * 0.70), (x + w * 0.76, y + h * 0.32)];
-        let mut pb = PathBuilder::new();
-        pb.move_to(pts[0].0, pts[0].1);
-        pb.line_to(pts[1].0, pts[1].1);
-        pb.line_to(pts[2].0, pts[2].1);
-        if let Some(path) = pb.finish() {
-            let stroke = Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
-            self.pixmap.stroke_path(&path, &paint(c, 1.0), &stroke, Transform::identity(), None);
-        }
-    }
-
-    /// Downward chevron centred in `r`.
-    pub fn chevron(&mut self, r: RECT, c: COLORREF, width: f32) {
-        let (x, y, w, h) = self.local(r);
-        let (cx, cy, s) = (x + w / 2.0, y + h / 2.0, w.min(h) * 0.22);
-        let mut pb = PathBuilder::new();
-        pb.move_to(cx - s, cy - s / 2.0);
-        pb.line_to(cx, cy + s / 2.0);
-        pb.line_to(cx + s, cy - s / 2.0);
-        if let Some(path) = pb.finish() {
-            let stroke = Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
-            self.pixmap.stroke_path(&path, &paint(c, 1.0), &stroke, Transform::identity(), None);
-        }
     }
 
     /// Fills a plain rectangle (no anti-aliasing needed).
