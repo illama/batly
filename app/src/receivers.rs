@@ -200,6 +200,14 @@ fn action_error(e: ActionError) -> &'static str {
         ActionError::Backup => s_err_backup(),
         ActionError::Verify => s_err_verify(),
         ActionError::NoBackup => s_err_no_backup(),
+        ActionError::GHub => crate::i18n::tr([
+            "Logitech G HUB is running: it manages the lighting of this device. Close G HUB to change it here.",
+            "Logitech G HUB est ouvert : c'est lui qui gère l'éclairage de cet appareil. Fermez G HUB pour le régler ici.",
+            "Logitech G HUB läuft: Es steuert die Beleuchtung dieses Geräts. G HUB schließen, um sie hier einzustellen.",
+            "Logitech G HUB está abierto: gestiona la iluminación de este dispositivo. Cierre G HUB para cambiarla aquí.",
+            "Logitech G HUB è aperto: gestisce l'illuminazione di questo dispositivo. Chiudi G HUB per modificarla qui.",
+            "O Logitech G HUB está aberto: ele gerencia a iluminação deste dispositivo. Feche o G HUB para alterá-la aqui.",
+        ]),
     }
 }
 

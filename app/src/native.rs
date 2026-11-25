@@ -424,6 +424,17 @@ impl Native {
                 }
             }
         });
+        // G HUB: Batly leaves the lighting and the onboard mode alone while
+        // it runs (it needs host mode for its key bindings).
+        let ghub = || crate::win::process_running(&["lghub_agent.exe", "lghub.exe", "lghub_system_tray.exe"]);
+        hidpp::GHUB_RUNNING.store(ghub(), std::sync::atomic::Ordering::Relaxed);
+        let _ = thread::Builder::new().name("ghub-watch".into()).stack_size(64 * 1024).spawn(move || loop {
+            thread::sleep(Duration::from_secs(5));
+            let now = ghub();
+            if hidpp::GHUB_RUNNING.swap(now, std::sync::atomic::Ordering::Relaxed) != now {
+                log!("G HUB {}", if now { "started: lighting left to it" } else { "closed" });
+            }
+        });
         let (requests, rx) = mpsc::channel();
         let _ = thread::Builder::new().name("hid-manager".into()).stack_size(256 * 1024).spawn(move || {
             let mut running: HashMap<String, Running> = HashMap::new();

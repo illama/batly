@@ -183,3 +183,31 @@ pub fn shell_open(hwnd: HWND, file: &str, args: Option<&str>) {
         ShellExecuteW(hwnd, wide("open").as_ptr(), wide(file).as_ptr(), args.as_ref().map_or(null(), |a| a.as_ptr()), null(), SW_SHOWNORMAL)
     };
 }
+
+/// Whether a process with one of these executable names (case-insensitive)
+/// is running.
+pub fn process_running(names: &[&str]) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: the snapshot is closed here; the entry size is set.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = false;
+        let mut ok = Process32FirstW(snap, &mut entry) != 0;
+        while ok && !found {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            let exe = String::from_utf16_lossy(&entry.szExeFile[..len]);
+            found = names.iter().any(|n| exe.eq_ignore_ascii_case(n));
+            ok = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
+}

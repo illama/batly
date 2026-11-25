@@ -473,7 +473,7 @@ pub fn respond(req: &Request, ctx: &Context) -> Response {
             s + &sse("synced", "{}")
         }),
         _ => {
-            let routes: [(&str, fn(&Context, &Request, &str) -> Response); 4] = [
+            let routes: [(&str, fn(&Context, &Request, &str) -> Response); 7] = [
                 ("/api/device/", |ctx, _, key| found(ctx, key, |d| Response::new(200, "application/json", device_json(ctx, &d)))),
                 ("/device/", |ctx, _, key| found(ctx, key, |d| Response::new(200, "text/xml", xml(&d)))),
                 ("/api/history/", history_json),
@@ -481,6 +481,12 @@ pub fn respond(req: &Request, ctx: &Context) -> Response {
                     Some(d) => Response::new(200, "text/html", page::card(ctx, &d)),
                     None => Response::new(404, "text/html", String::new()),
                 }),
+                ("/ui/history/", |ctx, req, key| {
+                    let days = query(req.target, "days").and_then(|d| d.trim().parse::<u64>().ok()).unwrap_or(7).clamp(1, 365);
+                    found(ctx, key, |d| Response::new(200, "text/html", page::history_view(ctx, &d, days)))
+                }),
+                ("/ui/details/", |ctx, _, key| found(ctx, key, |d| Response::new(200, "text/html", page::details_view(ctx, &d)))),
+                ("/ui/overlay/", |ctx, _, key| found(ctx, key, |d| Response::new(200, "text/html", page::overlay_view(ctx, &d)))),
             ];
             for (prefix, route) in routes {
                 if let Some(key) = path.strip_prefix(prefix) {
@@ -539,6 +545,7 @@ fn action_error(e: ActionError) -> (u16, &'static str) {
         ActionError::Backup => (500, "The onboard memory could not be backed up: nothing was written."),
         ActionError::Verify => (502, "The onboard memory did not read back as written: the previous content was put back."),
         ActionError::NoBackup => (409, "No backup to restore from."),
+        ActionError::GHub => (409, "Logitech G HUB is running: it manages the lighting of this device."),
     }
 }
 
@@ -1073,10 +1080,52 @@ dt{color:var(--mute)}dd{margin:0;text-align:right;font-variant-numeric:tabular-n
 @keyframes draw{to{stroke-dashoffset:0}}
 .chart .cap{display:flex;justify-content:space-between;color:var(--mute);font-size:11.5px;padding-top:4px}
 .chart .none{color:var(--mute);font-size:13px;padding:14px 4px}
-.links{display:flex;flex-wrap:wrap;gap:6px}
-.links a{font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;border:1px solid var(--line);color:var(--fg);transition:background .15s,border-color .15s,color .15s,transform .15s}
-.links a:hover{background:var(--accent);border-color:var(--accent);color:var(--on-accent);text-decoration:none}
-.links a:active{transform:scale(.96)}
+.actions{display:flex;gap:6px;flex-wrap:wrap}
+.act{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12.5px;font-weight:600;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;transition:background .15s,border-color .15s,color .15s,transform .1s}
+.act svg{width:14px;height:14px}
+.act:hover{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.act:active{transform:scale(.96)}
+.act:focus-visible,.x:focus-visible,.seg button:focus-visible,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.chart[data-view]{cursor:pointer;transition:background .15s}.chart[data-view]:hover{background:var(--hover)}
+#modal{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:20px}
+#modal[hidden]{display:none}
+.scrim{position:absolute;inset:0;background:rgba(5,7,10,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);opacity:0;transition:opacity .22s}
+#modal.open .scrim{opacity:1}
+.sheet{position:relative;width:min(720px,100%);max-height:calc(100vh - 40px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,.35);padding:22px 24px 24px;opacity:0;transform:translateY(18px) scale(.97);transition:transform .3s cubic-bezier(.2,.8,.2,1),opacity .22s}
+#modal.open .sheet{opacity:1;transform:none}
+.mbody{transition:opacity .15s}.mbody.loading{opacity:.45}
+.mh{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:16px}
+.mh h2{margin:0;font-size:20px;letter-spacing:-.01em}.mh p{margin:2px 0 0;color:var(--mute);font-size:13.5px}
+.x{flex:none;width:36px;height:36px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--mute);cursor:pointer;display:grid;place-items:center;transition:background .15s,color .15s,transform .15s}
+.x:hover{background:var(--hover);color:var(--fg);transform:rotate(90deg)}.x svg{width:18px;height:18px}
+.seg{display:inline-flex;padding:3px;border:1px solid var(--line);border-radius:12px;background:var(--bg2);gap:2px;margin-bottom:12px}
+.seg button{font:inherit;font-size:13px;font-weight:600;border:0;background:transparent;color:var(--mute);padding:6px 14px;border-radius:9px;cursor:pointer;transition:background .18s,color .18s}
+.seg button:hover{color:var(--fg)}.seg button[aria-selected=true]{background:var(--accent);color:var(--on-accent)}
+.bigchart{color:var(--accent);background:var(--bg2);border-radius:14px;padding:12px 10px 6px}
+.sheet.charging .bigchart{color:var(--charge)}
+.bigchart svg{width:100%;height:auto;display:block;overflow:visible}
+.bigchart .grid line{stroke:var(--line);stroke-dasharray:3 4}.bigchart .grid line.v{stroke-dasharray:1 6}
+.bigchart text{fill:var(--mute);font-size:11px}
+.bigchart .line{fill:none;stroke:currentColor;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1s .1s cubic-bezier(.4,0,.2,1) forwards}
+.bigchart .dot{fill:currentColor;stroke:var(--card);stroke-width:2.5;opacity:0;animation:pop .3s 1s forwards}
+@keyframes pop{to{opacity:1}}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:14px}
+.tile{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:10px 12px;animation:rise .35s cubic-bezier(.2,.8,.2,1) both}
+.tile:nth-child(2){animation-delay:40ms}.tile:nth-child(3){animation-delay:80ms}.tile:nth-child(4){animation-delay:120ms}.tile:nth-child(n+5){animation-delay:160ms}
+.tile span{display:block;color:var(--mute);font-size:12px}.tile b{font-size:17px;font-variant-numeric:tabular-nums}
+.sheet .none{color:var(--mute);padding:36px 0;text-align:center}
+.facts{grid-template-columns:auto 1fr;border-top:0;padding:0;gap:0;font-size:14px}
+.facts dt,.facts dd{padding:10px 0;border-bottom:1px solid var(--line)}.facts dd{text-align:right;word-break:break-all;padding-left:16px}
+.raw{margin:16px 0 0;color:var(--mute);font-size:12.5px}
+.ovopts{display:flex;gap:10px;flex-wrap:wrap}
+.ovprev{border-radius:14px;border:1px solid var(--line);height:110px;overflow:hidden;background:repeating-conic-gradient(var(--bg2) 0 25%,var(--card) 0 50%) 0 0/16px 16px}
+.ovprev iframe{width:100%;height:100%;border:0;background:transparent}
+.hint{color:var(--mute);font-size:13px;margin:12px 0 8px}
+.copy{display:flex;gap:8px}
+.copy input{flex:1;min-width:0;font:inherit;font-size:13px;color:var(--fg);background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:0 12px;height:38px;-webkit-user-select:text;user-select:text}
+.btn{font:inherit;font-weight:600;font-size:13.5px;border:0;border-radius:10px;padding:0 18px;height:38px;background:var(--accent);color:var(--on-accent);cursor:pointer;transition:filter .15s,transform .1s}
+.btn:hover{filter:brightness(1.08)}.btn:active{transform:scale(.97)}
+body.locked{overflow:hidden}
 a{color:var(--accent);text-decoration:none;cursor:pointer}a:hover{text-decoration:underline}
 a:focus-visible,.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
 #empty{color:var(--mute);padding:56px 0;text-align:center}
@@ -1086,7 +1135,7 @@ footer code{font-size:12px;padding:2px 7px;border-radius:6px;background:var(--ho
 footer a:hover{text-decoration:none}footer a:hover code{background:var(--accent);color:var(--on-accent)}
 footer .v{margin-left:auto}
 @media(max-width:560px){header.top{flex-wrap:wrap}input[type=search]{width:100%}.field{flex:1}.bar-tools{gap:8px}.dd-btn{min-width:0}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.chart .line{stroke-dashoffset:0}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.chart .line,.bigchart .line{stroke-dashoffset:0}.bigchart .dot{opacity:1}}
 "#;
 
     const SCRIPT: &str = r#"
@@ -1122,6 +1171,26 @@ function apply(){var term=(q.value||'').trim().toLowerCase(),key=dd.dataset.valu
 try{var saved=localStorage.getItem('batly.sort');if(saved!==null)pick(saved,true)}catch(x){}
 q.addEventListener('input',apply);
 cards().forEach(function(e,i){e.dataset.order=i;count(e)});
+var modal=document.getElementById('modal'),mbody=modal.querySelector('.mbody'),cur=null,back=null,shut=null;
+function load(kind,id,q){mbody.classList.add('loading');fetch(u('/ui/'+kind+'/'+encodeURIComponent(id)+(q||''))).then(function(r){return r.ok?r.text():''}).then(function(h){
+ if(!cur||cur.id!==id)return;mbody.innerHTML=h;mbody.classList.remove('loading');times(mbody);if(kind==='overlay')ov();var x=mbody.querySelector('.x');if(x&&!q)x.focus()}).catch(function(){mbody.classList.remove('loading')})}
+function openv(kind,id){cur={kind:kind,id:id};back=document.activeElement;clearTimeout(shut);mbody.innerHTML='';modal.hidden=false;document.body.classList.add('locked');
+ var card=find(id);modal.querySelector('.sheet').className='sheet'+(card&&card.classList.contains('charging')?' charging':'');
+ requestAnimationFrame(function(){requestAnimationFrame(function(){modal.classList.add('open')})});load(kind,id,kind==='history'?'?days=7':'')}
+function closev(){if(!cur)return;cur=null;modal.classList.remove('open');document.body.classList.remove('locked');shut=setTimeout(function(){modal.hidden=true;mbody.innerHTML=''},260);if(back&&back.focus)back.focus()}
+function ov(){var p=mbody.querySelector('.ovprev iframe'),i=mbody.querySelector('.copy input');if(!p||!i)return;
+ var sel=function(k){var b=mbody.querySelector('[data-ov="'+k+'"] [aria-selected="true"]');return b?b.dataset.v:''};
+ var q='&theme='+sel('theme')+'&size='+sel('size');p.src=u(p.dataset.base+q);i.value=location.origin+u(i.dataset.base+q)}
+grid.addEventListener('click',function(e){var b=e.target.closest('[data-view]');if(!b)return;var c=b.closest('.card');if(c)openv(b.dataset.view,c.dataset.id)});
+modal.addEventListener('click',function(e){var t=e.target;
+ if(t.closest('[data-close]')){closev();return}
+ var d=t.closest('[data-days]');if(d&&cur){mbody.querySelectorAll('[data-days]').forEach(function(x){x.setAttribute('aria-selected',x===d)});load('history',cur.id,'?days='+d.dataset.days);return}
+ var o=t.closest('[data-ov] button');if(o){o.parentNode.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-selected',x===o)});ov();return}
+ var c=t.closest('[data-copy]');if(c){var i=mbody.querySelector('.copy input');var done=function(){var l=c.textContent;c.textContent='✓';setTimeout(function(){c.textContent=l},1400)};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(i.value).then(done,function(){i.select();document.execCommand('copy');done()})}else{i.select();document.execCommand('copy');done()}}});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&cur){e.preventDefault();closev()}});
+var hm=location.hash.match(/^#(history|details|overlay)=(.+)$/);if(hm)openv(hm[1],decodeURIComponent(hm[2]));
+
 function refresh(id){if(pend[id])return;pend[id]=setTimeout(function(){delete pend[id];
 fetch(u('/ui/card/'+encodeURIComponent(id))).then(function(r){return r.ok?r.text():''}).then(function(h){
 var old=find(id);if(!h){if(old)old.remove()}else{var t=document.createElement('template');t.innerHTML=h;var n=t.content.firstElementChild;times(n);
@@ -1194,6 +1263,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
              <a href=\"/api/devices\"><code>/api/devices</code></a><a href=\"/api/events\"><code>/api/events</code></a>\
              <a href=\"/metrics\"><code>/metrics</code></a><a href=\"/overlay\"><code>/overlay</code></a>\
              <a href=\"/devices\"><code>/device/{{id}}</code></a><span class=\"v\">Batly {VERSION}</span></footer></div>\
+             <div id=\"modal\" hidden><div class=\"scrim\" data-close></div><section class=\"sheet\" role=\"dialog\" aria-modal=\"true\"><div class=\"mbody\"></div></section></div>\
              <script>{SCRIPT}</script></body></html>",
             if devices.is_empty() { "" } else { " hidden" },
             i18n::no_device(),
@@ -1314,7 +1384,8 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
             let live = d.online.then_some(level).flatten();
             match chart(&samples, now, 7, live) {
                 Some(svg) => format!(
-                    "<div class=\"chart\">{svg}<div class=\"cap\"><span>{}</span><span>100\u{a0}%</span></div></div>",
+                    "<div class=\"chart\" data-view=\"history\" title=\"{}\">{svg}<div class=\"cap\"><span>{}</span><span>100\u{a0}%</span></div></div>",
+                    tr(["Open the history", "Ouvrir l'historique", "Verlauf öffnen", "Abrir el historial", "Apri la cronologia", "Abrir o histórico"]),
                     tr(["Last 7 days", "7 derniers jours", "Letzte 7 Tage", "Últimos 7 días", "Ultimi 7 giorni", "Últimos 7 dias"])
                 ),
                 None => format!(
@@ -1333,7 +1404,6 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
             String::new()
         };
 
-        let id_url = percent_encode(&d.id);
         let now = level.filter(|_| d.has_battery).unwrap_or(0.0).clamp(0.0, 100.0);
         format!(
             "<article class=\"{class}\" data-id=\"{id}\" data-name=\"{name}\" data-kind=\"{kind}\" data-level=\"{data_level}\" data-bat=\"{bat}\">\
@@ -1343,8 +1413,10 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
              <div class=\"k\"><svg viewBox=\"0 0 24 24\">{icon}</svg></div></div>\
              <div class=\"who\"><div class=\"name\" title=\"{name}\">{name}</div><div class=\"sub\">{sub}</div></div><div class=\"pct\">{pct}</div></div>\
              <div class=\"state\">{state}</div><dl>{rows}</dl>{chart_html}\
-             <div class=\"links\"><a href=\"/device/{id_url}\">XML</a><a href=\"/api/device/{id_url}\">JSON</a>\
-             <a href=\"/api/history/{id_url}?days=30\">{hist}</a><a href=\"/overlay?device={id_url}\">Overlay</a></div></article>",
+             <div class=\"actions\"><button type=\"button\" class=\"act\" data-view=\"history\">\
+             <svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 3v18h18\"/><path d=\"m7 15 4-4 3 3 5-6\"/></svg>{hist}</button>\
+             <button type=\"button\" class=\"act\" data-view=\"details\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 11v6M12 7.5h.01\"/></svg>{details}</button>\
+             <button type=\"button\" class=\"act\" data-view=\"overlay\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"13\" rx=\"2\"/><path d=\"M8 21h8M12 17v4\"/></svg>Overlay</button></div></article>",
             id = escape(&d.id),
             name = escape(&name),
             kind = escape(kind_name(d.kind)),
@@ -1355,6 +1427,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
             pct = escape(&pct),
             state = escape(&state),
             hist = tr(["History", "Historique", "Verlauf", "Historial", "Cronologia", "Histórico"]),
+            details = tr(["Details", "Détails", "Details", "Detalles", "Dettagli", "Detalhes"]),
         )
     }
 
@@ -1407,6 +1480,335 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         Some(svg + "</svg>")
     }
 
+    /// Large chart of the level for the history view: grid with 0–100 %
+    /// labels and day marks (SVG keeping its proportions).
+    pub fn big_chart(samples: &[Sample], now: u64, days: u64, live: Option<f32>) -> Option<String> {
+        if samples.len() < 2 {
+            return None;
+        }
+        let (w, h, left, right, top, bottom) = (640.0, 240.0, 40.0, 630.0, 10.0, 212.0);
+        let start = now.saturating_sub(days * 86_400);
+        let x = |t: u64| left + (t.saturating_sub(start) as f64 / (now - start).max(1) as f64 * (right - left)).clamp(0.0, right - left);
+        let y = |p: f32| top + (100.0 - p.clamp(0.0, 100.0) as f64) / 100.0 * (bottom - top);
+        static GRADIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let g = GRADIENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut svg = format!(
+            "<svg class=\"big\" viewBox=\"0 0 {w} {h}\" role=\"img\"><defs><linearGradient id=\"bfade{g}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">\
+             <stop offset=\"0\" style=\"stop-color:currentColor;stop-opacity:.32\"/><stop offset=\"1\" style=\"stop-color:currentColor;stop-opacity:0\"/>\
+             </linearGradient></defs><g class=\"grid\">"
+        );
+        for level in [0, 25, 50, 75, 100] {
+            let gy = y(level as f32);
+            svg.push_str(&format!(
+                "<line x1=\"{left}\" x2=\"{right}\" y1=\"{gy:.1}\" y2=\"{gy:.1}\"/><text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\">{level}\u{a0}%</text>",
+                left - 6.0,
+                gy + 4.0
+            ));
+        }
+        // Day marks: every day over a week, every 5 days beyond.
+        let step = if days <= 7 {
+            1
+        } else if days <= 31 {
+            5
+        } else {
+            30
+        };
+        let today = now - now % 86_400;
+        for k in (0..=days).step_by(step as usize) {
+            let t = today.saturating_sub(k * 86_400);
+            if t < start {
+                break;
+            }
+            let date = iso8601(UNIX_EPOCH + Duration::from_secs(t));
+            let label = format!("{}/{}", &date[8..10], &date[5..7]);
+            let gx = x(t);
+            svg.push_str(&format!(
+                "<line class=\"v\" x1=\"{gx:.1}\" x2=\"{gx:.1}\" y1=\"{top}\" y2=\"{bottom}\"/><text x=\"{gx:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{label}</text>",
+                bottom + 20.0
+            ));
+        }
+        svg.push_str("</g>");
+        let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut prev: Option<u64> = None;
+        for s in samples {
+            if prev.is_none_or(|p| s.t.saturating_sub(p) > 3 * 3600) {
+                runs.push(Vec::new());
+            }
+            if let Some(run) = runs.last_mut() {
+                run.push((x(s.t), y(s.percent)));
+            }
+            prev = Some(s.t);
+        }
+        if let (Some(p), Some(last), Some(run)) = (live, samples.last(), runs.last_mut()) {
+            if now.saturating_sub(last.t) <= 3 * 3600 {
+                run.push((right, y(p)));
+            }
+        }
+        for run in runs.iter().filter(|r| !r.is_empty()) {
+            let pts: Vec<String> = run.iter().map(|(px, py)| format!("{px:.1},{py:.1}")).collect();
+            let (first, last) = (run[0].0, run[run.len() - 1].0);
+            svg.push_str(&format!(
+                "<polygon class=\"area\" fill=\"url(#bfade{g})\" points=\"{first:.1},{bottom} {} {last:.1},{bottom}\"/>\
+                 <polyline class=\"line\" pathLength=\"1\" points=\"{}\"/>",
+                pts.join(" "),
+                pts.join(" ")
+            ));
+        }
+        if let Some(&(lx, ly)) = runs.iter().rev().find_map(|r| r.last()) {
+            svg.push_str(&format!("<circle class=\"dot\" cx=\"{lx:.1}\" cy=\"{ly:.1}\" r=\"4.5\"/>"));
+        }
+        Some(svg + "</svg>")
+    }
+
+    fn view_head(title: &str, sub: &str) -> String {
+        format!(
+            "<header class=\"mh\"><div><h2>{}</h2><p>{}</p></div><button class=\"x\" type=\"button\" data-close aria-label=\"{}\">\
+             <svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><path d=\"M6 6l12 12M18 6 6 18\"/></svg></button></header>",
+            escape(title),
+            escape(sub),
+            tr(["Close", "Fermer", "Schließen", "Cerrar", "Chiudi", "Fechar"])
+        )
+    }
+
+    /// History view (`/ui/history/{id}?days=N`): large chart, period
+    /// switch and statistics.
+    pub fn history_view(ctx: &Context, d: &Device, days: u64) -> String {
+        let name = ctx.name(d);
+        let now = history::now();
+        let samples = ctx.history.samples(&d.id, now.saturating_sub(days * 86_400));
+        let live = d.online.then(|| d.battery.map(|b| b.percent)).flatten();
+        let st = ctx.history.stats(&d.id);
+        let mut s = view_head(
+            &name,
+            tr([
+                "Battery history",
+                "Historique de la batterie",
+                "Akkuverlauf",
+                "Historial de la batería",
+                "Cronologia della batteria",
+                "Histórico da bateria",
+            ]),
+        );
+        s.push_str("<div class=\"seg\" role=\"tablist\">");
+        for (n, label) in [
+            (1, tr(["24 h", "24 h", "24 Std.", "24 h", "24 h", "24 h"])),
+            (7, tr(["7 days", "7 jours", "7 Tage", "7 días", "7 giorni", "7 dias"])),
+            (30, tr(["30 days", "30 jours", "30 Tage", "30 días", "30 giorni", "30 dias"])),
+        ] {
+            s.push_str(&format!("<button type=\"button\" role=\"tab\" data-days=\"{n}\" aria-selected=\"{}\">{label}</button>", n == days));
+        }
+        s.push_str("</div>");
+        match big_chart(&samples, now, days, live) {
+            Some(svg) => s.push_str(&format!("<div class=\"bigchart\">{svg}</div>")),
+            None => s.push_str(&format!(
+                "<p class=\"none\">{}</p>",
+                tr([
+                    "Not enough readings yet for this period.",
+                    "Pas encore assez de relevés sur cette période.",
+                    "Noch nicht genug Messwerte für diesen Zeitraum.",
+                    "Aún no hay lecturas suficientes para este periodo.",
+                    "Letture ancora insufficienti per questo periodo.",
+                    "Ainda não há leituras suficientes para este período."
+                ])
+            )),
+        }
+        let mut tiles = Vec::new();
+        let mut tile = |label: &str, value: String| {
+            tiles.push(format!("<div class=\"tile\"><span>{}</span><b>{}</b></div>", escape(label), escape(&value)))
+        };
+        if let Some(h) = st.time_left_hours.filter(|_| d.has_battery) {
+            tile(
+                tr(["Time left", "Autonomie restante", "Restlaufzeit", "Autonomía restante", "Autonomia residua", "Autonomia restante"]),
+                i18n::duration(h),
+            );
+        }
+        if let Some(h) = st.full_runtime_hours {
+            tile(
+                tr([
+                    "Runtime per charge",
+                    "Autonomie par charge",
+                    "Laufzeit pro Ladung",
+                    "Autonomía por carga",
+                    "Autonomia per carica",
+                    "Autonomia por carga",
+                ]),
+                i18n::duration(h),
+            );
+        }
+        if let Some(h) = st.avg_charge_hours {
+            tile(
+                tr([
+                    "Usual charge time",
+                    "Durée de charge habituelle",
+                    "Übliche Ladedauer",
+                    "Tiempo de carga habitual",
+                    "Durata di carica abituale",
+                    "Tempo de carga habitual",
+                ]),
+                i18n::duration(h),
+            );
+        }
+        if let Some(r) = st.drain_per_hour {
+            tile(
+                tr([
+                    "Use per hour",
+                    "Consommation par heure",
+                    "Verbrauch pro Stunde",
+                    "Consumo por hora",
+                    "Consumo orario",
+                    "Consumo por hora",
+                ]),
+                format!("{r:.1}\u{a0}%"),
+            );
+        }
+        if let Some(hp) = st.health_percent {
+            tile(
+                tr([
+                    "Battery health",
+                    "Santé de la batterie",
+                    "Akkuzustand",
+                    "Salud de la batería",
+                    "Salute della batteria",
+                    "Saúde da bateria",
+                ]),
+                i18n::percent(hp as f32),
+            );
+        }
+        if st.samples > 1 {
+            tile(
+                tr(["Charge cycles", "Cycles de charge", "Ladezyklen", "Ciclos de carga", "Cicli di carica", "Ciclos de carga"]),
+                format!("{:.1}", st.cycles),
+            );
+        }
+        tile(tr(["Readings", "Relevés", "Messwerte", "Lecturas", "Letture", "Leituras"]), samples.len().to_string());
+        drop(tile);
+        s.push_str(&format!("<div class=\"tiles\">{}</div>", tiles.join("")));
+        s
+    }
+
+    /// Details view (`/ui/details/{id}`): everything known about a device.
+    pub fn details_view(ctx: &Context, d: &Device) -> String {
+        let name = ctx.name(d);
+        let mut s = view_head(&name, kind_name(d.kind));
+        let mut rows = String::new();
+        let mut row = |k: &str, v: Option<String>| {
+            if let Some(v) = v.filter(|v| !v.is_empty()) {
+                rows.push_str(&format!("<dt>{}</dt><dd>{}</dd>", escape(k), escape(&v)));
+            }
+        };
+        let b = d.battery;
+        row(tr(["Level", "Niveau", "Stand", "Nivel", "Livello", "Nível"]), b.filter(|_| d.has_battery).map(|b| i18n::percent(b.percent)));
+        row(
+            tr(["State", "État", "Zustand", "Estado", "Stato", "Estado"]),
+            Some(capitalize(if !d.online {
+                i18n::offline()
+            } else {
+                match b.map(|b| b.status) {
+                    Some(Status::Charging) => i18n::charging(),
+                    Some(Status::Full) => i18n::full(),
+                    _ if !d.has_battery => i18n::no_battery(),
+                    _ => tr(["On battery", "Sur batterie", "Im Akkubetrieb", "Con batería", "A batteria", "Na bateria"]),
+                }
+            })),
+        );
+        row(
+            tr(["Voltage", "Tension", "Spannung", "Voltaje", "Tensione", "Tensão"]),
+            b.and_then(|b| b.millivolts).map(|mv| format!("{:.2}\u{a0}V", mv as f32 / 1000.0)),
+        );
+        if name != d.name {
+            row(
+                tr(["Reported name", "Nom annoncé", "Gemeldeter Name", "Nombre informado", "Nome riportato", "Nome informado"]),
+                Some(d.name.clone()),
+            );
+        }
+        row(tr(["Model", "Modèle", "Modell", "Modelo", "Modello", "Modelo"]), d.info.model.clone());
+        row(tr(["Firmware", "Micrologiciel", "Firmware", "Firmware", "Firmware", "Firmware"]), d.info.firmware.clone());
+        row(
+            tr(["Serial number", "N° de série", "Seriennummer", "Número de serie", "Numero di serie", "Número de série"]),
+            d.info.serial.clone(),
+        );
+        row(tr(["Receiver", "Récepteur", "Empfänger", "Receptor", "Ricevitore", "Receptor"]), d.info.receiver.clone());
+        row(tr(["Computer", "Ordinateur", "Computer", "Equipo", "Computer", "Computador"]), d.info.host.clone());
+        row(
+            tr([
+                "Easy-Switch channel",
+                "Canal Easy-Switch",
+                "Easy-Switch-Kanal",
+                "Canal Easy-Switch",
+                "Canale Easy-Switch",
+                "Canal Easy-Switch",
+            ]),
+            d.info.host_channel.map(|(c, n)| format!("{c} / {n}")),
+        );
+        row(tr(["Signal", "Signal", "Signal", "Señal", "Segnale", "Sinal"]), d.info.signal.map(|v| format!("{v}\u{a0}%")));
+        row(
+            tr(["Source", "Source", "Quelle", "Fuente", "Origine", "Fonte"]),
+            Some(
+                match d.source {
+                    Source::Native => "Logitech (HID++)",
+                    Source::GHub => "Logitech G HUB",
+                    other => other.as_str(),
+                }
+                .to_string(),
+            ),
+        );
+        row(tr(["Identifier", "Identifiant", "Kennung", "Identificador", "Identificativo", "Identificador"]), Some(d.id.clone()));
+        drop(row);
+        if let Some(t) = d.last_update {
+            let iso = iso8601(t);
+            rows.push_str(&format!(
+                "<dt>{}</dt><dd><time datetime=\"{iso}\">{iso}</time></dd>",
+                tr(["Last reading", "Dernier relevé", "Letzte Messung", "Última lectura", "Ultima lettura", "Última leitura"])
+            ));
+        }
+        let id_url = percent_encode(&d.id);
+        s.push_str(&format!(
+            "<dl class=\"facts\">{rows}</dl><p class=\"raw\">{} : <a href=\"/api/device/{id_url}\" target=\"_blank\">JSON</a> · \
+             <a href=\"/device/{id_url}\" target=\"_blank\">XML</a> · <a href=\"/api/history/{id_url}?days=30\" target=\"_blank\">{}</a></p>",
+            tr(["Raw data, for developers", "Données brutes, pour les développeurs", "Rohdaten für Entwickler", "Datos sin procesar, para desarrolladores", "Dati grezzi, per sviluppatori", "Dados brutos, para desenvolvedores"]),
+            tr(["history (JSON)", "historique (JSON)", "Verlauf (JSON)", "historial (JSON)", "cronologia (JSON)", "histórico (JSON)"]),
+        ));
+        s
+    }
+
+    /// Overlay view (`/ui/overlay/{id}`): live preview for OBS and the
+    /// link to copy (made absolute by the page script).
+    pub fn overlay_view(ctx: &Context, d: &Device) -> String {
+        let name = ctx.name(d);
+        let id_url = percent_encode(&d.id);
+        let mut s = view_head(
+            &name,
+            tr([
+                "Overlay for OBS / streaming",
+                "Overlay pour OBS / le streaming",
+                "Overlay für OBS / Streaming",
+                "Overlay para OBS / streaming",
+                "Overlay per OBS / streaming",
+                "Overlay para OBS / streaming",
+            ]),
+        );
+        s.push_str(&format!(
+            "<div class=\"ovopts\"><div class=\"seg\" data-ov=\"theme\"><button type=\"button\" data-v=\"dark\" aria-selected=\"true\">{}</button>\
+             <button type=\"button\" data-v=\"light\" aria-selected=\"false\">{}</button></div>\
+             <div class=\"seg\" data-ov=\"size\"><button type=\"button\" data-v=\"24\" aria-selected=\"false\">S</button>\
+             <button type=\"button\" data-v=\"32\" aria-selected=\"true\">M</button><button type=\"button\" data-v=\"48\" aria-selected=\"false\">L</button></div></div>\
+             <div class=\"ovprev\"><iframe title=\"Overlay\" data-base=\"/overlay?device={id_url}\" src=\"/overlay?device={id_url}&amp;theme=dark&amp;size=32\"></iframe></div>\
+             <p class=\"hint\">{}</p><div class=\"copy\"><input type=\"text\" readonly data-base=\"/overlay?device={id_url}\"><button type=\"button\" class=\"btn\" data-copy>{}</button></div>",
+            tr(["Dark", "Sombre", "Dunkel", "Oscuro", "Scuro", "Escuro"]),
+            tr(["Light", "Clair", "Hell", "Claro", "Chiaro", "Claro"]),
+            tr([
+                "In OBS: add a \"Browser\" source with this link (transparent background).",
+                "Dans OBS : ajoutez une source « Navigateur » avec ce lien (fond transparent).",
+                "In OBS: eine „Browser“-Quelle mit diesem Link hinzufügen (transparenter Hintergrund).",
+                "En OBS: añade una fuente «Navegador» con este enlace (fondo transparente).",
+                "In OBS: aggiungi una sorgente «Browser» con questo link (sfondo trasparente).",
+                "No OBS: adicione uma fonte «Navegador» com este link (fundo transparente)."
+            ]),
+            tr(["Copy", "Copier", "Kopieren", "Copiar", "Copia", "Copiar"]),
+        ));
+        s
+    }
+
     /// Transparent page for OBS: `?device=<id or name>&size=32&theme=dark|light&layout=row|column&names=0`.
     pub fn overlay(target: &str) -> String {
         let size = query(target, "size").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(32).clamp(8, 400);
@@ -1415,7 +1817,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         let device = Value::from(query(target, "device").unwrap_or_default()).to_string().replace('<', "\\u003c");
         let names = !matches!(query(target, "names").as_deref(), Some("0" | "false" | "no"));
         format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>Batly overlay</title><style>
+            r#"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Batly overlay</title><style>
 html,body{{margin:0;background:transparent;overflow:hidden}}
 body{{font:600 {size}px/1.2 system-ui,"Segoe UI",Roboto,sans-serif;color:var(--fg)}}
 .dark{{--fg:#fff;--track:rgba(255,255,255,.22);--sh:0 1px 3px rgba(0,0,0,.85)}}
@@ -1480,7 +1882,7 @@ mod tests {
         let ctx = ctx_of(hub());
         let r = get(&ctx, "/");
         assert_eq!(r.status, 200);
-        assert!(r.body.contains("G &lt;Pro&gt; &amp; Co") && r.body.contains("/device/ABC123"));
+        assert!(r.body.contains("G &lt;Pro&gt; &amp; Co") && r.body.contains("data-view=\"details\""));
         assert!(r.body.contains("/api/events") && !r.body.contains("http://") && !r.body.contains("https://"));
         assert_eq!(get(&ctx, "/devices").status, 200);
 

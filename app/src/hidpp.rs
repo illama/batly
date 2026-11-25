@@ -291,6 +291,18 @@ pub enum ActionError {
     Verify,
     /// No usable backup to restore from.
     NoBackup,
+    /// Logitech G HUB is running: it drives the lighting and the onboard
+    /// mode, Batly leaves them alone.
+    GHub,
+}
+
+/// Set while Logitech G HUB runs (checked by the native backend): Batly
+/// then never touches the lighting nor the onboard / host mode of the
+/// devices, which G HUB needs for its key assignments.
+pub static GHUB_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn ghub_running() -> bool {
+    GHUB_RUNNING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -716,6 +728,9 @@ struct Slot {
     reread: bool,
     /// Kept lighting applied since the device last (re)connected.
     keep_active: bool,
+    /// 0x8100 onboard mode before Batly took the LEDs (1 onboard, 2 host),
+    /// put back when it gives them back.
+    onboard_before: Option<u8>,
     /// Kept lighting put to sleep after the device went idle.
     keep_sleeping: bool,
     /// 0x8071 onUserActivity: `true` = active again, `false` = idle.
@@ -1924,6 +1939,7 @@ impl<T: Transport> Session<T> {
     fn write_setting(&mut self, idx: u8, setting: Setting) -> io::Result<Result<(), ActionError>> {
         log!("[{}] device {}: set {:?}", self.tag, idx, setting);
         let reply = match setting {
+            Setting::Led { .. } | Setting::LedKeep { .. } | Setting::LedRestore if ghub_running() => return Ok(Err(ActionError::GHub)),
             Setting::Led { zone, effect, save: false } => return self.preview_led(idx, zone, effect),
             Setting::Led { zone, effect, save: true } => return self.save_led(idx, zone, effect),
             Setting::LedRelease => {
@@ -2126,7 +2142,17 @@ impl<T: Transport> Session<T> {
                 if let Some(pm) = self.feature(idx, FEAT_PROFILE_MANAGEMENT)? {
                     self.call(idx, pm, 6, &[0x05])?;
                 } else if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
-                    self.call(idx, onb, 1, &[2])?;
+                    // Host mode, remembering the mode to put back (G HUB
+                    // keeps its devices in host mode for its key bindings).
+                    let mode = self.call(idx, onb, 2, &[])?.and_then(|p| p.first().copied());
+                    if let Some(slot) = self.devices.get_mut(&idx) {
+                        if slot.onboard_before.is_none() {
+                            slot.onboard_before = mode;
+                        }
+                    }
+                    if mode != Some(2) {
+                        self.call(idx, onb, 1, &[2])?;
+                    }
                 }
                 self.call(idx, f, 5, &[0x01, 0x03, 0x04])?;
                 let mut p = vec![zone, wire.index];
@@ -2149,7 +2175,12 @@ impl<T: Transport> Session<T> {
                 if let Some(pm) = self.feature(idx, FEAT_PROFILE_MANAGEMENT)? {
                     self.call(idx, pm, 6, &[0x03])?;
                 } else if let Some(onb) = self.feature(idx, FEAT_ONBOARD_PROFILES)? {
-                    self.call(idx, onb, 1, &[1])?;
+                    // Back to the mode the device was in, never forced to
+                    // onboard (that would cut G HUB's key bindings off).
+                    let before = self.devices.get_mut(&idx).and_then(|s| s.onboard_before.take());
+                    if let Some(mode) = before.filter(|m| *m != 2) {
+                        self.call(idx, onb, 1, &[mode])?;
+                    }
                 }
             }
             None => {}
@@ -2209,6 +2240,17 @@ impl<T: Transport> Session<T> {
     /// once per connection; idle → the firmware fades the LEDs out (as
     /// G HUB and Solaar do); active again → woken and re-applied.
     fn keep_step(&mut self, idx: u8) -> io::Result<()> {
+        if ghub_running() {
+            // G HUB drives the lighting: give it back if Batly had it.
+            if self.devices.get(&idx).is_some_and(|s| s.keep_active) {
+                log!("[{}] device {}: G HUB is running, lighting given back", self.tag, idx);
+                self.release_leds(idx)?;
+            }
+            if let Some(slot) = self.devices.get_mut(&idx) {
+                slot.led_event = None;
+            }
+            return Ok(());
+        }
         let Some((zone, effect)) = self.kept_for(idx) else {
             if let Some(slot) = self.devices.get_mut(&idx) {
                 slot.led_event = None;
@@ -3520,6 +3562,32 @@ mod tests {
         assert_eq!(s.transport.flash[&1], factory);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn releasing_the_leds_puts_the_onboard_mode_back() {
+        // G HUB keeps its devices in host mode (2) for its key bindings:
+        // after a preview and a release, the mouse must still be in it.
+        let mut fake = Fake::new(true);
+        fake.rgb = true;
+        fake.onboard_mode = 2;
+        let (mut s, id) = led_session(fake, None);
+        let red = LedEffect { color: 0xFF0000, ..LedEffect::default() };
+        command(&mut s, &id, Some(Setting::Led { zone: 0, effect: red, save: false })).unwrap();
+        assert_eq!(s.transport.onboard_mode, 2);
+        command(&mut s, &id, Some(Setting::LedRelease)).unwrap();
+        assert_eq!(s.transport.onboard_mode, 2, "host mode kept");
+
+        // A mouse running from its memory (1) goes to host mode for the
+        // preview and back to its memory after.
+        let mut fake = Fake::new(true);
+        fake.rgb = true;
+        fake.onboard_mode = 1;
+        let (mut s, id) = led_session(fake, None);
+        command(&mut s, &id, Some(Setting::Led { zone: 0, effect: red, save: false })).unwrap();
+        assert_eq!(s.transport.onboard_mode, 2);
+        command(&mut s, &id, Some(Setting::LedRelease)).unwrap();
+        assert_eq!(s.transport.onboard_mode, 1);
     }
 
     #[test]
