@@ -348,6 +348,7 @@ fn main() {
     if let Some(native) = &native {
         // Writing the onboard memory takes a few seconds.
         let _ = ctx.control.set(native.controller(std::time::Duration::from_secs(20)));
+        let _ = ctx.reader.set(native.reader(std::time::Duration::from_secs(10)));
     }
     let services = tray::Services {
         native,

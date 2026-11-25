@@ -60,6 +60,10 @@ pub type DisplayName = Box<dyn Fn(&str, &str) -> String + Send + Sync>;
 /// Applies a setting to a Logitech device of this computer (blocking).
 pub type Control = Box<dyn Fn(&str, Setting) -> Result<(), ActionError> + Send + Sync>;
 
+/// Reads the hardware settings of a Logitech device of this computer
+/// (blocking).
+pub type Reader = Box<dyn Fn(&str) -> Result<crate::hidpp::DeviceSettings, ActionError> + Send + Sync>;
+
 /// Largest request body read (`POST`).
 const MAX_BODY: usize = 8192;
 
@@ -75,6 +79,8 @@ pub struct Context {
     pub host: String,
     /// Set once the Logitech support has started (`POST` requests).
     pub control: std::sync::OnceLock<Control>,
+    /// Set with `control`: reads a device's settings (Home Assistant).
+    pub reader: std::sync::OnceLock<Reader>,
 }
 
 impl Context {
@@ -86,6 +92,7 @@ impl Context {
             instance: new_instance_id(),
             host: hostname(),
             control: Default::default(),
+            reader: Default::default(),
         }
     }
 
@@ -990,7 +997,7 @@ mod page {
 *{box-sizing:border-box}
 html{scrollbar-color:var(--line) transparent}
 ::selection{background:var(--accent);color:var(--on-accent)}
-body{margin:0;min-height:100vh;background:radial-gradient(1200px 500px at 15% -10%,var(--glow),transparent 60%),var(--bg);background-attachment:fixed;color:var(--fg);font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+body{-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;margin:0;min-height:100vh;background:radial-gradient(1200px 500px at 15% -10%,var(--glow),transparent 60%),var(--bg);background-attachment:fixed;color:var(--fg);font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1160px;margin:0 auto;padding:0 20px}
 header.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:28px 0 8px}
 .brand{display:flex;align-items:center;gap:14px}
@@ -1009,6 +1016,7 @@ h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
 .chip.charge{background:color-mix(in srgb,var(--charge) 14%,transparent);color:var(--charge)}
 .chip.low{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
 .field{position:relative}
+input[type=search]{-webkit-user-select:text;user-select:text}
 input[type=search],.dd-btn{font:inherit;font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;height:38px;padding:0 12px;outline:none;transition:border-color .15s,box-shadow .15s,background .15s}
 input[type=search]{width:220px;padding-left:34px}
 .field svg{position:absolute;left:11px;top:11px;width:16px;height:16px;color:var(--mute);pointer-events:none}

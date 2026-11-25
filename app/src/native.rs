@@ -569,6 +569,18 @@ impl Native {
         })
     }
 
+    /// Blocking settings reader (Home Assistant controls): waits for the
+    /// device's answer, at most `timeout`.
+    pub fn reader(&self, timeout: Duration) -> crate::http::Reader {
+        let requests = self.requests.clone();
+        Box::new(move |device_id: &str| {
+            let (reply, rx) = mpsc::channel();
+            let command = Command::GetSettings { device: device_id.into(), reply };
+            let _ = requests.send(Request::ToDevice(device_id.into(), command));
+            rx.recv_timeout(timeout).unwrap_or(Err(ActionError::Failed))
+        })
+    }
+
     /// Writes one setting (explicit user action), then answers with the
     /// settings read back from the device.
     pub fn set_setting(&self, device_id: &str, setting: Setting) -> Receiver<Result<DeviceSettings, ActionError>> {

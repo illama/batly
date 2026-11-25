@@ -130,7 +130,12 @@ dernier état connu** quand il est éteint. Ouvrir l'API au réseau (`0.0.0.0`) 
 
 ### Domotique et intégrations
 - **MQTT avec découverte Home Assistant** : chaque périphérique devient un appareil avec ses
-  capteurs (batterie, charge, tension, autonomie restante) ;
+  capteurs (batterie, charge, tension, autonomie restante) ; les périphériques Logitech de ce
+  PC deviennent aussi **pilotables depuis Home Assistant** : éclairage RGB (lumière : allumer,
+  éteindre, couleur, luminosité), sensibilité (DPI), taux de rapport, rétroéclairage, molette
+  et canal Easy-Switch, selon ce que chaque appareil gère. Les commandes arrivent sur
+  `<baseTopic>/<id>/set/<réglage>`, l'état est publié sur `<baseTopic>/<id>/controls` et
+  `<baseTopic>/<id>/light` ;
 - **webhooks** à chaque alerte (format Discord et Slack reconnu, JSON pour le reste) ;
 - **Prometheus** (`/metrics`), flux **en direct** (`/api/events`) ;
 - **overlay OBS** (`/overlay`, ci-dessous), **plugin Stream Deck** et **skin Rainmeter** : voir

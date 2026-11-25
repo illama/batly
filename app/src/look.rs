@@ -159,6 +159,8 @@ pub fn apply(ctx: &egui::Context, light: bool) {
     style.spacing.slider_width = 220.0;
     style.spacing.scroll = egui::style::ScrollStyle::thin();
     style.animation_time = 0.18;
+    // Labels behave like an application's, not like a document.
+    style.interaction.selectable_labels = false;
     style.text_styles = [
         (TextStyle::Small, FontId::proportional(12.0)),
         (TextStyle::Body, FontId::proportional(14.0)),
