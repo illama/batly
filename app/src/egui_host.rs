@@ -388,8 +388,9 @@ fn push(hwnd: HWND, e: Event) {
     unsafe { InvalidateRect(hwnd, null(), 0) };
 }
 
-/// Runs one egui frame and paints it; returns whether to close.
-fn frame(h: &mut Host) -> bool {
+/// Runs one egui frame and paints it; returns whether to close and
+/// whether the next frame is wanted right away (animation).
+fn frame(h: &mut Host) -> (bool, bool) {
     let s = ppp(h.hwnd);
     let (w, hgt) = client_size(h.hwnd);
     let mut raw = egui::RawInput {
@@ -425,18 +426,20 @@ fn frame(h: &mut Host) -> bool {
     h.raster.paint(w as usize, hgt as usize, out.pixels_per_point, clear, &prims);
     h.raster.free_textures(&free);
 
-    // Next frame: right away for an animation (at most ~60 per second),
-    // later when egui asks for it, or on the next input.
+    // Next frame: right away for an animation (paced by the screen
+    // refresh, see WM_PAINT), later when egui asks for it, or on the next
+    // input.
     let delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
+    let now = delay < Duration::from_millis(8);
     // SAFETY: our own window.
     unsafe {
-        if delay < Duration::from_secs(5) {
-            SetTimer(h.hwnd, TIMER, (delay.as_millis() as u32).clamp(15, 5000), None);
+        if !now && delay < Duration::from_secs(5) {
+            SetTimer(h.hwnd, TIMER, (delay.as_millis() as u32).clamp(10, 5000), None);
         } else {
             KillTimer(h.hwnd, TIMER);
         }
     }
-    ctl.close
+    (ctl.close, now)
 }
 
 fn blit(h: &Host, dc: windows_sys::Win32::Graphics::Gdi::HDC) {
@@ -444,10 +447,8 @@ fn blit(h: &Host, dc: windows_sys::Win32::Graphics::Gdi::HDC) {
     if w == 0 || hgt == 0 {
         return;
     }
-    let mut bgra: Vec<u8> = Vec::with_capacity(w * hgt * 4);
-    for px in &h.raster.buf {
-        bgra.extend_from_slice(&[px[2], px[1], px[0], 255]);
-    }
+    // The renderer already writes BGRA, the order of Windows bitmaps.
+    let bgra = &h.raster.buf;
     // SAFETY: BITMAPINFO describes exactly `bgra`.
     unsafe {
         let mut info: BITMAPINFO = zeroed();
@@ -493,14 +494,27 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             let dc = BeginPaint(hwnd, &mut ps);
-            let close = with_host(hwnd, |h| {
-                let close = frame(h);
+            let result = with_host(hwnd, |h| {
+                let result = frame(h);
                 blit(h, dc);
-                close
+                result
             });
             EndPaint(hwnd, &ps);
-            if close == Some(true) {
-                DestroyWindow(hwnd);
+            match result {
+                Some((true, _)) => {
+                    DestroyWindow(hwnd);
+                }
+                Some((false, true)) => {
+                    // Animation: wait for the compositor's next refresh, then
+                    // draw again (60 / 120 / 144 Hz, whatever the screen does).
+                    if windows_sys::Win32::Graphics::Dwm::DwmFlush() == 0 {
+                        InvalidateRect(hwnd, null(), 0);
+                    } else {
+                        // No compositor: about 60 frames per second.
+                        SetTimer(hwnd, TIMER, 16, None);
+                    }
+                }
+                _ => {}
             }
             0
         }

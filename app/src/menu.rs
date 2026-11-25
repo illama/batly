@@ -192,6 +192,12 @@ impl crate::egui_host::View for MenuView {
             let full = ui.max_rect();
             let mut y = full.top() + PAD;
             let pointer = ui.input(|i| i.pointer.hover_pos());
+            // The mouse drives the highlight once it moves (or leaves);
+            // the arrows keep it while the mouse stays still.
+            let mouse = pointer.is_none() || ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+            if mouse && !(down || up) {
+                self.active = None;
+            }
             for n in 0..self.items.len() {
                 let it = self.items[n].clone();
                 if it.separator {
