@@ -726,16 +726,27 @@ struct Slot {
     /// The device said it is idle (onUserActivity): its level hardly moves
     /// and a read would wake its radio; it says when it is active again.
     idle: bool,
+    /// Last level read says it is charging: read often, since some devices
+    /// (PRO X 60) only push the start and the end of a charge.
+    charging: bool,
 }
 
 /// Longest wait between two reads of a device that pushes its changes or
 /// is idle.
 const SPACED_POLL_MAX: Duration = Duration::from_secs(3600);
 
-/// Wait before the next battery read: the usual period, longer for a
+/// Read period while charging: the device is on the cable, a read costs
+/// nothing and the level moves by about a percent a minute.
+const CHARGING_POLL: Duration = Duration::from_secs(60);
+
+/// Wait before the next battery read: every minute while charging (or the
+/// usual period if shorter); otherwise the usual period, longer for a
 /// device that pushes its own changes (×4) and longer still while it is
 /// idle (×6), at most an hour (never shorter than `poll`).
-fn next_poll(poll: Duration, pushes: bool, idle: bool) -> Duration {
+fn next_poll(poll: Duration, pushes: bool, idle: bool, charging: bool) -> Duration {
+    if charging {
+        return poll.min(CHARGING_POLL);
+    }
     let factor = if idle {
         6
     } else if pushes {
@@ -1253,7 +1264,8 @@ impl<T: Transport> Session<T> {
                 slot.fails = 0;
                 slot.online = true;
                 slot.pushes = true;
-                slot.due = Some(Instant::now() + next_poll(self.cfg.poll, true, slot.idle));
+                slot.charging = battery.status == Status::Charging;
+                slot.due = Some(Instant::now() + next_poll(self.cfg.poll, true, slot.idle, slot.charging));
                 (self.sink)(Event::Update { id: info.id.clone(), battery });
             }
         }
@@ -1300,6 +1312,7 @@ impl<T: Transport> Session<T> {
             Some(Some(feature)) => match self.call(idx, feature.index(), feature.getter(), &[])? {
                 Some(params) => match feature.parse(&params) {
                     Some(battery) => {
+                        self.devices.entry(idx).or_default().charging = battery.status == Status::Charging;
                         let id = self.devices[&idx].info.as_ref().map(|i| i.id.clone()).unwrap_or_default();
                         (self.sink)(Event::Update { id, battery });
                         true
@@ -1314,7 +1327,7 @@ impl<T: Transport> Session<T> {
         if ok {
             slot.fails = 0;
             slot.online = true;
-            slot.due = Some(Instant::now() + next_poll(self.cfg.poll, slot.pushes, slot.idle));
+            slot.due = Some(Instant::now() + next_poll(self.cfg.poll, slot.pushes, slot.idle, slot.charging));
             self.keep_step(idx)?;
         } else {
             // Exponential back-off, capped: the device is most likely
@@ -3029,13 +3042,16 @@ mod tests {
     #[test]
     fn reads_spaced_out_when_pushed_or_idle() {
         let ten = Duration::from_secs(600);
-        assert_eq!(next_poll(ten, false, false), ten);
-        assert_eq!(next_poll(ten, true, false), ten * 4);
-        assert_eq!(next_poll(ten, true, true), Duration::from_secs(3600));
-        assert_eq!(next_poll(ten, false, true), Duration::from_secs(3600));
+        assert_eq!(next_poll(ten, false, false, false), ten);
+        assert_eq!(next_poll(ten, true, false, false), ten * 4);
+        assert_eq!(next_poll(ten, true, true, false), Duration::from_secs(3600));
+        assert_eq!(next_poll(ten, false, true, false), Duration::from_secs(3600));
+        // Charging: every minute, whatever the device says.
+        assert_eq!(next_poll(ten, true, true, true), Duration::from_secs(60));
+        assert_eq!(next_poll(Duration::from_secs(30), false, false, true), Duration::from_secs(30));
         // A period already longer than an hour is never shortened.
         let two_hours = Duration::from_secs(7200);
-        assert_eq!(next_poll(two_hours, true, false), two_hours);
+        assert_eq!(next_poll(two_hours, true, false, false), two_hours);
     }
 
     #[test]
@@ -3046,11 +3062,17 @@ mod tests {
         let info = Info::new("X".into(), "Mouse".into(), DeviceKind::Mouse, Some(BatteryFeature::Unified(7)));
         s.devices.insert(1, Slot { info: Some(info), due: None, fails: 3, online: false, ..Slot::default() });
         let mut event = vec![0u8; LONG_LEN];
-        event[..7].copy_from_slice(&[0x11, 0x01, 0x07, 0x00, 42, 4, 1]);
+        event[..7].copy_from_slice(&[0x11, 0x01, 0x07, 0x00, 42, 4, 0]);
         s.on_unsolicited(&event);
         // It pushes its changes: the next read can wait (×4).
         assert!(s.devices[&1].pushes);
         assert!(s.devices[&1].due.is_some_and(|d| d > Instant::now() + Duration::from_secs(30 * 60)));
+        // Charging: read again within the minute, the level moves fast and
+        // not every device pushes it.
+        event[6] = 1;
+        s.on_unsolicited(&event);
+        assert!(s.devices[&1].charging);
+        assert!(s.devices[&1].due.is_some_and(|d| d <= Instant::now() + Duration::from_secs(60)));
         // Answers meant for other software (sw id != 0) are not events.
         event[3] = 0x15;
         event[4] = 99;
@@ -3058,11 +3080,14 @@ mod tests {
         // Link down notification.
         s.on_unsolicited(&[0x10, 0x01, 0x41, 0x04, 0x42, 0x88, 0x40]);
         let events: Vec<Event> = rx.try_iter().collect();
-        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events.len(), 3, "{events:?}");
         assert!(
-            matches!(&events[0], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Charging)
+            matches!(&events[0], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Discharging)
         );
-        assert!(matches!(&events[1], Event::Offline { id } if id == "X"));
+        assert!(
+            matches!(&events[1], Event::Update { id, battery } if id == "X" && battery.percent == 42.0 && battery.status == Status::Charging)
+        );
+        assert!(matches!(&events[2], Event::Offline { id } if id == "X"));
         // The link went down: the next connection reads at the usual pace
         // until the device pushes an event again.
         assert!(!s.devices[&1].pushes);

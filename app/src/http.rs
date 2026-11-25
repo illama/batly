@@ -964,54 +964,145 @@ mod page {
         c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
     }
 
+    /// Line icon of a device kind (24 × 24, drawn with `currentColor`).
+    fn kind_icon(k: DeviceKind) -> &'static str {
+        match k {
+            DeviceKind::Mouse => r#"<rect x="6" y="2.5" width="12" height="19" rx="6"/><path d="M12 6.5v3.5"/>"#,
+            DeviceKind::Keyboard => {
+                r#"<rect x="2" y="6" width="20" height="12" rx="2.5"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>"#
+            }
+            DeviceKind::Headset => {
+                r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="7" rx="1.5"/><rect x="17" y="14" width="4" height="7" rx="1.5"/>"#
+            }
+            DeviceKind::Gamepad => {
+                r#"<path d="M7 7h10a5 5 0 0 1 4.9 6l-.6 3a2.5 2.5 0 0 1-4.3 1.2L15 15H9l-2 2.2A2.5 2.5 0 0 1 2.7 16l-.6-3A5 5 0 0 1 7 7z"/><path d="M7 10v3M5.5 11.5h3M16 11h.01M18 12.5h.01"/>"#
+            }
+            DeviceKind::Earbuds => {
+                r#"<circle cx="7" cy="8" r="3.5"/><path d="M7 11.5V20"/><circle cx="17" cy="8" r="3.5"/><path d="M17 11.5V20"/>"#
+            }
+            DeviceKind::Other => r#"<rect x="3" y="7" width="16" height="10" rx="2.5"/><path d="M22 10.5v3"/>"#,
+        }
+    }
+
     const STYLE: &str = r#"
-:root{color-scheme:light dark;--bg:#f5f6f8;--card:#fff;--fg:#1c1f24;--mute:#6b7280;--line:#e4e7eb;--ok:#1f9d55;--warn:#d48a00;--bad:#d64545;--accent:#2f6fde}
-@media(prefers-color-scheme:dark){:root{--bg:#111316;--card:#1a1d22;--fg:#e7e9ec;--mute:#9aa1ab;--line:#2b2f36;--ok:#3cc47a;--warn:#f0a830;--bad:#ef6161;--accent:#6ea2ff}}
+:root{color-scheme:light dark;--bg:#f4f5f7;--bg2:#eceef2;--card:#fff;--fg:#14161b;--mute:#5d6573;--line:#e0e3e8;--hover:#eceef2;--accent:#0e9f6e;--on-accent:#fff;--charge:#1d7fe0;--warn:#c98500;--bad:#d64545;--shadow:0 1px 2px rgba(20,22,27,.06),0 8px 24px rgba(20,22,27,.06);--glow:rgba(14,159,110,.18)}
+@media(prefers-color-scheme:dark){:root{--bg:#13151a;--bg2:#171a20;--card:#1c1f26;--fg:#f2f4f7;--mute:#9aa3b2;--line:#2c313b;--hover:#262a33;--accent:#3ddc97;--on-accent:#072418;--charge:#5ab8ff;--warn:#f5b541;--bad:#f2645a;--shadow:0 1px 2px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.28);--glow:rgba(61,220,151,.16)}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-header,main,footer{max-width:1120px;margin:0 auto;padding:20px 16px}
-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:4px}
-h1{font-size:20px;font-weight:600;margin:0}
-#live{font-size:13px;color:var(--mute);white-space:nowrap}
-#live::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
-#live.off::before{background:var(--bad)}
-#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.card.offline .top,.card.offline .bar{opacity:.55}
-.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
-.name{font-weight:600;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sub{color:var(--mute);font-size:13px}
-.pct{font-size:28px;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums;white-space:nowrap}
-.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}
-.bar>i{display:block;height:100%;border-radius:4px;background:var(--ok);transition:width .4s}
-.warn .bar>i{background:var(--warn)}.low .bar>i{background:var(--bad)}.charging .bar>i{background:var(--accent)}
-.state{font-size:14px;min-height:1.45em}
-dl{display:grid;grid-template-columns:1fr auto;gap:2px 12px;margin:0;font-size:13px}
-dt{color:var(--mute)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
-.chart{color:var(--accent)}.chart svg{display:block;width:100%;height:72px}
-.chart .grid line{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
-.chart .area{fill:currentColor;opacity:.14}.chart .line{fill:none;stroke:currentColor;stroke-width:1.6;vector-effect:non-scaling-stroke}
-.chart .cap{display:flex;justify-content:space-between;color:var(--mute);font-size:12px}
-.chart .none{color:var(--mute);font-size:13px;padding:8px 0}
-.links{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-#empty{color:var(--mute);padding:32px 0;text-align:center}
-footer{color:var(--mute);font-size:13px;display:flex;flex-wrap:wrap;gap:4px 14px}
-footer code{font-size:12px}
+html{scrollbar-color:var(--line) transparent}
+::selection{background:var(--accent);color:var(--on-accent)}
+body{margin:0;min-height:100vh;background:radial-gradient(1200px 500px at 15% -10%,var(--glow),transparent 60%),var(--bg);background-attachment:fixed;color:var(--fg);font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1160px;margin:0 auto;padding:0 20px}
+header.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:28px 0 8px}
+.brand{display:flex;align-items:center;gap:14px}
+.logo{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(145deg,var(--accent),color-mix(in srgb,var(--accent) 55%,var(--charge)));color:var(--on-accent);box-shadow:0 6px 18px var(--glow)}
+.logo svg{width:24px;height:24px}
+h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
+.brand p{margin:0;color:var(--mute);font-size:13.5px}
+#live{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);white-space:nowrap;padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--card)}
+#live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 var(--accent);animation:pulse 2s infinite}
+#live.off::before{background:var(--bad);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 60%,transparent)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.bar-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:18px 0}
+#summary{flex:1;min-width:200px;display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12.5px;font-weight:600;background:var(--hover);color:var(--mute);white-space:nowrap}
+.chip.ok{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.chip.charge{background:color-mix(in srgb,var(--charge) 14%,transparent);color:var(--charge)}
+.chip.low{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.field{position:relative}
+input[type=search],select{font:inherit;font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;height:38px;padding:0 12px;outline:none;transition:border-color .15s,box-shadow .15s,background .15s}
+input[type=search]{width:220px;padding-left:34px}
+.field svg{position:absolute;left:11px;top:11px;width:16px;height:16px;color:var(--mute);pointer-events:none}
+select{appearance:none;-webkit-appearance:none;padding-right:36px;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--mute) 50%),linear-gradient(135deg,var(--mute) 50%,transparent 50%);background-position:calc(100% - 18px) 16px,calc(100% - 13px) 16px;background-size:5px 5px;background-repeat:no-repeat}
+select option{background:var(--card);color:var(--fg)}
+input[type=search]:hover,select:hover{background-color:var(--hover)}
+input[type=search]:focus,select:focus-visible{border-color:var(--accent);box-shadow:0 0 0 3px var(--glow)}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;padding-bottom:12px}
+.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;display:flex;flex-direction:column;gap:12px;min-width:0;box-shadow:var(--shadow);transition:transform .2s cubic-bezier(.2,.8,.2,1),box-shadow .2s,border-color .2s;animation:rise .45s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0)*45ms)}
+.card.upd{animation:none}
+.card:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--accent) 35%,var(--line));box-shadow:var(--shadow),0 0 0 4px var(--glow)}
+.card[hidden]{display:none}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}}
+.card.offline .top{opacity:.55}
+.top{display:flex;align-items:center;gap:14px}
+.ring{position:relative;width:64px;height:64px;flex:none;color:var(--accent)}
+.warn .ring{color:var(--warn)}.low .ring{color:var(--bad)}.charging .ring{color:var(--charge)}.offline .ring,.nobat .ring{color:var(--mute)}
+.ring svg{width:64px;height:64px;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:6}
+.ring .t{stroke:var(--line)}
+.ring .v{stroke:currentColor;stroke-linecap:round;transition:stroke-dasharray .8s cubic-bezier(.2,.8,.2,1);animation:fill 1s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0)*45ms + 120ms)}
+.upd .ring .v{animation:none}
+@keyframes fill{from{stroke-dasharray:0 100}}
+.ring .k{position:absolute;inset:0;display:grid;place-items:center;color:var(--fg)}
+.ring .k svg{width:22px;height:22px;transform:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.charging .ring::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--charge);opacity:0;animation:charge 2.2s ease-out infinite}
+@keyframes charge{0%{opacity:.5;transform:scale(.9)}100%{opacity:0;transform:scale(1.15)}}
+.who{flex:1;min-width:0}
+.name{font-weight:650;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub{color:var(--mute);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pct{font-size:30px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap;letter-spacing:-.02em}
+.warn .pct{color:var(--warn)}.low .pct{color:var(--bad)}.charging .pct{color:var(--charge)}.offline .pct{color:var(--mute)}
+.state{display:flex;align-items:center;gap:8px;font-size:14px;min-height:1.5em;color:var(--mute)}
+.state b{font-weight:600;color:var(--fg)}
+dl{display:grid;grid-template-columns:1fr auto;gap:6px 12px;margin:0;font-size:13px;padding:12px 0 0;border-top:1px solid var(--line)}
+dl:empty{display:none}
+dt{color:var(--mute)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.chart{color:var(--accent);background:var(--bg2);border-radius:12px;padding:10px 10px 6px}
+.charging .chart{color:var(--charge)}
+.chart svg{display:block;width:100%;height:80px;overflow:visible}
+.chart .grid line{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;stroke-dasharray:3 4}
+.chart .line{fill:none;stroke:currentColor;stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.2s .25s cubic-bezier(.4,0,.2,1) forwards}
+.upd .chart .line{animation:none;stroke-dashoffset:0}
+@keyframes draw{to{stroke-dashoffset:0}}
+.chart .cap{display:flex;justify-content:space-between;color:var(--mute);font-size:11.5px;padding-top:4px}
+.chart .none{color:var(--mute);font-size:13px;padding:14px 4px}
+.links{display:flex;flex-wrap:wrap;gap:6px}
+.links a{font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;border:1px solid var(--line);color:var(--fg);transition:background .15s,border-color .15s,color .15s,transform .15s}
+.links a:hover{background:var(--accent);border-color:var(--accent);color:var(--on-accent);text-decoration:none}
+.links a:active{transform:scale(.96)}
+a{color:var(--accent);text-decoration:none;cursor:pointer}a:hover{text-decoration:underline}
+a:focus-visible,.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+#empty{color:var(--mute);padding:56px 0;text-align:center}
+#nomatch{color:var(--mute);padding:24px 0;text-align:center}
+footer{color:var(--mute);font-size:13px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:24px 0 36px;border-top:1px solid var(--line);margin-top:12px}
+footer code{font-size:12px;padding:2px 7px;border-radius:6px;background:var(--hover);color:var(--fg)}
+footer a:hover{text-decoration:none}footer a:hover code{background:var(--accent);color:var(--on-accent)}
+footer .v{margin-left:auto}
+@media(max-width:560px){header.top{flex-wrap:wrap}input[type=search]{width:100%}.field{flex:1}.bar-tools{gap:8px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.chart .line{stroke-dashoffset:0}}
 "#;
 
     const SCRIPT: &str = r#"
 (function(){
 var m=location.search.match(/[?&]token=([^&]*)/),tk=m?'token='+m[1]:'';
 function u(p){return tk?p+(p.indexOf('?')<0?'?':'&')+tk:p}
-var grid=document.getElementById('grid'),live=document.getElementById('live'),empty=document.getElementById('empty'),pend={};
+var grid=document.getElementById('grid'),live=document.getElementById('live'),empty=document.getElementById('empty'),
+ sum=document.getElementById('summary'),q=document.getElementById('q'),sort=document.getElementById('sort'),nomatch=document.getElementById('nomatch'),pend={};
+var lang=document.documentElement.lang;
 function find(id){for(var i=0;i<grid.children.length;i++)if(grid.children[i].dataset.id===id)return grid.children[i]}
-function times(root){var t=root.querySelectorAll('time[datetime]');for(var i=0;i<t.length;i++){var d=new Date(t[i].getAttribute('datetime'));if(!isNaN(d))t[i].textContent=d.toLocaleString(document.documentElement.lang,{dateStyle:'short',timeStyle:'short'})}}
+function times(root){var t=root.querySelectorAll('time[datetime]');for(var i=0;i<t.length;i++){var d=new Date(t[i].getAttribute('datetime'));if(!isNaN(d))t[i].textContent=d.toLocaleString(lang,{dateStyle:'short',timeStyle:'short'})}}
+function count(el){var p=el.querySelector('.pct');if(!p||!window.requestAnimationFrame||(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))return;var to=parseFloat(el.dataset.level);if(isNaN(to)||el.dataset.bat!=='1')return;
+ var txt=p.textContent,t0=null,from=0,d=900;function step(ts){if(t0===null)t0=ts;var k=Math.min(1,(ts-t0)/d),e=1-Math.pow(1-k,3);p.textContent=txt.replace(/[\d.,]+/,Math.round(from+(to-from)*e).toLocaleString(lang));if(k<1)requestAnimationFrame(step);else p.textContent=txt}
+ requestAnimationFrame(step)}
+function cards(){return Array.prototype.slice.call(grid.children)}
+function summary(){var c=cards(),n=c.length,ch=0,low=null,lowName='';c.forEach(function(e){if(e.classList.contains('charging'))ch++;var l=parseFloat(e.dataset.level);if(e.dataset.bat==='1'&&!isNaN(l)&&(low===null||l<low)){low=l;lowName=e.dataset.name}});
+ var s='<span class="chip">'+sum.dataset.n.replace('{n}',n)+'</span>';if(ch)s+='<span class="chip charge">'+sum.dataset.c.replace('{n}',ch)+'</span>';
+ if(low!==null)s+='<span class="chip '+(low<=15?'low':low<=30?'':'ok')+'">'+sum.dataset.l.replace('{n}',Math.round(low)).replace('{d}',lowName.replace(/[<&]/g,''))+'</span>';sum.innerHTML=n?s:''}
+function apply(){var term=(q.value||'').trim().toLowerCase(),key=sort.value,c=cards(),shown=0;
+ c.sort(function(a,b){if(key==='level'){return (parseFloat(a.dataset.level)||999)-(parseFloat(b.dataset.level)||999)}if(key==='kind'){return a.dataset.kind.localeCompare(b.dataset.kind)||a.dataset.name.localeCompare(b.dataset.name)}if(key==='name')return a.dataset.name.localeCompare(b.dataset.name,lang);return (+a.dataset.order)-(+b.dataset.order)});
+ c.forEach(function(e){grid.appendChild(e);var ok=!term||e.dataset.name.toLowerCase().indexOf(term)>=0||e.dataset.kind.toLowerCase().indexOf(term)>=0;e.hidden=!ok;if(ok)shown++});
+ nomatch.hidden=!(c.length&&!shown);empty.hidden=c.length>0;summary()}
+try{var saved=localStorage.getItem('batly.sort');if(saved)sort.value=saved}catch(x){}
+sort.addEventListener('change',function(){try{localStorage.setItem('batly.sort',sort.value)}catch(x){}apply()});
+q.addEventListener('input',apply);
+cards().forEach(function(e,i){e.dataset.order=i;count(e)});
 function refresh(id){if(pend[id])return;pend[id]=setTimeout(function(){delete pend[id];
 fetch(u('/ui/card/'+encodeURIComponent(id))).then(function(r){return r.ok?r.text():''}).then(function(h){
-var old=find(id);if(!h){if(old)old.remove()}else{var t=document.createElement('template');t.innerHTML=h;var n=t.content.firstElementChild;times(n);if(old)old.replaceWith(n);else grid.appendChild(n)}
-empty.hidden=grid.children.length>0}).catch(function(){})},250)}
-times(document);
+var old=find(id);if(!h){if(old)old.remove()}else{var t=document.createElement('template');t.innerHTML=h;var n=t.content.firstElementChild;times(n);
+ if(old){n.classList.add('upd');n.dataset.order=old.dataset.order;var ov=old.querySelector('.ring .v'),nv=n.querySelector('.ring .v');old.replaceWith(n);
+  if(ov&&nv){var to=nv.getAttribute('stroke-dasharray');nv.setAttribute('stroke-dasharray',ov.getAttribute('stroke-dasharray'));nv.getBoundingClientRect();nv.setAttribute('stroke-dasharray',to)}}
+ else{n.dataset.order=grid.children.length;n.style.setProperty('--i',0);grid.appendChild(n);count(n)}}
+apply()}).catch(function(){})},250)}
+times(document);apply();
 if(!window.EventSource)return;
 var es=new EventSource(u('/api/events'));
 es.onopen=function(){live.className='';live.textContent=live.dataset.on};
@@ -1032,24 +1123,52 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         ]);
         let mut s = format!(
             "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
-             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Batly – {title}</title>\
-             <style>{STYLE}</style></head><body><header><h1>{title}</h1>\
-             <span id=\"live\" class=\"off\" data-on=\"{on}\" data-off=\"{off}\">{off}</span></header><main><div id=\"grid\">",
+             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\">\
+             <title>Batly – {title}</title><style>{STYLE}</style></head><body>\
+             <div class=\"wrap\"><header class=\"top\"><div class=\"brand\"><div class=\"logo\" aria-hidden=\"true\">\
+             <svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\
+             <rect x=\"2\" y=\"7\" width=\"17\" height=\"10\" rx=\"2.5\"/><path d=\"M22 10.5v3\"/><path d=\"M11.5 9 9 12h3l-2.5 3\"/></svg></div>\
+             <div><h1>Batly</h1><p>{title}</p></div></div>\
+             <span id=\"live\" class=\"off\" data-on=\"{on}\" data-off=\"{off}\">{off}</span></header>\
+             <div class=\"bar-tools\"><div id=\"summary\" data-n=\"{sum_n}\" data-c=\"{sum_c}\" data-l=\"{sum_l}\"></div>\
+             <label class=\"field\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\">\
+             <circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"m20 20-3.5-3.5\"/></svg>\
+             <input id=\"q\" type=\"search\" placeholder=\"{search}\" aria-label=\"{search}\"></label>\
+             <select id=\"sort\" aria-label=\"{sort}\"><option value=\"\">{sort_default}</option><option value=\"level\">{sort_level}</option>\
+             <option value=\"name\">{sort_name}</option><option value=\"kind\">{sort_kind}</option></select></div>\
+             <main><div id=\"grid\">",
             lang = i18n::lang().code(),
             on = tr(["Live", "En direct", "Live", "En directo", "In diretta", "Ao vivo"]),
             off = tr(["Reconnecting…", "Reconnexion…", "Verbinde…", "Reconectando…", "Riconnessione…", "Reconectando…"]),
+            sum_n = tr(["{n} devices", "{n} appareils", "{n} Geräte", "{n} dispositivos", "{n} dispositivi", "{n} dispositivos"]),
+            sum_c = tr(["{n} charging", "{n} en charge", "{n} lädt", "{n} cargando", "{n} in carica", "{n} carregando"]),
+            sum_l = tr([
+                "Lowest: {d} {n} %",
+                "Plus bas : {d} {n} %",
+                "Niedrigster: {d} {n} %",
+                "Más bajo: {d} {n} %",
+                "Più basso: {d} {n} %",
+                "Mais baixo: {d} {n} %",
+            ]),
+            search = tr(["Search", "Rechercher", "Suchen", "Buscar", "Cerca", "Pesquisar"]),
+            sort = tr(["Sort", "Trier", "Sortieren", "Ordenar", "Ordina", "Ordenar"]),
+            sort_default = tr(["Usual order", "Ordre habituel", "Übliche Reihenfolge", "Orden habitual", "Ordine abituale", "Ordem habitual"]),
+            sort_level = tr(["Lowest level first", "Niveau le plus bas d'abord", "Niedrigster Stand zuerst", "Nivel más bajo primero", "Livello più basso prima", "Nível mais baixo primeiro"]),
+            sort_name = tr(["By name", "Par nom", "Nach Name", "Por nombre", "Per nome", "Por nome"]),
+            sort_kind = tr(["By type", "Par type", "Nach Typ", "Por tipo", "Per tipo", "Por tipo"]),
         );
-        for d in &devices {
-            s.push_str(&card(ctx, d));
+        for (i, d) in devices.iter().enumerate() {
+            s.push_str(&card(ctx, d).replacen("<article ", &format!("<article style=\"--i:{}\" ", i.min(12)), 1));
         }
         s.push_str(&format!(
-            "</div><p id=\"empty\"{}>{}</p></main><footer><span>API :</span>\
+            "</div><p id=\"empty\"{}>{}</p><p id=\"nomatch\" hidden>{}</p></main><footer><span>API</span>\
              <a href=\"/api/devices\"><code>/api/devices</code></a><a href=\"/api/events\"><code>/api/events</code></a>\
              <a href=\"/metrics\"><code>/metrics</code></a><a href=\"/overlay\"><code>/overlay</code></a>\
-             <a href=\"/devices\"><code>/device/{{id}}</code></a><span>Batly {VERSION}</span></footer>\
+             <a href=\"/devices\"><code>/device/{{id}}</code></a><span class=\"v\">Batly {VERSION}</span></footer></div>\
              <script>{SCRIPT}</script></body></html>",
             if devices.is_empty() { "" } else { " hidden" },
             i18n::no_device(),
+            tr(["No match.", "Aucun résultat.", "Kein Treffer.", "Sin resultados.", "Nessun risultato.", "Nenhum resultado."]),
         ));
         s
     }
@@ -1063,6 +1182,9 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         let mut class = String::from("card");
         if !d.online {
             class.push_str(" offline");
+        }
+        if !d.has_battery {
+            class.push_str(" nobat");
         }
         match (b.map(|b| b.status), level) {
             (Some(Status::Charging), _) => class.push_str(" charging"),
@@ -1183,18 +1305,25 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
         };
 
         let id_url = percent_encode(&d.id);
+        let now = level.filter(|_| d.has_battery).unwrap_or(0.0).clamp(0.0, 100.0);
         format!(
-            "<article class=\"{class}\" data-id=\"{id}\"><div class=\"top\"><div style=\"min-width:0\">\
-             <div class=\"name\" title=\"{name}\">{name}</div><div class=\"sub\">{sub}</div></div><div class=\"pct\">{pct}</div></div>\
-             <div class=\"bar\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"{now:.0}\"><i style=\"width:{now:.0}%\"></i></div>\
+            "<article class=\"{class}\" data-id=\"{id}\" data-name=\"{name}\" data-kind=\"{kind}\" data-level=\"{data_level}\" data-bat=\"{bat}\">\
+             <div class=\"top\"><div class=\"ring\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"{now:.0}\">\
+             <svg viewBox=\"0 0 64 64\"><circle class=\"t\" cx=\"32\" cy=\"32\" r=\"28\" pathLength=\"100\"/>\
+             <circle class=\"v\" cx=\"32\" cy=\"32\" r=\"28\" pathLength=\"100\" stroke-dasharray=\"{now:.1} 100\"/></svg>\
+             <div class=\"k\"><svg viewBox=\"0 0 24 24\">{icon}</svg></div></div>\
+             <div class=\"who\"><div class=\"name\" title=\"{name}\">{name}</div><div class=\"sub\">{sub}</div></div><div class=\"pct\">{pct}</div></div>\
              <div class=\"state\">{state}</div><dl>{rows}</dl>{chart_html}\
              <div class=\"links\"><a href=\"/device/{id_url}\">XML</a><a href=\"/api/device/{id_url}\">JSON</a>\
              <a href=\"/api/history/{id_url}?days=30\">{hist}</a><a href=\"/overlay?device={id_url}\">Overlay</a></div></article>",
             id = escape(&d.id),
             name = escape(&name),
+            kind = escape(kind_name(d.kind)),
+            data_level = level.filter(|_| d.has_battery).map(|p| format!("{p:.0}")).unwrap_or_default(),
+            bat = if d.has_battery { 1 } else { 0 },
+            icon = kind_icon(d.kind),
             sub = escape(&sub),
             pct = escape(&pct),
-            now = level.filter(|_| d.has_battery).unwrap_or(0.0).clamp(0.0, 100.0),
             state = escape(&state),
             hist = tr(["History", "Historique", "Verlauf", "Historial", "Cronologia", "Histórico"]),
         )
@@ -1225,8 +1354,12 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
                 runs.last_mut().unwrap().push((w, y(p)));
             }
         }
+        static GRADIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let g = GRADIENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut svg = format!(
-            "<svg viewBox=\"0 0 {w} {h}\" preserveAspectRatio=\"none\" aria-hidden=\"true\"><g class=\"grid\">\
+            "<svg viewBox=\"0 0 {w} {h}\" preserveAspectRatio=\"none\" aria-hidden=\"true\">\
+             <defs><linearGradient id=\"fade{g}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" style=\"stop-color:currentColor;stop-opacity:.34\"/>\
+             <stop offset=\"1\" style=\"stop-color:currentColor;stop-opacity:0\"/></linearGradient></defs><g class=\"grid\">\
              <line x1=\"0\" x2=\"{w}\" y1=\"{a:.1}\" y2=\"{a:.1}\"/><line x1=\"0\" x2=\"{w}\" y1=\"{b:.1}\" y2=\"{b:.1}\"/>\
              <line x1=\"0\" x2=\"{w}\" y1=\"{c:.1}\" y2=\"{c:.1}\"/></g>",
             a = y(100.0),
@@ -1237,7 +1370,7 @@ es.addEventListener('device',function(e){try{refresh(JSON.parse(e.data).id)}catc
             let pts: Vec<String> = run.iter().map(|(px, py)| format!("{px:.1},{py:.1}")).collect();
             let (first, last) = (run[0].0, run[run.len() - 1].0);
             svg.push_str(&format!(
-                "<polygon class=\"area\" points=\"{first:.1},{h} {} {last:.1},{h}\"/><polyline class=\"line\" points=\"{}\"/>",
+                "<polygon class=\"area\" fill=\"url(#fade{g})\" points=\"{first:.1},{h} {} {last:.1},{h}\"/><polyline class=\"line\" pathLength=\"1\" points=\"{}\"/>",
                 pts.join(" "),
                 pts.join(" ")
             ));

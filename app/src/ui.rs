@@ -2,23 +2,17 @@
 //! the settings window: theme, DPI scaling, fonts, text and shapes.
 
 use crate::win::{self, wide};
-use std::mem::{size_of, zeroed};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode, SetDIBitsToDevice,
-    SetTextColor, BITMAPINFO, BITMAPINFOHEADER, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT,
-    PS_SOLID, TRANSPARENT,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    CLEARTYPE_QUALITY, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, HDC, HFONT, PS_SOLID, TRANSPARENT,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
-pub fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
+pub const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
-}
-
-pub fn rgb3(c: [u8; 3]) -> COLORREF {
-    rgb(c[0], c[1], c[2])
 }
 
 /// Applications (not the taskbar) use the light theme.
@@ -26,6 +20,9 @@ pub fn apps_light() -> bool {
     win::reg_read_dword(PERSONALIZE_KEY, "AppsUseLightTheme").is_none_or(|v| v != 0)
 }
 
+/// The Batly colours, shared by every window, the tray menu and the web
+/// page (whose CSS repeats these values): graphite surfaces, one green
+/// accent, blue for charging, amber and red for low levels.
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub light: bool,
@@ -36,38 +33,84 @@ pub struct Palette {
     pub card: COLORREF,
     pub border: COLORREF,
     pub accent: COLORREF,
+    /// Text on an accent background.
+    pub on_accent: COLORREF,
+    pub charge: COLORREF,
+    pub warn: COLORREF,
+    pub bad: COLORREF,
     pub warn_bg: COLORREF,
     pub warn_fg: COLORREF,
 }
 
+pub const LIGHT: Palette = Palette {
+    light: true,
+    bg: rgb(0xF4, 0xF5, 0xF7),
+    fg: rgb(0x14, 0x16, 0x1B),
+    sub: rgb(0x5D, 0x65, 0x73),
+    hover: rgb(0xEC, 0xEE, 0xF2),
+    card: rgb(0xFF, 0xFF, 0xFF),
+    border: rgb(0xE0, 0xE3, 0xE8),
+    accent: rgb(0x0E, 0x9F, 0x6E),
+    on_accent: rgb(0xFF, 0xFF, 0xFF),
+    charge: rgb(0x1D, 0x7F, 0xE0),
+    warn: rgb(0xC9, 0x85, 0x00),
+    bad: rgb(0xD6, 0x45, 0x45),
+    warn_bg: rgb(0xFF, 0xF4, 0xD6),
+    warn_fg: rgb(0x6B, 0x4A, 0x00),
+};
+
+pub const DARK: Palette = Palette {
+    light: false,
+    bg: rgb(0x13, 0x15, 0x1A),
+    fg: rgb(0xF2, 0xF4, 0xF7),
+    sub: rgb(0x9A, 0xA3, 0xB2),
+    hover: rgb(0x26, 0x2A, 0x33),
+    card: rgb(0x1C, 0x1F, 0x26),
+    border: rgb(0x2C, 0x31, 0x3B),
+    accent: rgb(0x3D, 0xDC, 0x97),
+    on_accent: rgb(0x07, 0x24, 0x18),
+    charge: rgb(0x5A, 0xB8, 0xFF),
+    warn: rgb(0xF5, 0xB5, 0x41),
+    bad: rgb(0xF2, 0x64, 0x5A),
+    warn_bg: rgb(0x33, 0x2A, 0x16),
+    warn_fg: rgb(0xF5, 0xC7, 0x6A),
+};
+
 pub fn palette() -> Palette {
     if apps_light() {
-        Palette {
-            light: true,
-            bg: rgb(0xF3, 0xF3, 0xF3),
-            fg: rgb(0x1A, 0x1A, 0x1A),
-            sub: rgb(0x5F, 0x5F, 0x5F),
-            hover: rgb(0xE3, 0xE3, 0xE3),
-            card: rgb(0xFB, 0xFB, 0xFB),
-            border: rgb(0xDD, 0xDD, 0xDD),
-            accent: rgb(0x00, 0x5F, 0xB8),
-            warn_bg: rgb(0xFF, 0xF4, 0xCE),
-            warn_fg: rgb(0x5C, 0x40, 0x00),
-        }
+        LIGHT
     } else {
-        Palette {
-            light: false,
-            bg: rgb(0x20, 0x20, 0x20),
-            fg: rgb(0xFF, 0xFF, 0xFF),
-            sub: rgb(0xA8, 0xA8, 0xA8),
-            hover: rgb(0x38, 0x38, 0x38),
-            card: rgb(0x2B, 0x2B, 0x2B),
-            border: rgb(0x3A, 0x3A, 0x3A),
-            accent: rgb(0x60, 0xCD, 0xFF),
-            warn_bg: rgb(0x43, 0x35, 0x19),
-            warn_fg: rgb(0xFC, 0xE1, 0x00),
+        DARK
+    }
+}
+
+impl Palette {
+    /// Colour of a battery level: charging, low, warning or fine.
+    pub fn level(&self, percent: f32, charging: bool) -> COLORREF {
+        if charging {
+            self.charge
+        } else if percent <= 15.0 {
+            self.bad
+        } else if percent <= 30.0 {
+            self.warn
+        } else {
+            self.accent
         }
     }
+}
+
+/// `a` → `b` by `t` (0..1), per channel.
+pub fn mix(a: COLORREF, b: COLORREF, t: f32) -> COLORREF {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |c: COLORREF, s: u32| (c >> s & 0xFF) as f32;
+    let m = |s: u32| ((ch(a, s) + (ch(b, s) - ch(a, s)) * t).round() as u32) << s;
+    m(0) | m(8) | m(16)
+}
+
+/// Ease out (cubic), for animations: fast start, soft landing.
+pub fn ease_out(t: f32) -> f32 {
+    let t = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - t * t * t
 }
 
 /// Logical (96 dpi) pixels → physical pixels for a window.
@@ -174,26 +217,6 @@ pub fn text_block(dc: HDC, font: &Font, color: COLORREF, s: &str, r: RECT, measu
         SelectObject(dc, old);
     }
     rr.bottom - rr.top
-}
-
-/// Composites straight-alpha RGBA pixels over `bg` and draws them at (x, y).
-pub fn draw_rgba(dc: HDC, rgba: &[u8], n: usize, x: i32, y: i32, bg: [u8; 3]) {
-    let mut bgra = Vec::with_capacity(n * n * 4);
-    for px in rgba.chunks_exact(4) {
-        let a = px[3] as u32;
-        let mix = |c: u8, b: u8| ((c as u32 * a + b as u32 * (255 - a)) / 255) as u8;
-        bgra.extend_from_slice(&[mix(px[2], bg[2]), mix(px[1], bg[1]), mix(px[0], bg[0]), 255]);
-    }
-    // SAFETY: BITMAPINFO describes exactly `bgra`.
-    unsafe {
-        let mut info: BITMAPINFO = zeroed();
-        info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-        info.bmiHeader.biWidth = n as i32;
-        info.bmiHeader.biHeight = -(n as i32);
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        SetDIBitsToDevice(dc, x, y, n as u32, n as u32, 0, 0, 0, n as u32, bgra.as_ptr().cast(), &info, DIB_RGB_COLORS);
-    }
 }
 
 pub fn inside(r: &RECT, x: i32, y: i32) -> bool {

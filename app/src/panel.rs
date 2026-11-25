@@ -5,6 +5,7 @@
 //! The panel is a dumb view: the tray builds a `Content` and the panel posts
 //! `WM_COMMAND` messages (`CMD_*`) back to the tray window.
 
+use crate::gfx::Canvas;
 use crate::icon::{self, IconSpec};
 use crate::model::DeviceKind;
 use crate::ui::{self, Font, Palette, Scale};
@@ -13,18 +14,20 @@ use std::cell::RefCell;
 use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 use std::time::Instant;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW, InvalidateRect,
-    MonitorFromPoint, SelectObject, DT_CENTER, DT_LEFT, DT_RIGHT, DT_VCENTER, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, SRCCOPY,
+    MonitorFromPoint, SelectObject, DT_CENTER, DT_LEFT, DT_RIGHT, DT_VCENTER, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
+    SRCCOPY,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IsWindow, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SW_SHOW, WM_ACTIVATE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IsWindow, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
+    SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE, SW_SHOW,
+    WM_ACTIVATE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
+    WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 pub const CMD_REFRESH: usize = 9001;
@@ -86,7 +89,7 @@ pub struct Chart {
 }
 
 /// Logical height of an unfolded chart.
-const CHART_H: i32 = 168;
+const CHART_H: i32 = 186;
 
 struct State {
     hwnd: HWND,
@@ -95,6 +98,7 @@ struct State {
     hot: Option<usize>,
     /// Clickable areas: (command, rect).
     targets: Vec<(usize, RECT)>,
+    anim: Anim,
 }
 
 thread_local! {
@@ -133,6 +137,7 @@ pub fn update(content: Content) {
     });
     if let Some(hwnd) = hwnd {
         reposition(hwnd, None);
+        kick(hwnd);
         // SAFETY: our own window.
         unsafe { InvalidateRect(hwnd, null(), 0) };
     }
@@ -174,25 +179,31 @@ fn open(owner: HWND, content: Content, anchor: Option<POINT>) {
         if hwnd.is_null() {
             return;
         }
-        STATE.with(|s| *s.borrow_mut() = Some(State { hwnd, owner, content, hot: None, targets: Vec::new() }));
+        STATE.with(|s| *s.borrow_mut() = Some(State { hwnd, owner, content, hot: None, targets: Vec::new(), anim: Anim::new() }));
         ui::modern_frame(hwnd, ui::palette().border);
         reposition(hwnd, anchor);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
+        kick(hwnd);
     }
 }
+
+/// Logical layout sizes.
+const HEADER: i32 = 54;
+const ROW: i32 = 60;
+const ROW_STEP: i32 = 66;
 
 /// Height needed for the content, in logical pixels.
 fn layout_height(c: &Content, alert_lines: i32) -> i32 {
     let rows = c.rows.len().max(1) as i32;
-    let mut h = 52 + rows * 62 + 8;
+    let mut h = HEADER + rows * ROW_STEP + 4;
     if c.chart.is_some() {
-        h += CHART_H + 4;
+        h += CHART_H + 6;
     }
     if c.alert.is_some() {
-        h += 16 + 20 * alert_lines + 24;
+        h += 16 + 20 * alert_lines + 16;
     }
-    h + 56
+    h + 58
 }
 
 fn reposition(hwnd: HWND, anchor: Option<POINT>) {
@@ -245,6 +256,104 @@ fn reposition(hwnd: HWND, anchor: Option<POINT>) {
     }
 }
 
+/// Hover fade, level bars filling up, rows appearing one after the other
+/// and the chart line drawing itself. Driven by a 15 ms timer that only
+/// runs while something moves.
+struct Anim {
+    start: Instant,
+    last: Instant,
+    /// Hover progress (0..1) per command.
+    hover: Vec<(usize, f32)>,
+    /// Level shown per row, moving towards the real one.
+    levels: Vec<f32>,
+    /// (row, days) of the chart being drawn and its progress (0..1).
+    chart: Option<((usize, u32), f32)>,
+}
+
+impl Anim {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self { start: now, last: now, hover: Vec::new(), levels: Vec::new(), chart: None }
+    }
+
+    fn hover_of(&self, cmd: usize) -> f32 {
+        self.hover.iter().find(|(c, _)| *c == cmd).map_or(0.0, |(_, v)| *v)
+    }
+
+    /// Opacity / slide of row `n` during the opening (0..1).
+    fn appear(&self, n: usize) -> f32 {
+        let t = (self.start.elapsed().as_secs_f32() - ROW_DELAY * n as f32) / ROW_IN;
+        ui::ease_out(t)
+    }
+}
+
+const TIMER: usize = 1;
+const ROW_DELAY: f32 = 0.035;
+const ROW_IN: f32 = 0.28;
+const HOVER_IN: f32 = 0.12;
+const CHART_IN: f32 = 0.6;
+
+/// Advances every animation; returns whether one is still running.
+fn tick(st: &mut State) -> bool {
+    let now = Instant::now();
+    let dt = now.duration_since(st.anim.last).as_secs_f32().min(0.1);
+    st.anim.last = now;
+    let rows = st.content.rows.len();
+    let mut busy = st.anim.start.elapsed().as_secs_f32() < ROW_IN + ROW_DELAY * rows as f32;
+
+    if let Some(hot) = st.hot {
+        if !st.anim.hover.iter().any(|(c, _)| *c == hot) {
+            st.anim.hover.push((hot, 0.0));
+        }
+    }
+    for (cmd, v) in st.anim.hover.iter_mut() {
+        let target = if st.hot == Some(*cmd) { 1.0 } else { 0.0 };
+        let step = dt / HOVER_IN;
+        *v = if target > *v { (*v + step).min(1.0) } else { (*v - step).max(0.0) };
+        busy |= *v != target;
+    }
+    let hot = st.hot;
+    st.anim.hover.retain(|(c, v)| *v > 0.0 || hot == Some(*c));
+
+    st.anim.levels.resize(rows, 0.0);
+    for (n, row) in st.content.rows.iter().enumerate() {
+        let target = if row.has_battery { row.percent.unwrap_or(0.0).clamp(0.0, 100.0) } else { 0.0 };
+        // Bars start once their row has started to appear.
+        if st.anim.appear(n) <= 0.0 {
+            busy = true;
+            continue;
+        }
+        let v = &mut st.anim.levels[n];
+        let diff = target - *v;
+        if diff.abs() < 0.3 {
+            *v = target;
+        } else {
+            *v += diff * (dt * 7.0).min(1.0);
+            busy = true;
+        }
+    }
+
+    let key = st.content.chart.as_ref().map(|c| (c.row, c.days));
+    match (key, st.anim.chart.as_mut()) {
+        (Some(k), Some((old, t))) if *old == k => {
+            *t = (*t + dt / CHART_IN).min(1.0);
+            busy |= *t < 1.0;
+        }
+        (Some(k), _) => {
+            st.anim.chart = Some((k, 0.0));
+            busy = true;
+        }
+        (None, _) => st.anim.chart = None,
+    }
+    busy
+}
+
+/// Starts the animation timer (no-op when it already runs).
+fn kick(hwnd: HWND) {
+    // SAFETY: our own window; the same id just resets the timer.
+    unsafe { SetTimer(hwnd, TIMER, 15, None) };
+}
+
 fn paint(hwnd: HWND) {
     let scale = Scale::of(hwnd);
     let p = ui::palette();
@@ -262,7 +371,7 @@ fn paint(hwnd: HWND) {
 
         let targets = STATE.with(|s| {
             let s = s.borrow();
-            s.as_ref().map(|st| draw(mem, scale, &p, w, &st.content, st.hot)).unwrap_or_default()
+            s.as_ref().map(|st| draw(mem, scale, &p, client, st)).unwrap_or_default()
         });
         STATE.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
@@ -282,223 +391,353 @@ fn rect(l: i32, t: i32, r: i32, b: i32) -> RECT {
     RECT { left: l, top: t, right: r, bottom: b }
 }
 
+#[derive(Clone, Copy)]
+enum F {
+    Title,
+    Name,
+    Small,
+    Big,
+    Button,
+}
+
+/// Text drawn by GDI once the shapes are on screen.
+struct Label {
+    font: F,
+    color: COLORREF,
+    text: String,
+    rect: RECT,
+    flags: u32,
+}
+
+struct Fonts {
+    title: Font,
+    name: Font,
+    small: Font,
+    big: Font,
+    button: Font,
+}
+
+impl Fonts {
+    fn new(s: Scale) -> Self {
+        Self {
+            title: Font::new(s, 16, 600),
+            name: Font::new(s, 14, 600),
+            small: Font::new(s, 12, 400),
+            big: Font::new(s, 20, 600),
+            button: Font::new(s, 13, 600),
+        }
+    }
+
+    fn get(&self, f: F) -> &Font {
+        match f {
+            F::Title => &self.title,
+            F::Name => &self.name,
+            F::Small => &self.small,
+            F::Big => &self.big,
+            F::Button => &self.button,
+        }
+    }
+}
+
+/// Width of `text` in `font`, in physical pixels.
+fn text_width(dc: HDC, font: &Font, text: &str) -> i32 {
+    use windows_sys::Win32::Graphics::Gdi::GetTextExtentPoint32W;
+    let w: Vec<u16> = text.encode_utf16().collect();
+    let mut size = windows_sys::Win32::Foundation::SIZE { cx: 0, cy: 0 };
+    // SAFETY: valid DC and font; the old font is restored.
+    unsafe {
+        let old = SelectObject(dc, font.0 as _);
+        GetTextExtentPoint32W(dc, w.as_ptr(), w.len() as i32, &mut size);
+        SelectObject(dc, old);
+    }
+    size.cx
+}
+
 /// Draws the whole panel; returns the clickable areas.
-fn draw(dc: windows_sys::Win32::Graphics::Gdi::HDC, s: Scale, p: &Palette, w: i32, c: &Content, hot: Option<usize>) -> Vec<(usize, RECT)> {
+fn draw(dc: HDC, s: Scale, p: &Palette, client: RECT, st: &State) -> Vec<(usize, RECT)> {
     let px = |v: i32| s.px(v);
+    let pxf = |v: f32| v * s.0 as f32 / 96.0;
+    let w = client.right;
+    let c = &st.content;
+    let a = &st.anim;
+    let fonts = Fonts::new(s);
+    let Some(mut cv) = Canvas::new(client, p.bg) else { return Vec::new() };
+    let mut labels: Vec<Label> = Vec::new();
+    let mut icons: Vec<(Vec<u8>, usize, i32, i32)> = Vec::new();
     let mut targets = Vec::new();
-    let total_h = px(4000);
-    ui::fill(dc, rect(0, 0, w, total_h), p.bg);
+    let mut label = |font: F, color: COLORREF, text: &str, rect: RECT, flags: u32| {
+        labels.push(Label { font, color, text: text.to_string(), rect, flags })
+    };
 
-    let title = Font::new(s, 15, 600);
-    let name_font = Font::new(s, 14, 600);
-    let small = Font::new(s, 12, 400);
-    let big = Font::new(s, 20, 600);
-    let button = Font::new(s, 13, 400);
+    // Header: a small accent mark, the title, the version.
+    cv.round_rect(rect(px(18), px(21), px(22), px(35)), pxf(2.0), p.accent, 1.0, None);
+    label(F::Title, p.fg, &c.title, rect(px(30), px(14), w - px(18), px(42)), DT_LEFT | DT_VCENTER);
+    label(F::Small, p.sub, &format!("Batly {}", crate::http::VERSION), rect(px(18), px(14), w - px(18), px(42)), DT_RIGHT | DT_VCENTER);
 
-    // Header.
-    ui::text(dc, &title, p.fg, &c.title, rect(px(18), px(14), w - px(18), px(40)), DT_LEFT | DT_VCENTER);
-    ui::text(
-        dc,
-        &small,
-        p.sub,
-        &format!("Batly {}", crate::http::VERSION),
-        rect(px(18), px(14), w - px(18), px(40)),
-        DT_RIGHT | DT_VCENTER,
-    );
-
-    // Device rows.
-    let mut y = px(52);
+    let mut y = px(HEADER);
     if c.rows.is_empty() {
-        ui::text(dc, &small, p.sub, &c.empty, rect(px(18), y, w - px(18), y + px(62)), DT_LEFT | DT_VCENTER);
-        y += px(62);
+        label(F::Small, p.sub, &c.empty, rect(px(18), y, w - px(18), y + px(ROW)), DT_LEFT | DT_VCENTER);
+        y += px(ROW_STEP);
     }
     let icon_size = px(32) as usize;
     for (n, row) in c.rows.iter().enumerate() {
-        let r = rect(px(8), y, w - px(8), y + px(58));
+        let t = a.appear(n);
+        let fade = |col: COLORREF| ui::mix(p.bg, col, t);
+        let dy = ((1.0 - t) * pxf(10.0)) as i32;
         let cmd = CMD_DEVICE + n;
-        let bg = if hot == Some(cmd) { p.hover } else { p.card };
-        ui::round_rect(dc, r, px(6), bg, Some(p.border));
-        targets.push((cmd, r));
-        let bg_rgb = if hot == Some(cmd) {
-            [(p.hover & 0xFF) as u8, (p.hover >> 8 & 0xFF) as u8, (p.hover >> 16 & 0xFF) as u8]
-        } else {
-            [(p.card & 0xFF) as u8, (p.card >> 8 & 0xFF) as u8, (p.card >> 16 & 0xFF) as u8]
-        };
+        let open = c.chart.as_ref().is_some_and(|ch| ch.row == n);
+        let hv = a.hover_of(cmd).max(if open { 0.6 } else { 0.0 });
+        let r = rect(px(10), y + dy, w - px(10), y + dy + px(ROW));
+        let card = ui::mix(p.card, p.hover, hv);
+        cv.round_rect(r, pxf(10.0), fade(card), 1.0, Some(fade(ui::mix(p.border, p.accent, hv * 0.35))));
+        targets.push((cmd, rect(px(10), y, w - px(10), y + px(ROW))));
+
         let spec = IconSpec {
             kind: row.kind,
             percent: if row.has_battery { row.percent.map(f32::round) } else { Some(100.0) },
             charging: row.charging,
             light_foreground: !p.light,
-            dimmed: !row.online,
+            dimmed: !row.online || t < 1.0,
         };
-        let rgba = icon::render(&spec, icon_size);
-        ui::draw_rgba(dc, &rgba, icon_size, px(20), y + (px(58) - icon_size as i32) / 2, bg_rgb);
+        if t > 0.3 {
+            icons.push((icon::render(&spec, icon_size), icon_size, px(22), r.top + (px(ROW) - icon_size as i32) / 2));
+        }
 
-        let text_left = px(64);
-        let right_w = px(86);
-        ui::text(
-            dc,
-            &name_font,
-            if row.online { p.fg } else { p.sub },
+        let text_left = px(66);
+        let right_w = px(84);
+        let right = w - px(22);
+        let name_color = if row.online { p.fg } else { p.sub };
+        label(
+            F::Name,
+            fade(name_color),
             &row.name,
-            rect(text_left, y + px(9), w - px(16) - right_w, y + px(29)),
+            rect(text_left, r.top + px(9), right - right_w - px(8), r.top + px(28)),
             DT_LEFT | DT_VCENTER,
         );
-        ui::text(dc, &small, p.sub, &row.detail, rect(text_left, y + px(30), w - px(16) - right_w, y + px(48)), DT_LEFT | DT_VCENTER);
+        if !row.detail.is_empty() {
+            label(
+                F::Small,
+                fade(p.sub),
+                &row.detail,
+                rect(text_left, r.top + px(28), right - right_w - px(8), r.top + px(44)),
+                DT_LEFT | DT_VCENTER,
+            );
+        }
 
         let (value, color) = match (row.has_battery, row.percent) {
             (false, _) | (true, None) => ("–".to_string(), p.sub),
             (true, Some(v)) => {
-                let color = if row.charging {
-                    ui::rgb3(icon::level_color(100.0))
-                } else if v <= 30.0 {
-                    ui::rgb3(icon::level_color(v))
-                } else {
-                    p.fg
-                };
-                (crate::i18n::percent(v), if row.online { color } else { p.sub })
+                let col = if row.charging || v <= 30.0 { p.level(v, row.charging) } else { p.fg };
+                (crate::i18n::percent(v), if row.online { col } else { p.sub })
             }
         };
-        let has_note = !row.note.is_empty();
-        let value_box = if has_note {
-            rect(w - px(16) - right_w, y + px(6), w - px(20), y + px(34))
-        } else {
-            rect(w - px(16) - right_w, y, w - px(20), y + px(58))
-        };
-        ui::text(dc, &big, color, &value, value_box, DT_RIGHT | DT_VCENTER);
-        if has_note {
-            ui::text(
-                dc,
-                &small,
-                p.sub,
+        let value_box = rect(right - right_w, r.top + px(6), right, r.top + px(32));
+        label(F::Big, fade(color), &value, value_box, DT_RIGHT | DT_VCENTER);
+        if !row.note.is_empty() {
+            label(
+                F::Small,
+                fade(p.sub),
                 &row.note,
-                rect(w - px(16) - right_w - px(40), y + px(34), w - px(20), y + px(52)),
+                rect(right - right_w - px(40), r.top + px(30), right, r.top + px(45)),
                 DT_RIGHT | DT_VCENTER,
             );
         }
-        y += px(62);
+
+        // Level bar along the bottom of the card.
+        if row.has_battery {
+            let bar = rect(text_left, r.top + px(48), right, r.top + px(52));
+            cv.round_rect(bar, pxf(2.0), fade(p.border), 1.0, None);
+            let level = a.levels.get(n).copied().unwrap_or(0.0);
+            let fill_w = ((bar.right - bar.left) as f32 * level / 100.0) as i32;
+            if fill_w > 0 {
+                let col = if row.online { p.level(row.percent.unwrap_or(0.0), row.charging) } else { p.sub };
+                cv.round_rect(rect(bar.left, bar.top, bar.left + fill_w.max(px(4)), bar.bottom), pxf(2.0), fade(col), 1.0, None);
+            }
+        }
+        y += px(ROW_STEP);
         if let Some(chart) = c.chart.as_ref().filter(|ch| ch.row == n) {
-            draw_chart(dc, s, p, w, y, chart, hot, &mut targets);
-            y += px(CHART_H + 4);
+            let progress = a.chart.map_or(1.0, |(_, t)| ui::ease_out(t));
+            draw_chart(&mut cv, &mut label, dc, &fonts, s, p, w, y, chart, a, progress, &mut targets);
+            y += px(CHART_H + 6);
         }
     }
-    y += px(8);
+    y += px(4);
 
     // Pending alert.
     if let Some((text, later)) = &c.alert {
-        let inner_w = w - px(16) - px(24) - px(90);
-        let text_h = ui::text_block(dc, &small, p.warn_fg, text, rect(0, 0, inner_w, px(400)), true).max(px(20));
-        let box_r = rect(px(8), y, w - px(8), y + text_h + px(24));
-        ui::round_rect(dc, box_r, px(6), p.warn_bg, None);
-        ui::text_block(dc, &small, p.warn_fg, text, rect(px(20), y + px(12), px(20) + inner_w, y + px(12) + text_h), false);
-        let b = rect(w - px(16) - px(84), y + (text_h + px(24)) / 2 - px(15), w - px(18), y + (text_h + px(24)) / 2 + px(15));
-        ui::round_rect(dc, b, px(4), if hot == Some(CMD_SNOOZE) { p.hover } else { p.card }, Some(p.border));
-        ui::text(dc, &button, p.fg, later, b, DT_CENTER | DT_VCENTER);
+        let bw = text_width(dc, &fonts.button, later) + px(28);
+        let inner_w = w - px(10) * 2 - px(26) - bw - px(12);
+        let text_h = ui::text_block(dc, &fonts.small, p.warn_fg, text, rect(0, 0, inner_w, px(400)), true).max(px(20));
+        let box_r = rect(px(10), y, w - px(10), y + text_h + px(24));
+        cv.round_rect(box_r, pxf(10.0), p.warn_bg, 1.0, None);
+        cv.round_rect(
+            rect(box_r.left + px(8), box_r.top + px(10), box_r.left + px(11), box_r.bottom - px(10)),
+            pxf(1.5),
+            p.warn,
+            1.0,
+            None,
+        );
+        labels.push(Label {
+            font: F::Small,
+            color: p.warn_fg,
+            text: text.clone(),
+            rect: rect(px(26), y + px(12), px(26) + inner_w, y + px(12) + text_h),
+            flags: u32::MAX,
+        });
+        let mid = y + (text_h + px(24)) / 2;
+        let b = rect(w - px(22) - bw, mid - px(15), w - px(22), mid + px(15));
+        let hv = a.hover_of(CMD_SNOOZE);
+        cv.round_rect(b, pxf(15.0), ui::mix(p.card, p.hover, hv), 1.0, Some(p.border));
+        labels.push(Label { font: F::Button, color: p.fg, text: later.clone(), rect: b, flags: DT_CENTER | DT_VCENTER });
         targets.push((CMD_SNOOZE, b));
         y = box_r.bottom + px(8);
     }
 
-    // Footer buttons.
-    ui::fill(dc, rect(0, y, w, y + 1), p.border);
+    // Footer: pill buttons.
+    cv.fill(rect(0, y, w, y + 1), p.border);
     let mut x = px(10);
-    let bottom = y + px(48);
-    for (cmd, label) in &c.buttons {
-        // Rough width: characters × average glyph width.
-        let bw = px(24 + 7 * label.chars().count() as i32);
-        let b = rect(x, y + px(10), x + bw, bottom - px(8));
-        if hot == Some(*cmd) {
-            ui::round_rect(dc, b, px(4), p.hover, None);
+    let top = y + px(12);
+    for (cmd, label_text) in &c.buttons {
+        let bw = text_width(dc, &fonts.button, label_text) + px(28);
+        let b = rect(x, top, x + bw, top + px(32));
+        let hv = a.hover_of(*cmd);
+        if hv > 0.0 {
+            cv.round_rect(b, pxf(16.0), ui::mix(p.bg, p.hover, hv), 1.0, None);
         }
-        ui::text(dc, &button, p.accent, label, b, DT_CENTER | DT_VCENTER);
+        labels.push(Label {
+            font: F::Button,
+            color: ui::mix(p.accent, p.fg, hv * 0.25),
+            text: label_text.clone(),
+            rect: b,
+            flags: DT_CENTER | DT_VCENTER,
+        });
         targets.push((*cmd, b));
         x += bw + px(4);
+    }
+
+    for (rgba, n, ix, iy) in &icons {
+        cv.image(rgba, *n, *ix, *iy);
+    }
+    cv.blit(dc);
+    for l in &labels {
+        if l.flags == u32::MAX {
+            ui::text_block(dc, fonts.get(l.font), l.color, &l.text, l.rect, false);
+        } else {
+            ui::text(dc, fonts.get(l.font), l.color, &l.text, l.rect, l.flags);
+        }
     }
     targets
 }
 
 /// The unfolded chart: level over 7 or 30 days, the range buttons, a
 /// summary line. Gaps of more than 3 hours (device off, PC asleep) break
-/// the line.
+/// the line. `progress` (0..1) draws the line from left to right.
 #[allow(clippy::too_many_arguments)]
 fn draw_chart(
-    dc: windows_sys::Win32::Graphics::Gdi::HDC,
+    cv: &mut Canvas,
+    label: &mut impl FnMut(F, COLORREF, &str, RECT, u32),
+    dc: HDC,
+    fonts: &Fonts,
     s: Scale,
     p: &Palette,
     w: i32,
     y: i32,
     chart: &Chart,
-    hot: Option<usize>,
+    a: &Anim,
+    progress: f32,
     targets: &mut Vec<(usize, RECT)>,
 ) {
-    use windows_sys::Win32::Graphics::Gdi::{CreatePen, LineTo, MoveToEx, PS_SOLID};
     let px = |v: i32| s.px(v);
-    let small = Font::new(s, 12, 400);
-    let button = Font::new(s, 12, 600);
-    let box_r = rect(px(8), y, w - px(8), y + px(CHART_H));
-    ui::round_rect(dc, box_r, px(6), p.card, Some(p.border));
+    let pxf = |v: f32| v * s.0 as f32 / 96.0;
+    let box_r = rect(px(10), y, w - px(10), y + px(CHART_H));
+    cv.round_rect(box_r, pxf(10.0), p.card, 1.0, Some(p.border));
 
-    // Range buttons and the settings link, top right / top left.
-    let mut x = w - px(16);
-    for (cmd, label, days) in [(CMD_DAYS_30, &chart.labels[1], 30), (CMD_DAYS_7, &chart.labels[0], 7)] {
-        let bw = px(16 + 7 * label.chars().count() as i32);
-        let b = rect(x - bw, y + px(8), x, y + px(30));
-        if chart.days == days {
-            ui::round_rect(dc, b, px(4), p.hover, Some(p.border));
-        } else if hot == Some(cmd) {
-            ui::round_rect(dc, b, px(4), p.hover, None);
+    // Segmented 7 / 30 days control, top right.
+    let seg_w: Vec<i32> = chart.labels[..2].iter().map(|l| text_width(dc, &fonts.button, l) + px(22)).collect();
+    let total = seg_w[0] + seg_w[1] + px(4);
+    let mut x = w - px(20) - total;
+    let seg = rect(x, y + px(10), x + total, y + px(38));
+    cv.round_rect(seg, pxf(14.0), p.bg, 1.0, Some(p.border));
+    x += px(2);
+    for (i, (cmd, days)) in [(CMD_DAYS_7, 7), (CMD_DAYS_30, 30)].into_iter().enumerate() {
+        let b = rect(x, seg.top + px(2), x + seg_w[i], seg.bottom - px(2));
+        let active = chart.days == days;
+        if active {
+            cv.round_rect(b, pxf(12.0), p.accent, 1.0, None);
+        } else {
+            let hv = a.hover_of(cmd);
+            if hv > 0.0 {
+                cv.round_rect(b, pxf(12.0), ui::mix(p.bg, p.hover, hv), 1.0, None);
+            }
         }
-        ui::text(dc, &button, if chart.days == days { p.fg } else { p.accent }, label, b, DT_CENTER | DT_VCENTER);
+        label(F::Button, if active { p.on_accent } else { p.sub }, &chart.labels[i], b, DT_CENTER | DT_VCENTER);
         targets.push((cmd, b));
-        x -= bw + px(4);
+        x += seg_w[i];
     }
-    let settings = &chart.labels[2];
-    let sw = px(16 + 7 * settings.chars().count() as i32);
-    let b = rect(px(14), y + px(8), px(14) + sw, y + px(30));
-    if hot == Some(CMD_DEVICE_SETTINGS) {
-        ui::round_rect(dc, b, px(4), p.hover, None);
+
+    // Settings link, top left.
+    let sw = text_width(dc, &fonts.button, &chart.labels[2]) + px(20);
+    let b = rect(px(16), y + px(10), px(16) + sw, y + px(38));
+    let hv = a.hover_of(CMD_DEVICE_SETTINGS);
+    if hv > 0.0 {
+        cv.round_rect(b, pxf(14.0), ui::mix(p.card, p.hover, hv), 1.0, None);
     }
-    ui::text(dc, &small, p.accent, settings, b, DT_CENTER | DT_VCENTER);
+    label(F::Button, p.accent, &chart.labels[2], b, DT_CENTER | DT_VCENTER);
     targets.push((CMD_DEVICE_SETTINGS, b));
 
     // Plot: 0 / 50 / 100 % guides, then the level.
-    let plot = rect(px(52), y + px(40), w - px(22), y + px(CHART_H - 34));
-    let (pw, ph) = ((plot.right - plot.left) as f64, (plot.bottom - plot.top) as f64);
+    let plot = rect(px(52), y + px(50), w - px(26), y + px(CHART_H - 34));
+    let (pw, ph) = ((plot.right - plot.left) as f32, (plot.bottom - plot.top) as f32);
     for level in [0, 50, 100] {
-        let gy = plot.bottom - (ph * level as f64 / 100.0) as i32;
-        ui::fill(dc, rect(plot.left, gy, plot.right, gy + 1), p.border);
-        ui::text(dc, &small, p.sub, &format!("{level} %"), rect(px(14), gy - px(8), plot.left - px(6), gy + px(8)), DT_RIGHT | DT_VCENTER);
+        let gy = plot.bottom - (ph * level as f32 / 100.0) as i32;
+        cv.fill(rect(plot.left, gy, plot.right, gy + 1), ui::mix(p.card, p.border, 0.8));
+        label(F::Small, p.sub, &format!("{level} %"), rect(px(14), gy - px(8), plot.left - px(8), gy + px(8)), DT_RIGHT | DT_VCENTER);
     }
     let span = chart.days as u64 * 86_400;
     let start = chart.now.saturating_sub(span);
-    let to_x = |t: u64| plot.left + (t.saturating_sub(start) as f64 / span.max(1) as f64 * pw).clamp(0.0, pw) as i32;
-    let to_y = |v: f32| plot.bottom - (v.clamp(0.0, 100.0) as f64 / 100.0 * ph) as i32;
-    // SAFETY: pen created, selected and released here.
-    unsafe {
-        let pen = CreatePen(PS_SOLID, px(2).max(1), p.accent);
-        let old = SelectObject(dc, pen as _);
-        let mut prev: Option<u64> = None;
-        for &(t, v) in chart.points.iter().filter(|(t, _)| *t >= start) {
-            let (x, y) = (to_x(t), to_y(v));
-            if prev.is_none_or(|pt| t.saturating_sub(pt) > 3 * 3600) {
-                MoveToEx(dc, x, y, null_mut());
-                // A lone reading still shows as a dot.
-                LineTo(dc, x + 1, y);
-                MoveToEx(dc, x, y, null_mut());
-            } else {
-                LineTo(dc, x, y);
-            }
-            prev = Some(t);
+    let to_x = |t: u64| plot.left as f32 + (t.saturating_sub(start) as f32 / span.max(1) as f32 * pw).clamp(0.0, pw);
+    let to_y = |v: f32| plot.bottom as f32 - v.clamp(0.0, 100.0) / 100.0 * ph;
+    let limit = plot.left as f32 + pw * progress;
+    let mut runs: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut prev: Option<u64> = None;
+    for &(t, v) in chart.points.iter().filter(|(t, _)| *t >= start) {
+        if prev.is_none_or(|pt| t.saturating_sub(pt) > 3 * 3600) {
+            runs.push(Vec::new());
         }
-        SelectObject(dc, old);
-        DeleteObject(pen as _);
+        prev = Some(t);
+        let (x, yy) = (to_x(t), to_y(v));
+        let Some(run) = runs.last_mut() else { continue };
+        if x <= limit {
+            run.push((x, yy));
+        } else if let Some(&(lx, ly)) = run.last() {
+            // Cut the segment where the drawing has got to.
+            if lx < limit {
+                let k = (limit - lx) / (x - lx).max(0.001);
+                run.push((limit, ly + (yy - ly) * k));
+            }
+        }
     }
-    ui::text(dc, &small, p.sub, &chart.summary, rect(px(14), plot.bottom + px(8), w - px(16), y + px(CHART_H - 6)), DT_LEFT | DT_VCENTER);
+    let mut last_point = None;
+    for run in runs.iter().filter(|r| !r.is_empty()) {
+        cv.area(run, plot.bottom as f32, p.accent, 0.28);
+        cv.polyline(run, p.accent, pxf(2.0));
+        last_point = run.last().copied();
+    }
+    if let Some((lx, ly)) = last_point.filter(|_| progress >= 1.0) {
+        cv.circle(lx as i32, ly as i32, pxf(5.0), p.accent, 0.25);
+        cv.circle(lx as i32, ly as i32, pxf(3.0), p.accent, 1.0);
+    }
+    label(F::Small, p.sub, &chart.summary, rect(px(16), plot.bottom + px(8), w - px(18), y + px(CHART_H - 6)), DT_LEFT | DT_VCENTER);
 }
 
-fn hit(hwnd: HWND, lparam: LPARAM) -> Option<usize> {
+fn hit(lparam: LPARAM) -> Option<usize> {
     let (x, y) = ((lparam & 0xFFFF) as i16 as i32, (lparam >> 16 & 0xFFFF) as i16 as i32);
-    let _ = hwnd;
     STATE.with(|s| s.borrow().as_ref().and_then(|st| st.targets.iter().find(|(_, r)| ui::inside(r, x, y)).map(|(c, _)| *c)))
+}
+
+/// Commands that change what the panel shows: it stays open.
+fn keeps_open(cmd: usize) -> bool {
+    cmd == CMD_SNOOZE || cmd == CMD_DAYS_7 || cmd == CMD_DAYS_30 || (CMD_DEVICE..CMD_DEVICE + 1000).contains(&cmd)
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -508,6 +747,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_ERASEBKGND => 1,
+        WM_TIMER if wparam == TIMER => {
+            let busy = STATE.with(|s| s.borrow_mut().as_mut().map(tick)).unwrap_or(false);
+            InvalidateRect(hwnd, null(), 0);
+            if !busy {
+                KillTimer(hwnd, TIMER);
+            }
+            0
+        }
+        WM_SETCURSOR => {
+            let hot = STATE.with(|s| s.borrow().as_ref().and_then(|st| st.hot));
+            SetCursor(LoadCursorW(null_mut(), if hot.is_some() { IDC_HAND } else { IDC_ARROW }));
+            1
+        }
         WM_ACTIVATE => {
             if wparam & 0xFFFF == 0 {
                 // Lost the focus: behave like a flyout.
@@ -522,7 +774,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_MOUSEMOVE => {
-            let hot = hit(hwnd, lparam);
+            let hot = hit(lparam);
             let changed = STATE.with(|s| {
                 let mut s = s.borrow_mut();
                 let st = s.as_mut()?;
@@ -532,7 +784,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let mut tme =
                     TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
                 TrackMouseEvent(&mut tme);
-                InvalidateRect(hwnd, null(), 0);
+                SetCursor(LoadCursorW(null_mut(), if hot.is_some() { IDC_HAND } else { IDC_ARROW }));
+                kick(hwnd);
             }
             0
         }
@@ -542,16 +795,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     st.hot = None;
                 }
             });
-            InvalidateRect(hwnd, null(), 0);
+            kick(hwnd);
             0
         }
         WM_LBUTTONUP => {
-            if let Some(cmd) = hit(hwnd, lparam) {
+            if let Some(cmd) = hit(lparam) {
                 let owner = STATE.with(|s| s.borrow().as_ref().map(|st| st.owner));
                 if let Some(owner) = owner {
                     PostMessageW(owner, WM_COMMAND, cmd, 0);
                 }
-                if cmd != CMD_SNOOZE {
+                if !keeps_open(cmd) {
                     DestroyWindow(hwnd);
                 }
             }
@@ -563,6 +816,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_DESTROY => {
+            KillTimer(hwnd, TIMER);
             STATE.with(|s| *s.borrow_mut() = None);
             LAST_CLOSE.with(|c| *c.borrow_mut() = Some(Instant::now()));
             0
@@ -572,3 +826,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 use std::mem::{size_of, size_of_val};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chart_clicks_keep_the_panel_open() {
+        assert!(keeps_open(CMD_DEVICE));
+        assert!(keeps_open(CMD_DEVICE + 3));
+        assert!(keeps_open(CMD_DAYS_30));
+        assert!(!keeps_open(CMD_DEVICE_SETTINGS));
+        assert!(!keeps_open(CMD_SETTINGS));
+    }
+}

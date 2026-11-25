@@ -34,8 +34,12 @@ mod webhooks;
 
 #[cfg(windows)]
 mod actions;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod gfx;
 #[cfg(windows)]
 mod hidio;
+#[cfg(windows)]
+mod menu;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]

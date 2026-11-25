@@ -910,7 +910,17 @@ fn build(hwnd: HWND) {
                     let l = child("STATIC", label, 0, 0, 20, y + 4, label_w, 20, 0);
                     let c = match kind {
                         Kind::Choice(options) => {
-                            let c = child("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST_, 0, ctl_x, y, ctl_w, 200, id);
+                            let c = child(
+                                "COMBOBOX",
+                                "",
+                                WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST_ | crate::theme::CBS_THEMED,
+                                0,
+                                ctl_x,
+                                y,
+                                ctl_w,
+                                200,
+                                id,
+                            );
                             for (_, name) in options.iter() {
                                 SendMessageW(c, CB_ADDSTRING_, 0, wide(name).as_ptr() as LPARAM);
                             }

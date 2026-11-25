@@ -1149,9 +1149,11 @@ fn show_menu(hwnd: HWND) {
             GetCursorPos(&mut pt);
             SetForegroundWindow(hwnd);
             let flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN;
+            crate::menu::style(menu, hwnd);
             let command = TrackPopupMenu(menu, flags, pt.x, pt.y, 0, hwnd, null());
             PostMessageW(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
+            crate::menu::release();
             command
         };
         if command > 0 && with_app(|app| app.command(command as usize, &device_ids)) == Some(true) {
@@ -1180,6 +1182,9 @@ fn restart(hwnd: HWND) {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if let Some(r) = crate::menu::on_message(hwnd, msg, wparam, lparam) {
+        return r;
+    }
     match msg {
         WM_APP_SYNC => {
             SYNC_PENDING.store(false, Ordering::Release);

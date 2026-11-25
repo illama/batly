@@ -669,7 +669,7 @@ unsafe fn create_controls(hwnd: HWND) -> (Controls, Vec<(HWND, [i32; 4])>) {
         h
     };
     let label = SS_LEFT | SS_NOPREFIX | SS_CENTERIMAGE;
-    let combo = CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP;
+    let combo = CBS_DROPDOWNLIST | crate::theme::CBS_THEMED | WS_VSCROLL | WS_TABSTOP;
     let track = TBS_AUTOTICKS | WS_TABSTOP;
 
     make("STATIC", s_receiver(), label, 0, 0, [12, 12, 96, 24]);
